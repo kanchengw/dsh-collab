@@ -189,11 +189,15 @@ export interface AgentDelivery {
   contextRefs?: string[];
 }
 
+export interface AgentDeliveryResult {
+  text?: string;
+}
+
 export interface HostAgentPort {
   followup(input: AgentDelivery): Promise<void> | void;
   steer(input: AgentDelivery): Promise<void> | void;
   cancel(input: { requestId: string; roomId: string; hostSessionId: string; keepInbox: boolean }): Promise<void> | void;
-  whenIdle?(input: { requestId: string; roomId: string; hostSessionId: string }): Promise<void>;
+  whenIdle?(input: { requestId: string; roomId: string; hostSessionId: string }): Promise<AgentDeliveryResult | void>;
 }
 
 export type QueueStatus = "queued" | "running" | "completed" | "failed" | "cancelled";

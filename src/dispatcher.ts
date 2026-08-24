@@ -311,8 +311,9 @@ export class AgentDispatcher {
         continue;
       }
       if (!record) return;
+      let result;
       try {
-        await this.options.agent.whenIdle?.({
+        result = await this.options.agent.whenIdle?.({
           requestId: record.requestId,
           roomId: record.roomId,
           hostSessionId: record.hostSessionId,
@@ -328,12 +329,25 @@ export class AgentDispatcher {
       }
       if (this.activeRequestId === record.requestId && this.records.get(record.requestId)?.record.status === "running") {
         try {
+          if (result?.text) this.appendAgentOutput(record, result.text);
           await this.complete(record.requestId);
         } catch {
           continue;
         }
       }
     }
+  }
+
+  private appendAgentOutput(record: QueueRecord, text: string): void {
+    const host = this.options.rooms.listMembers(record.roomId).find((member) => member.role === "host");
+    if (!host) throw new CollabError("MEMBER_NOT_FOUND", "room host no longer exists", { roomId: record.roomId });
+    this.options.ledger.append({
+      eventId: record.requestId + ":output",
+      roomId: record.roomId,
+      type: "agent.state.changed",
+      actor: { memberId: host.memberId, principalId: host.principalId },
+      payload: { requestId: record.requestId, state: "output", text },
+    });
   }
 
   private appendCancelled(record: QueueRecord, actor: { memberId: string; principalId: string }): void {

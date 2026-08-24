@@ -30,4 +30,24 @@ describe("real DSH Cordis Agent bridge", () => {
     const service = createDshCordisSessionService({ agents: { get: () => undefined } });
     await expect(service.followup({ requestId: "request-1", sessionId: "missing", text: "no" })).rejects.toThrow("not live");
   });
+
+  it("waits for the Host turn and returns the assistant text for the matching request", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { get events() { return events; } },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "turn/start", data: { turn: 1 } },
+          { seq: 1, type: "user/message", data: message },
+          { seq: 2, type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "COLLAB_AGENT_OUTPUT" }] } } },
+          { seq: 3, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-output", sessionId: "session-1", text: "reply once" });
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-output" })).resolves.toEqual({ text: "COLLAB_AGENT_OUTPUT" });
+  });
 });

@@ -1,7 +1,7 @@
 import { CollabError } from "./errors.js";
 import { registerCollabRoutes, type CollabWebServer } from "./webserver.js";
 import type { CollabHttpOptions } from "./http.js";
-import type { AgentDelivery, HostAgentPort } from "./types.js";
+import type { AgentDelivery, AgentDeliveryResult, HostAgentPort } from "./types.js";
 import type { CollabStreamUpgrade } from "./upgrade.js";
 
 export interface DshSessionService {
@@ -9,7 +9,7 @@ export interface DshSessionService {
   followup(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   steer(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   cancel(input: { sessionId: string; requestId: string; keepInbox: boolean }): Promise<void> | void;
-  whenIdle?(input: { sessionId: string; requestId: string }): Promise<void>;
+  whenIdle?(input: { sessionId: string; requestId: string }): Promise<AgentDeliveryResult | void>;
 }
 
 async function assertOwned(service: DshSessionService, sessionId: string): Promise<void> {
@@ -35,7 +35,7 @@ export function createDshHostAgentPort(input: { sessions: DshSessionService }): 
     },
     async whenIdle(request) {
       await assertOwned(input.sessions, request.hostSessionId);
-      await input.sessions.whenIdle?.({ sessionId: request.hostSessionId, requestId: request.requestId });
+      return await input.sessions.whenIdle?.({ sessionId: request.hostSessionId, requestId: request.requestId });
     },
   };
 }

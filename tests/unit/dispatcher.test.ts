@@ -21,7 +21,8 @@ function createDispatcher(agent: HostAgentPort) {
     displayName: "Alice",
     now: 2,
   });
-  return { dispatcher: new AgentDispatcher({ rooms, ledger: new EventLedger(), agent }), rooms };
+  const ledger = new EventLedger();
+  return { dispatcher: new AgentDispatcher({ rooms, ledger, agent }), rooms, ledger };
 }
 
 function request(messageId: string, text: string, target: MessageTarget = "dsh"): AgentRequest {
@@ -147,6 +148,21 @@ describe("AgentDispatcher", () => {
     await expect(dispatcher.submit({ principalId: "alice", message: steer })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
     expect(dispatcher.queued()).toHaveLength(0);
     expect(calls).toEqual([]);
+  });
+
+  it("publishes Host Agent output before completing the request", async () => {
+    const { dispatcher, ledger } = createDispatcher({
+      followup() {}, steer() {}, cancel() {},
+      whenIdle: async () => ({ text: "COLLAB_AGENT_OUTPUT" }),
+    });
+    await dispatcher.submit({ principalId: "alice", message: request("message-output", "Reply once") });
+
+    await dispatcher.processQueue();
+
+    expect(ledger.readAfter("room-1", 0).slice(-2)).toMatchObject([
+      { type: "agent.state.changed", actor: { memberId: "member-host", principalId: "host" }, payload: { requestId: "message-output", state: "output", text: "COLLAB_AGENT_OUTPUT" } },
+      { type: "agent.request.completed", payload: { requestId: "message-output" } },
+    ]);
   });
 
   it("rechecks membership before delivering a queued request", async () => {
