@@ -64,6 +64,40 @@ describe("AgentDispatcher", () => {
     })]);
   });
 
+  it("routes requests from multiple participants to the same host session", async () => {
+    const calls: Array<{ authorMemberId: string; hostSessionId: string }> = [];
+    const { dispatcher, rooms } = createDispatcher({
+      followup(input) {
+        calls.push({ authorMemberId: input.authorMemberId, hostSessionId: input.hostSessionId });
+      },
+      steer() {},
+      cancel() {},
+    });
+    rooms.addMember("room-1", {
+      memberId: "member-bob",
+      principalId: "bob",
+      displayName: "Bob",
+      now: 3,
+    });
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-alice", "Alice request") });
+    await dispatcher.submit({
+      principalId: "bob",
+      message: {
+        ...request("message-bob", "Bob request"),
+        authorMemberId: "member-bob",
+      },
+    });
+    await dispatcher.drainOne();
+    await dispatcher.complete("message-alice");
+    await dispatcher.drainOne();
+
+    expect(calls).toEqual([
+      { authorMemberId: "member-alice", hostSessionId: "session-host" },
+      { authorMemberId: "member-bob", hostSessionId: "session-host" },
+    ]);
+  });
+
   it("keeps a second request queued while the first request is running", async () => {
     const calls: string[] = [];
     const { dispatcher } = createDispatcher({

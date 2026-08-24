@@ -36,6 +36,7 @@ describe("RoomStore authorization", () => {
     expect(rooms.authorize("room-1", "alice", "agentRequest").memberId).toBe("member-alice");
     expect(() => rooms.authorize("room-1", "alice", "steer")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
     expect(() => rooms.authorize("room-1", "alice", "cancel")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
+    expect(() => rooms.authorize("room-1", "alice", "approval")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
   });
 
   it("limits an observer to read access", () => {
