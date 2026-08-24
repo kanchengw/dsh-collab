@@ -1,5 +1,5 @@
 import { createElement, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import type { ComposerTarget } from "./ui.js";
+import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput } from "./dsh-browser-client.js";
 
 export interface DshCollabClientSnapshot {
@@ -10,6 +10,7 @@ export interface DshCollabClientSnapshot {
   connection: "connecting" | "online" | "offline";
   memberCount: number;
   canSteer: boolean;
+  timeline?: readonly TimelineItem[];
 }
 
 export interface DshCollabClientPort {

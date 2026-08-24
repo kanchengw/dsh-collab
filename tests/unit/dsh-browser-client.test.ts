@@ -21,6 +21,7 @@ describe("browser Gateway client", () => {
         members: [{ memberId: "member-host", role: "host" }],
         lastEventSeq: 0,
       });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       return response({ request: { requestId: "request-1" } }, 202);
     };
     const WebSocket = class implements BrowserSocket {
@@ -52,6 +53,7 @@ describe("browser Gateway client", () => {
         member: { memberId: "member-bob", role: "participant" },
         roomToken: "bob-room-token",
       }, 201);
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       return response({ room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" }, members: [], lastEventSeq: 0 });
     };
     const WebSocket = class implements BrowserSocket {
@@ -69,5 +71,52 @@ describe("browser Gateway client", () => {
     expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online" });
     expect(requests[0]?.init?.headers).not.toHaveProperty("x-dsh-principal-id");
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");
+  });
+
+  it("recovers room events and projects live human and Agent output into the timeline", async () => {
+    const requests: string[] = [];
+    let socket: BrowserSocket | undefined;
+    const fetch: BrowserFetch = async (url) => {
+      requests.push(url);
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-room-token",
+      });
+      if (url.endsWith("/snapshot")) return response({
+        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        members: [{ memberId: "member-host", role: "host" }],
+        lastEventSeq: 2,
+      });
+      if (url.includes("/events?")) return response({ events: [
+        { eventId: "human-1", roomId: "room-1", seq: 1, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: 1, payload: { text: "hello" } },
+        { eventId: "agent-1", roomId: "room-1", seq: 2, type: "agent.state.changed", actor: { memberId: "member-host", principalId: "host" }, createdAt: 2, payload: { requestId: "request-1", state: "output", text: "done" } },
+      ] });
+      throw new Error(`unexpected request ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor(readonly url: string) { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; this.onclose?.(); }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", fetch, WebSocket });
+
+    await client.bootstrap();
+    expect(requests).toContain("http://127.0.0.1:3080/collab/v1/rooms/room-1/events?after=0&limit=500");
+    expect(client.getSnapshot().timeline).toMatchObject([
+      { kind: "human", text: "hello" },
+      { kind: "agent", text: "done", state: "output" },
+    ]);
+
+    socket?.onmessage?.({ data: JSON.stringify({ type: "event", event: {
+      eventId: "human-2", roomId: "room-1", seq: 3, type: "human.message",
+      actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { text: "live" },
+    } }) });
+    expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
   });
 });

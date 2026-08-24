@@ -1,4 +1,6 @@
 import type { ComposerTarget } from "./ui.js";
+import { projectTimeline } from "./ui.js";
+import type { RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 
 export interface BrowserRequestInit {
@@ -69,6 +71,8 @@ type SnapshotData = {
   lastEventSeq: number;
 };
 
+type EventsData = { events: RoomEvent[]; nextSeq?: number };
+
 type Envelope = { ok: boolean; data?: unknown; error?: { message?: string } };
 
 const OPEN = 1;
@@ -121,6 +125,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private socket: BrowserSocket | undefined;
   private token: string | undefined;
   private lastEventSeq = 0;
+  private readonly events = new Map<string, RoomEvent>();
   private snapshot: DshCollabClientSnapshot;
 
   constructor(private readonly options: DshBrowserCollabOptions) {
@@ -139,6 +144,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       connection: options.token ? "connecting" : "offline",
       memberCount: 0,
       canSteer: options.role === "host",
+      timeline: [],
     };
   }
 
@@ -205,13 +211,15 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private async connect(): Promise<void> {
     if (!this.token) throw new Error("room token is missing");
     const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/snapshot`, undefined, true)) as SnapshotData;
-    this.lastEventSeq = snapshot.lastEventSeq;
+    await this.recoverEvents(snapshot.lastEventSeq);
+    this.lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...this.events.values()].map((event) => event.seq));
     this.snapshot = {
       ...this.snapshot,
       roomId: snapshot.room.roomId,
       roomTitle: snapshot.room.title,
       hostDisplayName: snapshot.room.hostDisplayName,
       memberCount: snapshot.members.filter((member) => member.status !== "removed" && member.status !== "suspended").length,
+      timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
     this.socket?.close(1000, "reconnect");
@@ -243,6 +251,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private applyRoom(data: RoomData): void {
+    if (data.room.roomId !== this.snapshot.roomId) this.events.clear();
     this.token = data.roomToken;
     this.snapshot = {
       roomId: data.room.roomId,
@@ -252,6 +261,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       connection: "connecting",
       memberCount: this.snapshot.memberCount,
       canSteer: data.member.role === "host" || data.member.role === "lead",
+      timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
   }
@@ -260,10 +270,26 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     let frame: { type?: string; event?: { seq: number; type: string; payload?: unknown } };
     try { frame = JSON.parse(raw) as typeof frame; } catch { return; }
     if (frame.type === "event" && frame.event) {
-      this.lastEventSeq = Math.max(this.lastEventSeq, frame.event.seq);
-      if (frame.event.type === "member.joined") this.snapshot.memberCount += 1;
-      if (frame.event.type === "member.removed") this.snapshot.memberCount = Math.max(0, this.snapshot.memberCount - 1);
+      const event = frame.event as RoomEvent;
+      if (this.events.has(event.eventId)) return;
+      this.events.set(event.eventId, event);
+      this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
+      if (event.type === "member.joined") this.snapshot.memberCount += 1;
+      if (event.type === "member.removed") this.snapshot.memberCount = Math.max(0, this.snapshot.memberCount - 1);
+      this.snapshot = { ...this.snapshot, timeline: projectTimeline([...this.events.values()]) };
       this.emit();
+    }
+  }
+
+  private async recoverEvents(untilSeq: number): Promise<void> {
+    let after = 0;
+    while (after < untilSeq) {
+      const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/events?after=${String(after)}&limit=500`, undefined, true)) as EventsData;
+      if (!Array.isArray(data.events) || data.events.length === 0) break;
+      for (const event of data.events) this.events.set(event.eventId, event);
+      const next = data.nextSeq ?? data.events.at(-1)?.seq ?? after;
+      if (next <= after) break;
+      after = next;
     }
   }
 
