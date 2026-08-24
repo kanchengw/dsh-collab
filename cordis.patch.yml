@@ -4,6 +4,10 @@
 - insert:
     - id: collab-host
       name: dsh-collab
+      inject: [webServer, agents]
       config:
         enabled: true
-        path: /collab
+        roomId: dsh-room
+        hostId: local-host
+        title: DSH Collaboration
+        hostDisplayName: Local Host

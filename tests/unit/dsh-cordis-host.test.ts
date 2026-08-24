@@ -49,4 +49,21 @@ describe("Cordis Host mount", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(http).toEqual([]);
   });
+
+  it("waits for the first real DSH Agent when Web creates sessions lazily", async () => {
+    let created: ((payload: { agent: { id: string } }) => void) | undefined;
+    const http: string[] = [];
+    const context = {
+      webServer: {
+        register: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
+        registerUpgrade: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
+      },
+      agents: { get: (id: string) => id === "session-created" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined },
+      on: (_event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => { created = listener; return () => { created = undefined; }; },
+    };
+    apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host" });
+    expect(http).toEqual([]);
+    created?.({ agent: { id: "session-created" } });
+    expect(http).toEqual(["/collab", "/collab/v1/stream"]);
+  });
 });

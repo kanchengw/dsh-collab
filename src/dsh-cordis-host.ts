@@ -6,10 +6,12 @@ import type { CollabWebServer } from "./webserver.js";
 export interface DshCordisHostContext {
   webServer: CollabWebServer;
   agents: DshCordisAgentRegistry;
+  on?: (event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => () => void;
 }
 
-export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions"> & {
+export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId"> & {
   enabled?: boolean;
+  hostSessionId?: string;
   principalFromHeaders?: (headers: Record<string, string | undefined>) => string | undefined;
 };
 
@@ -21,8 +23,10 @@ export interface MountedDshCollabHost {
 /** Mount one collab Gateway into the real Cordis WebServer and Agent registry. */
 export function mountDshCollabCordisHost(context: DshCordisHostContext, config: DshCordisHostConfig): MountedDshCollabHost | undefined {
   if (config.enabled === false) return undefined;
+  const hostSessionId = config.hostSessionId ?? ((context.agents as DshCordisAgentRegistry & { list?: () => Array<{ id: string }> }).list?.()[0]?.id);
+  if (!hostSessionId) return undefined;
   const sessions: DshSessionService = createDshCordisSessionService({ agents: context.agents });
-  const runtime = createDshCollabHostRuntime({ ...config, sessions });
+  const runtime = createDshCollabHostRuntime({ ...config, hostSessionId, sessions });
   const disposeRoutes = registerDshCollabHost({
     webServer: context.webServer,
     http: {
