@@ -90,7 +90,7 @@ The reverse proxy must authenticate the participant before forwarding, strip par
 location /collab/ {
     # Authenticate here and reject the request unless this variable is set.
     proxy_bind 127.0.0.2;
-    proxy_pass http://127.0.0.1:3080;
+    proxy_pass http://127.0.0.1:3082;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -103,7 +103,7 @@ location /collab/ {
 
 The Participant installs the same complete `dsh-collab` package in their DSH, opens its official plugin settings card, and saves the public URL including `/collab`, such as `https://collab.example/collab`. Joining a valid invite automatically selects Participant mode and all room/Agent traffic uses that Host URL; the Participant's local DSH Agent is never called. The URL field rejects credentials, query strings, fragments and paths other than `/collab`.
 
-For one-machine UI testing, run two DSH Web profiles on different ports and put the same authenticated proxy boundary in front of the Host profile. A browser tab must not be treated as the proxy merely because both are on loopback. `tests/integration/e2e-local.test.ts` uses `127.0.0.2` as the simulated trusted proxy source and verifies that a direct `127.0.0.1` request with forged marker and identity headers is rejected. A physical second-machine run is still a release acceptance check; it is not required for the automated regression suite.
+For one-machine UI testing, use the checked-in nginx harness in [`e2e/nginx`](./e2e/nginx/): run the Host DSH on `127.0.0.1:3082`, the Participant DSH on `127.0.0.1:3083`, and open the two browser pages through `http://127.0.0.1:3182` and `http://127.0.0.1:3183`. Both `/collab/` paths are proxied to the Host DSH, while the Participant page itself is proxied to the second DSH. A browser tab must not be treated as the proxy merely because both are on loopback. The config uses `127.0.0.2` as the trusted proxy source and fixed local identities only for this E2E harness. `tests/integration/e2e-local.test.ts` remains the fast protocol-level regression; the two-browser DSH/nginx run is the deployment-boundary acceptance check.
 
 ## Design and development log
 
