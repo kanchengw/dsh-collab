@@ -1,0 +1,215 @@
+import { CollabError, invalidInput } from "./errors.js";
+import { AgentDispatcher } from "./dispatcher.js";
+import { EventLedger } from "./events.js";
+import { InviteStore } from "./invites.js";
+import { classifyMessage } from "./messages.js";
+import { RoomStore } from "./room.js";
+import { RoomTokenStore } from "./tokens.js";
+import type {
+  GatewayRequest,
+  GatewayResponse,
+  HostAgentPort,
+  MessageTarget,
+  RoomTokenClaims,
+} from "./types.js";
+
+interface ErrorBody {
+  error: { code: string; message: string; details?: Record<string, unknown> };
+}
+
+interface GatewayOptions {
+  rooms: RoomStore;
+  ledger: EventLedger;
+  invites: InviteStore;
+  agent: HostAgentPort;
+  now?: () => number;
+  tokenTtlMs?: number;
+  tokenFactory?: () => string;
+}
+
+function requiredText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw invalidInput(field + " must not be blank", { field });
+  }
+  return value.trim();
+}
+
+function objectBody(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw invalidInput("request body must be an object");
+  }
+  return body as Record<string, unknown>;
+}
+
+function numberField(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw invalidInput(field + " must be a safe integer", { field });
+  }
+  return value;
+}
+
+function getHeader(request: GatewayRequest, name: string): string | undefined {
+  const headers = request.headers ?? {};
+  const target = name.toLowerCase();
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === target);
+  return key ? headers[key] : undefined;
+}
+
+function authPrincipal(request: GatewayRequest): string {
+  if (typeof request.auth?.principalId !== "string" || request.auth.principalId.trim() === "") {
+    throw new CollabError("AUTH_REQUIRED", "authenticated principal is required");
+  }
+  return request.auth.principalId.trim();
+}
+
+function statusFor(error: CollabError): number {
+  if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
+  if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
+  if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND") return 404;
+  if (error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED") return 409;
+  return 422;
+}
+
+function errorResponse(error: unknown): GatewayResponse {
+  if (error instanceof CollabError) {
+    const body: ErrorBody = { error: { code: error.code, message: error.message } };
+    if (error.details) body.error.details = error.details;
+    return { status: statusFor(error), body };
+  }
+  return { status: 500, body: { error: { code: "INTERNAL_ERROR", message: "internal error" } } satisfies ErrorBody };
+}
+
+export class CollabGateway {
+  readonly dispatcher: AgentDispatcher;
+  readonly tokens: RoomTokenStore;
+  private readonly now: () => number;
+
+  constructor(private readonly options: GatewayOptions) {
+    this.now = options.now ?? (() => Date.now());
+    this.tokens = new RoomTokenStore(options.rooms, {
+      tokenFactory: options.tokenFactory,
+      ttlMs: options.tokenTtlMs,
+    });
+    this.dispatcher = new AgentDispatcher({ rooms: options.rooms, ledger: options.ledger, agent: options.agent });
+  }
+
+  async handle(request: GatewayRequest): Promise<GatewayResponse> {
+    try {
+      const url = new URL(request.path, "http://dsh-collab.local");
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length !== 4 || segments[0] !== "v1" || segments[1] !== "rooms") {
+        return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+      }
+      const roomId = requiredText(segments[2], "roomId");
+      const resource = segments[3];
+      if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
+      if (request.method === "POST" && resource === "join") return this.join(roomId, request);
+      if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
+      if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
+      if (request.method === "POST" && resource === "messages") return this.message(roomId, request);
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  private createInvite(roomId: string, request: GatewayRequest): GatewayResponse {
+    const body = objectBody(request.body);
+    const invite = this.options.invites.createInvite({
+      roomId,
+      principalId: authPrincipal(request),
+      inviteId: requiredText(body.inviteId, "inviteId"),
+      expiresAt: numberField(body, "expiresAt"),
+      now: this.now(),
+    });
+    return { status: 201, body: invite };
+  }
+
+  private join(roomId: string, request: GatewayRequest): GatewayResponse {
+    const body = objectBody(request.body);
+    const member = this.options.invites.acceptInvite({
+      roomId,
+      inviteId: requiredText(body.inviteId, "inviteId"),
+      token: requiredText(body.token, "token"),
+      principalId: authPrincipal(request),
+      memberId: requiredText(body.memberId, "memberId"),
+      displayName: requiredText(body.displayName, "displayName"),
+      now: this.now(),
+    });
+    const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+    const event = this.options.ledger.append({
+      eventId: roomId + ":member.joined:" + member.memberId,
+      roomId,
+      type: "member.joined",
+      actor: { memberId: member.memberId, principalId: member.principalId },
+      createdAt: this.now(),
+      payload: { memberId: member.memberId, principalId: member.principalId, role: member.role },
+    });
+    return { status: 201, body: { member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, event } };
+  }
+
+  private snapshot(roomId: string, request: GatewayRequest): GatewayResponse {
+    this.claims(roomId, request);
+    const events = this.options.ledger.readAfter(roomId, 0, 500);
+    return {
+      status: 200,
+      body: {
+        room: this.options.rooms.getRoom(roomId),
+        members: this.options.rooms.listMembers(roomId),
+        lastEventSeq: events.at(-1)?.seq ?? 0,
+      },
+    };
+  }
+
+  private events(roomId: string, query: URLSearchParams, request: GatewayRequest): GatewayResponse {
+    this.claims(roomId, request);
+    const after = query.get("after") === null ? 0 : this.parseQueryInteger(query.get("after"), "after");
+    const limit = query.get("limit") === null ? 100 : this.parseQueryInteger(query.get("limit"), "limit");
+    const events = this.options.ledger.readAfter(roomId, after, limit);
+    return { status: 200, body: { events, nextSeq: events.at(-1)?.seq ?? after } };
+  }
+
+  private async message(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
+    const claims = this.claims(roomId, request);
+    const body = objectBody(request.body);
+    const message = classifyMessage({
+      messageId: requiredText(body.messageId, "messageId"),
+      roomId,
+      authorMemberId: claims.memberId,
+      text: requiredText(body.text, "text"),
+      target: body.target as MessageTarget | undefined,
+      sourceMessageId: body.sourceMessageId as string | undefined,
+      contextRefs: body.contextRefs as string[] | undefined,
+    });
+    if (message.kind === "human") {
+      this.options.rooms.authorize(roomId, claims.principalId, "humanMessage");
+      const event = this.options.ledger.append({
+        eventId: message.messageId + ":human",
+        roomId,
+        type: "human.message",
+        actor: { memberId: claims.memberId, principalId: claims.principalId },
+        createdAt: this.now(),
+        payload: message,
+      });
+      return { status: 201, body: { message, event } };
+    }
+    const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
+    return { status: 202, body: { request: record } };
+  }
+
+  private claims(roomId: string, request: GatewayRequest): RoomTokenClaims {
+    const authorization = getHeader(request, "authorization");
+    if (!authorization) throw new CollabError("AUTH_REQUIRED", "room token is required");
+    const match = /^Bearer (.+)$/.exec(authorization);
+    if (!match) throw new CollabError("AUTH_INVALID", "authorization must use Bearer token");
+    return this.tokens.verify({ roomId, token: match[1]!, now: this.now() });
+  }
+
+  private parseQueryInteger(value: string | null, field: string): number {
+    if (value === null || !/^\d+$/.test(value)) throw invalidInput(field + " must be a non-negative integer", { field });
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) throw invalidInput(field + " must be a safe integer", { field });
+    return parsed;
+  }
+}

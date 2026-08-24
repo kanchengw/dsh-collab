@@ -85,6 +85,38 @@ export interface InviteStoreOptions {
   tokenFactory?: () => string;
 }
 
+export interface RoomTokenClaims {
+  roomId: string;
+  memberId: string;
+  principalId: string;
+  role: MemberRole;
+  expiresAt: number;
+}
+
+export interface IssuedRoomToken {
+  token: string;
+  expiresAt: number;
+}
+
+export interface RoomTokenStoreOptions {
+  tokenFactory?: () => string;
+  ttlMs?: number;
+}
+
+export interface GatewayRequest {
+  method: "GET" | "POST";
+  path: string;
+  headers?: Record<string, string | undefined>;
+  auth?: { principalId?: string };
+  body?: unknown;
+}
+
+export interface GatewayResponse {
+  status: number;
+  body: unknown;
+  headers?: Record<string, string>;
+}
+
 export interface CreateRoomInput {
   roomId: string;
   hostId: string;

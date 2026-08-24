@@ -17,6 +17,9 @@ export type CollabErrorCode =
   | "INVITE_REVOKED"
   | "INVITE_USED"
   | "INVITE_STATE"
+  | "AUTH_REQUIRED"
+  | "AUTH_INVALID"
+  | "TOKEN_SCOPE"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {

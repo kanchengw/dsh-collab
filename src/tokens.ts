@@ -1,0 +1,84 @@
+import { createHash, randomBytes } from "node:crypto";
+import { CollabError, invalidInput } from "./errors.js";
+import { RoomStore } from "./room.js";
+import type {
+  IssuedRoomToken,
+  RoomMember,
+  RoomTokenClaims,
+  RoomTokenStoreOptions,
+} from "./types.js";
+
+const DEFAULT_TTL_MS = 60 * 60 * 1000;
+
+function requiredText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw invalidInput(field + " must not be blank", { field });
+  }
+  return value.trim();
+}
+
+function copy<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function digest(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+interface TokenRecord {
+  claims: RoomTokenClaims;
+}
+
+export class RoomTokenStore {
+  private readonly tokens = new Map<string, TokenRecord>();
+
+  constructor(
+    private readonly rooms: RoomStore,
+    private readonly options: RoomTokenStoreOptions = {},
+  ) {}
+
+  issue(input: { roomId: string; member: RoomMember; now?: number }): IssuedRoomToken {
+    const roomId = requiredText(input.roomId, "roomId");
+    const now = input.now ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    const ttlMs = this.options.ttlMs ?? DEFAULT_TTL_MS;
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw invalidInput("ttlMs must be a positive integer", { ttlMs });
+    const authorized = this.rooms.authorize(roomId, input.member.principalId, "read");
+    if (authorized.memberId !== input.member.memberId) {
+      throw new CollabError("AUTH_INVALID", "token member does not match room membership");
+    }
+    const token = requiredText(
+      this.options.tokenFactory?.() ?? randomBytes(32).toString("base64url"),
+      "token",
+    );
+    const expiresAt = now + ttlMs;
+    if (!Number.isSafeInteger(expiresAt)) throw invalidInput("token expiry exceeds safe integer range", { expiresAt });
+    const claims: RoomTokenClaims = {
+      roomId,
+      memberId: authorized.memberId,
+      principalId: authorized.principalId,
+      role: authorized.role,
+      expiresAt,
+    };
+    this.tokens.set(digest(token), { claims });
+    return { token, expiresAt };
+  }
+
+  verify(input: { roomId: string; token: string; now?: number }): RoomTokenClaims {
+    const roomId = requiredText(input.roomId, "roomId");
+    const token = requiredText(input.token, "token");
+    const record = this.tokens.get(digest(token));
+    if (!record) throw new CollabError("AUTH_INVALID", "room token is invalid");
+    if (record.claims.roomId !== roomId) {
+      throw new CollabError("TOKEN_SCOPE", "room token is scoped to another room", { roomId });
+    }
+    const now = input.now ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    if (now >= record.claims.expiresAt) throw new CollabError("AUTH_INVALID", "room token has expired");
+    const member = this.rooms.authorize(roomId, record.claims.principalId, "read");
+    if (member.memberId !== record.claims.memberId || member.role !== record.claims.role) {
+      throw new CollabError("AUTH_INVALID", "room token membership binding is invalid");
+    }
+    return copy(record.claims);
+  }
+}
