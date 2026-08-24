@@ -148,4 +148,3 @@ cursor and uses exclusive replay, with event ID de-duplication at the client.
   version and an explicit adapter negotiation decision.
 - The wire protocol never carries a local Agent handle, DSH connection ID,
   filesystem path, credential, tool argument, or approval secret.
-
