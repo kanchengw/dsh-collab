@@ -36,9 +36,31 @@ The current routes are:
 | `GET` | `/collab/v1/rooms/:roomId/snapshot` | Read the authorized room snapshot |
 | `GET` | `/collab/v1/rooms/:roomId/events?after=&limit=` | Read events after an exclusive cursor |
 | `POST` | `/collab/v1/rooms/:roomId/messages` | Create a human message or AgentRequest |
+| `GET` | `/collab/v1/rooms/:roomId/approvals` | Host lists approval projections |
+| `POST` | `/collab/v1/rooms/:roomId/approvals` | Host creates an approval projection |
+| `POST` | `/collab/v1/rooms/:roomId/actions` | Host cancels, manages members or decides an approval |
 
-`actions` is reserved for the later explicit steer, cancel, member-management
-and approval action contract. It is not silently accepted by v1.
+The current implementation exposes the following explicit v1 actions:
+
+```json
+{ "action": "cancel", "requestId": "request-1", "keepInbox": true }
+```
+
+```json
+{ "action": "setMemberStatus", "memberId": "member-2", "status": "suspended" }
+```
+
+```json
+{ "action": "setMemberRole", "memberId": "member-2", "role": "lead" }
+```
+
+```json
+{ "action": "decideApproval", "approvalId": "approval-1", "outcome": "allowed-once" }
+```
+
+Approval requests are created and listed at `/collab/v1/rooms/:roomId/approvals`.
+All actions are authorized from the room token principal; body-level actor
+fields are ignored because they are not part of the contract.
 
 ## HTTP responses
 

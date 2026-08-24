@@ -92,6 +92,13 @@ describe("local end-to-end collaboration", () => {
       const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", principal: "person-2", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two" } });
       expect(joined1.status).toBe(201);
       expect(joined2.status).toBe(201);
+      const forbiddenAction = await jsonRequest(base, {
+        method: "POST",
+        path: "/v1/rooms/room-1/actions",
+        token: joined1.data.roomToken,
+        body: { action: "setMemberStatus", memberId: "member-2", status: "suspended" },
+      });
+      expect(forbiddenAction.status).toBe(403);
       const one = connect(base, "room-1", joined1.data.roomToken, "connection-1");
       const two = connect(base, "room-1", joined2.data.roomToken, "connection-2");
       sockets.push(one, two);

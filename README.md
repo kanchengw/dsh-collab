@@ -9,6 +9,15 @@
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The adapter uses the public WebServer `register`/`registerUpgrade` boundary and a structural DSH session service; it does not import DSH private dispatcher code.
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
 - Namespaced settings UI (`src/settings.ts`) separating Host gateway exposure from Participant connection preferences, with loopback defaults and network-exposure warning.
+- Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
+
+## Gateway and reverse proxy boundary
+
+The in-process Collab Gateway is the application service owned by this package. It authenticates room tokens, enforces room permissions, manages invites and approvals, appends the event ledger, queues the one Host Agent and serves the HTTP/WebSocket wire contract.
+
+A reverse proxy is a separate deployment component in front of that Gateway. It terminates TLS, authenticates the participant with the deployment's SSO or private-network policy, forwards HTTP and WebSocket upgrades, injects trusted identity headers and keeps the DSH listener on loopback. It is not a replacement for the Collab Gateway, and the package does not implement a general-purpose reverse proxy.
+
+For a single-machine or private-network deployment, nginx, Caddy or an equivalent existing proxy can provide this edge layer. The package remains responsible for room-level authorization even when the proxy supplies the authenticated principal.
 
 ## Commands
 
