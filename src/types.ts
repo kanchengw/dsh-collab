@@ -51,6 +51,41 @@ export interface AuthorizationOptions {
   allowLeadControl?: boolean;
 }
 
+export type MessageTarget = "room" | "dsh" | "dsh-steer";
+
+export interface MessageInput {
+  messageId: string;
+  roomId: string;
+  authorMemberId: string;
+  text: string;
+  target?: MessageTarget;
+  sourceMessageId?: string;
+  contextRefs?: string[];
+}
+
+export interface HumanMessage {
+  kind: "human";
+  messageId: string;
+  roomId: string;
+  authorMemberId: string;
+  text: string;
+  visibility: "room";
+}
+
+export interface AgentRequest {
+  kind: "agent-request";
+  messageId: string;
+  roomId: string;
+  authorMemberId: string;
+  text: string;
+  target: "dsh";
+  deliveryMode: "followup" | "steer";
+  sourceMessageId?: string;
+  contextRefs?: string[];
+}
+
+export type ClassifiedMessage = HumanMessage | AgentRequest;
+
 export type RoomEventType =
   | "room.created"
   | "member.joined"
