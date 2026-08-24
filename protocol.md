@@ -81,10 +81,13 @@ stable status mapping is:
 
 ## Stream frames
 
-The stream is opened at:
+The stream is opened at the fixed exact pathname below. `roomId` is a query
+parameter because the DSH WebServer upgrade registry intentionally accepts
+exact paths only; registering one dynamic route per room would leak room
+lifecycle into the global route table.
 
 ```text
-GET /collab/v1/rooms/:roomId/stream?after=<exclusive-event-seq>
+GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>
 Authorization: Bearer <room-token>
 ```
 
