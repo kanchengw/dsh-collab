@@ -8,5 +8,6 @@ export * from "./manifest.js";
 export * from "./participant.js";
 export * from "./role.js";
 export * from "./runtime.js";
+export * from "./settings.js";
 export * from "./ui.js";
 export * from "./webserver.js";
