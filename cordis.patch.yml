@@ -7,5 +7,3 @@
       config:
         enabled: true
         path: /collab
-    - id: collab-client
-      name: dsh-collab/client

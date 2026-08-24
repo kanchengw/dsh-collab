@@ -1,0 +1,7 @@
+lib/src/
+lib/tests/
+lib/vitest.config.*
+tests/
+vitest.config.ts
+tsconfig*.json
+pnpm-lock.yaml
