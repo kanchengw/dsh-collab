@@ -12,6 +12,8 @@ describe("local two-DSH nginx boundary", () => {
     expect(config).toContain("server 127.0.0.1:3083;");
     expect(config).toContain("listen 3182;");
     expect(config).toContain("listen 3183;");
+    expect(config).toContain("client_body_temp_path temp/client_body;");
+    expect(config).toContain("proxy_temp_path temp/proxy;");
     expect(config).not.toMatch(/\b3080\b|\b3081\b/);
   });
 

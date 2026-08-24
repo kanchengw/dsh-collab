@@ -11,6 +11,19 @@
 - Namespaced settings UI (`src/settings.ts`) separating Host gateway exposure from Participant connection preferences, with loopback defaults and network-exposure warning.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
 
+## Important deployment decision
+
+The plugin does **not** download, install, or start nginx. The plugin owns the
+Collab Gateway, room authorization, HTTP/WebSocket routes, and DSH UI. nginx
+is a separate edge process that an operator must install and run when the
+Gateway needs a trusted proxy boundary, TLS, or external authentication.
+
+The checked-in nginx files under `e2e/nginx` are for local two-DSH development
+and acceptance only. They do not describe a one-click end-user installation.
+An optional managed local proxy would be a separate future feature and must
+include signed binaries, upgrades, lifecycle handling, and an explicit
+security consent flow.
+
 ## Gateway and reverse proxy boundary
 
 The in-process Collab Gateway is the application service owned by this package. It authenticates room tokens, enforces room permissions, manages invites and approvals, appends the event ledger, queues the one Host Agent and serves the HTTP/WebSocket wire contract.
