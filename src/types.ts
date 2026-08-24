@@ -167,6 +167,7 @@ export interface HumanMessage {
 export interface AgentRequest {
   kind: "agent-request";
   messageId: string;
+  requestId?: string;
   roomId: string;
   authorMemberId: string;
   text: string;

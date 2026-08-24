@@ -45,7 +45,7 @@ export class AgentDispatcher {
       });
     }
 
-    const requestId = message.messageId;
+    const requestId = message.requestId ?? message.messageId;
     const fingerprint = JSON.stringify(message);
     const existing = this.records.get(requestId);
     if (existing) {

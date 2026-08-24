@@ -17,6 +17,11 @@ interface ErrorBody {
   error: { code: string; message: string; details?: Record<string, unknown> };
 }
 
+interface SubmissionRecord {
+  fingerprint: string;
+  response: GatewayResponse;
+}
+
 interface GatewayOptions {
   rooms: RoomStore;
   ledger: EventLedger;
@@ -80,10 +85,15 @@ function errorResponse(error: unknown): GatewayResponse {
   return { status: 500, body: { error: { code: "INTERNAL_ERROR", message: "internal error" } } satisfies ErrorBody };
 }
 
+function copy<T>(value: T): T {
+  return structuredClone(value);
+}
+
 export class CollabGateway {
   readonly dispatcher: AgentDispatcher;
   readonly tokens: RoomTokenStore;
   private readonly now: () => number;
+  private readonly submissions = new Map<string, SubmissionRecord>();
 
   constructor(private readonly options: GatewayOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -107,7 +117,7 @@ export class CollabGateway {
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
-      if (request.method === "POST" && resource === "messages") return this.message(roomId, request);
+      if (request.method === "POST" && resource === "messages") return await this.message(roomId, request);
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
     } catch (error) {
       return errorResponse(error);
@@ -173,8 +183,16 @@ export class CollabGateway {
   private async message(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const claims = this.claims(roomId, request);
     const body = objectBody(request.body);
+    const hasClientMessageId = body.clientMessageId !== undefined;
+    const clientMessageId = requiredText(body.clientMessageId ?? body.messageId, "clientMessageId");
+    const messageId = hasClientMessageId
+      ? "message:" + roomId + ":" + clientMessageId
+      : requiredText(body.messageId, "messageId");
+    const requestId = hasClientMessageId
+      ? "request:" + roomId + ":" + clientMessageId
+      : messageId;
     const message = classifyMessage({
-      messageId: requiredText(body.messageId, "messageId"),
+      messageId,
       roomId,
       authorMemberId: claims.memberId,
       text: requiredText(body.text, "text"),
@@ -182,6 +200,15 @@ export class CollabGateway {
       sourceMessageId: body.sourceMessageId as string | undefined,
       contextRefs: body.contextRefs as string[] | undefined,
     });
+    const key = roomId + ":" + clientMessageId;
+    const fingerprint = JSON.stringify(message);
+    const existing = this.submissions.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new CollabError("REQUEST_CONFLICT", "clientMessageId was already used for different data", { clientMessageId });
+      }
+      return copy(existing.response);
+    }
     if (message.kind === "human") {
       this.options.rooms.authorize(roomId, claims.principalId, "humanMessage");
       const event = this.options.ledger.append({
@@ -192,10 +219,15 @@ export class CollabGateway {
         createdAt: this.now(),
         payload: message,
       });
-      return { status: 201, body: { message, event } };
+      const response = { status: 201, body: { message, event } };
+      this.submissions.set(key, { fingerprint, response });
+      return copy(response);
     }
+    message.requestId = requestId;
     const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
-    return { status: 202, body: { request: record } };
+    const response = { status: 202, body: { request: record } };
+    this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });
+    return copy(response);
   }
 
   private claims(roomId: string, request: GatewayRequest): RoomTokenClaims {
