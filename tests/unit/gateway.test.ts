@@ -133,6 +133,17 @@ describe("CollabGateway route contract", () => {
     expect(response.body).toMatchObject({ member: { memberId: "member-host", role: "host" }, roomToken: expect.any(String) });
   });
 
+  it("preserves a Participant role when an authenticated member bootstraps", async () => {
+    const { gateway } = setup();
+    const response = await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "alice" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ member: { memberId: "member-alice", role: "participant" } });
+  });
+
   it("routes an explicit DSH request through the one Host dispatcher", async () => {
     const { gateway, calls } = setup();
     const created = await request(gateway, {

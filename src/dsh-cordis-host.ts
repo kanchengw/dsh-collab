@@ -1,6 +1,7 @@
 import { createDshCordisSessionService, type DshCordisAgentRegistry } from "./dsh-cordis-agent.js";
 import { registerDshCollabHost, type DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
+import { authenticateCollabRequest } from "./http.js";
 import type { CollabWebServer } from "./webserver.js";
 
 export interface DshCordisHostContext {
@@ -12,9 +13,6 @@ export interface DshCordisHostContext {
 export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId"> & {
   enabled?: boolean;
   hostSessionId?: string;
-  /** Explicit opt-in for the local Web UI's trusted loopback identity. */
-  allowLoopbackPrincipal?: boolean;
-  principalFromHeaders?: (headers: Record<string, string | undefined>) => string | undefined;
 };
 
 export interface MountedDshCollabHost {
@@ -33,7 +31,14 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
     webServer: context.webServer,
     http: {
       gateway: runtime.gateway,
-      authenticate: ({ headers }) => ({ principalId: config.principalFromHeaders?.(headers) ?? headers["x-dsh-principal-id"] ?? (config.allowLoopbackPrincipal === true ? config.hostId : undefined) }),
+      authenticate: (input) => authenticateCollabRequest(input, {
+        hostPrincipalId: config.hostId,
+        allowLoopbackPrincipal: config.allowLoopbackPrincipal,
+        trustedProxyAddresses: config.trustedProxyAddresses,
+        trustedPrincipalHeader: config.trustedPrincipalHeader,
+        trustedProxyMarkerHeader: config.trustedProxyMarkerHeader,
+        principalFromHeaders: config.principalFromHeaders,
+      }),
     },
     upgrade: runtime.upgrade,
   });

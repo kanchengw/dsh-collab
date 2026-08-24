@@ -41,6 +41,7 @@ export function registerDshCollabSettings(context: DshCollabCordisContext, confi
           gatewayPort: config.port ?? 0,
           exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
         },
+        participantGatewayUrl: "",
       },
       applies: "restart",
       validate: validateDshCollabPersistedSettings,

@@ -14,6 +14,49 @@ export interface CollabAuthInput {
   method: string;
   path: string;
   headers: HttpHeaders;
+  remoteAddress?: string;
+}
+
+export interface CollabIdentityOptions {
+  hostPrincipalId: string;
+  allowLoopbackPrincipal?: boolean;
+  trustedProxyAddresses?: readonly string[];
+  trustedPrincipalHeader?: string;
+  trustedProxyMarkerHeader?: string;
+  principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
+}
+
+function normalizeAddress(address: string | undefined): string | undefined {
+  if (!address) return undefined;
+  const value = address.trim().toLowerCase();
+  if (value.startsWith("::ffff:")) return value.slice("::ffff:".length);
+  return value;
+}
+
+export function isLoopbackAddress(address: string | undefined): boolean {
+  const normalized = normalizeAddress(address);
+  return normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function headerName(value: string | undefined, fallback: string): string {
+  const name = (value ?? fallback).trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(name)) throw invalidInput("trusted proxy header name is invalid");
+  return name;
+}
+
+export function authenticateCollabRequest(input: CollabAuthInput, options: CollabIdentityOptions): { principalId?: string } {
+  const remoteAddress = normalizeAddress(input.remoteAddress);
+  const trustedProxy = options.trustedProxyAddresses?.some((address) => normalizeAddress(address) === remoteAddress) === true;
+  const markerHeader = headerName(options.trustedProxyMarkerHeader, "forwarded");
+  if (trustedProxy && input.headers[markerHeader]?.trim()) {
+    const principalHeader = headerName(options.trustedPrincipalHeader, "x-authenticated-user");
+    const principal = options.principalFromHeaders?.(input.headers) ?? input.headers[principalHeader];
+    return principal?.trim() ? { principalId: principal.trim() } : {};
+  }
+  if (options.allowLoopbackPrincipal === true && isLoopbackAddress(remoteAddress)) {
+    return { principalId: options.hostPrincipalId };
+  }
+  return {};
 }
 
 export type CollabAuthenticator =
@@ -117,7 +160,7 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
         writeResponse(response, id, notFound());
         return;
       }
-      const auth = await options.authenticate?.({ method: request.method, path, headers });
+      const auth = await options.authenticate?.({ method: request.method, path, headers, remoteAddress: request.socket.remoteAddress });
       const body = request.method === "POST" ? await readJsonBody(request, maxBodyBytes) : undefined;
       const result = await options.gateway.handle({
         method: request.method,

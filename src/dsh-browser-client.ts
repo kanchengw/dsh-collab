@@ -41,7 +41,9 @@ export interface DshBrowserJoinInput {
   inviteToken: string;
   memberId: string;
   displayName: string;
-  principalId: string;
+  /** @deprecated Identity is asserted by the trusted Gateway proxy. */
+  principalId?: string;
+  gatewayUrl?: string;
 }
 
 export interface DshBrowserInviteInput {
@@ -109,7 +111,8 @@ function roomData(value: unknown): RoomData {
 }
 
 export class DshBrowserCollabClient implements DshCollabClientPort {
-  private readonly base: string;
+  private readonly hostBase: string;
+  private base: string;
   private readonly fetcher: BrowserFetch;
   private readonly socketFactory: new (url: string) => BrowserSocket;
   private readonly connectionIdFactory: () => string;
@@ -117,18 +120,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private readonly listeners = new Set<() => void>();
   private socket: BrowserSocket | undefined;
   private token: string | undefined;
-  private principalId: string | undefined;
   private lastEventSeq = 0;
   private snapshot: DshCollabClientSnapshot;
 
   constructor(private readonly options: DshBrowserCollabOptions) {
-    this.base = normalizeBase(options.gatewayUrl);
+    this.hostBase = normalizeBase(options.gatewayUrl);
+    this.base = this.hostBase;
     this.roomId = options.roomId;
     this.fetcher = options.fetch ?? defaultFetch();
     this.socketFactory = options.WebSocket ?? defaultWebSocket();
     this.connectionIdFactory = options.connectionIdFactory ?? (() => randomId("conn"));
     this.token = options.token;
-    this.principalId = options.principalId;
     this.snapshot = {
       roomId: options.roomId,
       roomTitle: "Collaboration room",
@@ -147,15 +149,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return () => { this.listeners.delete(listener); };
   }
 
-  getSettingsSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" } {
-    const url = new URL(this.base);
+  getSettingsSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl: string } {
+    const url = new URL(this.hostBase);
     const port = url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port);
-    return { gatewayHost: url.hostname, gatewayPort: port, exposeMode: url.hostname === "127.0.0.1" ? "loopback" : "network" };
+    return { gatewayHost: url.hostname, gatewayPort: port, exposeMode: url.hostname === "127.0.0.1" ? "loopback" : "network", participantGatewayUrl: this.base };
   }
 
   settingsPort(): DshBrowserSettingsPort { return new DshBrowserCollabSettings(this); }
 
   async bootstrap(roomId?: string): Promise<void> {
+    this.base = this.hostBase;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
     this.applyRoom(data);
@@ -163,8 +166,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
+    if (input.gatewayUrl?.trim()) this.base = normalizeBase(input.gatewayUrl);
     if (roomId?.trim()) this.roomId = roomId.trim();
-    this.principalId = input.principalId;
     const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/join`, {
       inviteId: input.inviteId,
       token: input.inviteToken,
@@ -176,6 +179,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ token: string }> {
+    this.base = this.hostBase;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/invites`, input, false));
     if (!data || typeof data !== "object" || typeof (data as { token?: unknown }).token !== "string") throw new Error("Gateway invite response is invalid");
@@ -232,7 +236,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const headers: Record<string, string> = { accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
-    if (this.principalId) headers["x-dsh-principal-id"] = this.principalId;
     const response = await this.fetcher(this.base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const envelope = await response.json();
     if (!response.ok) throw new Error(`Gateway request failed (${String(response.status)})`);
@@ -275,18 +278,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
 class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   constructor(private readonly client: DshBrowserCollabClient) {}
-  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" } {
+  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl: string } {
     return this.client.getSettingsSnapshot();
   }
-  async save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" }): Promise<void> {
-    const protocol = this.client.getSettingsSnapshot().exposeMode === "network" ? "http" : "http";
-    const port = input.gatewayPort > 0 ? `:${String(input.gatewayPort)}` : "";
-    const next = `${protocol}://${input.gatewayHost}${port}/collab`;
-    try {
-      const storage = (globalThis as unknown as { localStorage?: { setItem(key: string, value: string): void } }).localStorage;
-      storage?.setItem("dsh-collab.gateway", next);
-    } catch { /* localStorage may be unavailable in private/browser test contexts */ }
-  }
+  async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ token: string }> { return this.client.createInvite(input, roomId); }

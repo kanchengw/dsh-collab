@@ -50,8 +50,8 @@ describe("real DSH client slot adapter", () => {
   });
 
   it("reads and atomically persists gateway settings through the DSH settings scope", async () => {
-    let value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" as const } };
-    const set = vi.fn(async (_field: string, next: typeof value.gateway) => { value = { gateway: next }; });
+    let value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" as const }, participantGatewayUrl: "https://host.example/collab" };
+    const set = vi.fn(async (field: string, next: unknown) => { value = { ...value, [field]: next }; });
     const scope = {
       getSnapshot: () => ({ status: "ready" as const, value, writable: true }),
       subscribe: () => () => {}, set, unset: vi.fn(),
@@ -59,11 +59,23 @@ describe("real DSH client slot adapter", () => {
     const actions = { getSnapshot: () => value.gateway, save: vi.fn() };
     const port = createDshSettingsPort(scope, actions);
 
-    expect(port.getSnapshot()).toEqual(value.gateway);
-    await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network" });
+    expect(port.getSnapshot()).toEqual({ ...value.gateway, participantGatewayUrl: "https://host.example/collab" });
+    await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", participantGatewayUrl: "https://new.example/collab" });
     expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network" });
-    expect(createDshSettingsPort(scope, actions).getSnapshot()).toEqual(value.gateway);
-    await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "loopback" })).rejects.toThrow("loopback");
-    expect(set).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith("participantGatewayUrl", "https://new.example/collab");
+    expect(createDshSettingsPort(scope, actions).getSnapshot()).toEqual({ ...value.gateway, participantGatewayUrl: "https://new.example/collab" });
+    await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "loopback", participantGatewayUrl: "https://new.example/collab" })).rejects.toThrow("loopback");
+    expect(set).toHaveBeenCalledTimes(2);
+
+    for (const participantGatewayUrl of [
+      "not a URL",
+      "https://user:pass@new.example/collab",
+      "https://new.example/collab?room=one",
+      "https://new.example/collab#invite",
+      "https://new.example/not-collab",
+    ]) {
+      await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", participantGatewayUrl })).rejects.toThrow("participantGatewayUrl");
+    }
+    expect(set).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,8 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
+import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_SETTINGS_NAMESPACE } from "../../src/index.js";
 
 describe("Cordis Host mount", () => {
+  it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
+    const options = {
+      hostPrincipalId: "host",
+      allowLoopbackPrincipal: true,
+      trustedProxyAddresses: ["10.0.0.5"],
+      trustedPrincipalHeader: "x-authenticated-user",
+      trustedProxyMarkerHeader: "x-forwarded-for",
+    };
+    expect(isLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-dsh-principal-id": "host" }, remoteAddress: "203.0.113.4" }, options)).toEqual({});
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: {}, remoteAddress: "::1" }, options)).toEqual({ principalId: "host" });
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9" }, remoteAddress: "10.0.0.5" }, options)).toEqual({});
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9", "x-authenticated-user": "alice" }, remoteAddress: "10.0.0.5" }, options)).toEqual({ principalId: "alice" });
+  });
+
   it("registers the formal dsh-collab settings namespace with safe composition defaults", () => {
     const register = vi.fn();
     const context = {
@@ -20,7 +37,7 @@ describe("Cordis Host mount", () => {
       DSH_COLLAB_SETTINGS_NAMESPACE,
       expect.objectContaining({ toJSON: expect.any(Function) }),
       expect.objectContaining({
-        base: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" } },
+        base: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" }, participantGatewayUrl: "" },
         validate: expect.any(Function),
       }),
     );

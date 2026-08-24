@@ -6,7 +6,7 @@ import { createDshHostAgentPort, type DshSessionService } from "./dsh-host.js";
 import { RoomStore } from "./room.js";
 import { RoomStreamHub } from "./stream.js";
 import { CollabStreamUpgrade } from "./upgrade.js";
-import { createCollabHttpServer, type CollabHttpServer } from "./http.js";
+import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServer, type HttpHeaders } from "./http.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId: string;
@@ -19,6 +19,11 @@ export interface DshCollabHostRuntimeOptions {
   tokenFactory?: () => string;
   port?: number;
   host?: "127.0.0.1" | "0.0.0.0";
+  allowLoopbackPrincipal?: boolean;
+  trustedProxyAddresses?: readonly string[];
+  trustedPrincipalHeader?: string;
+  trustedProxyMarkerHeader?: string;
+  principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
 }
 
 export interface DshCollabHostRuntime {
@@ -45,10 +50,13 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     gateway,
     host: options.host,
     port: options.port,
-    authenticate: ({ headers }) => ({
-      // A loopback-only DSH Web UI has no external identity header. Network
-      // exposure still requires the embedding host to provide one.
-      principalId: headers["x-dsh-principal-id"] ?? ((options.host ?? "127.0.0.1") === "127.0.0.1" ? options.hostId : undefined),
+    authenticate: (input) => authenticateCollabRequest(input, {
+      hostPrincipalId: options.hostId,
+      allowLoopbackPrincipal: options.allowLoopbackPrincipal ?? (options.host ?? "127.0.0.1") === "127.0.0.1",
+      trustedProxyAddresses: options.trustedProxyAddresses,
+      trustedPrincipalHeader: options.trustedPrincipalHeader,
+      trustedProxyMarkerHeader: options.trustedProxyMarkerHeader,
+      principalFromHeaders: options.principalFromHeaders,
     }),
   });
   return {

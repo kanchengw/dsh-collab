@@ -19,9 +19,9 @@ export interface DshCollabClientPort {
 }
 
 export interface DshCollabSettingsPort {
-  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
+  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string };
   subscribe?(listener: () => void): () => void;
-  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" }): Promise<void>;
+  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string }): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId: string; expiresAt: number }, roomId?: string): Promise<{ token: string }>;
@@ -54,6 +54,7 @@ interface DshSettingsScopeBinder {
 
 interface PersistedCollabSettings {
   gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
+  participantGatewayUrl: string;
 }
 
 function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
@@ -64,18 +65,35 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
   if ((candidate.gatewayHost !== "127.0.0.1" && candidate.gatewayHost !== "0.0.0.0")
     || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 0 || (candidate.gatewayPort as number) > 65535
     || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
-  return { gateway: candidate as PersistedCollabSettings["gateway"] };
+  const participantGatewayUrl = (value as { participantGatewayUrl?: unknown }).participantGatewayUrl;
+  if (typeof participantGatewayUrl !== "string") return undefined;
+  return { gateway: candidate as PersistedCollabSettings["gateway"], participantGatewayUrl };
+}
+
+function validateParticipantGatewayUrl(value: string): void {
+  if (value === "") return;
+  try {
+    const url = new URL(value);
+    if ((url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash && url.pathname.replace(/\/$/, "") === "/collab") return;
+  } catch { /* handled by the common validation error below */ }
+  throw new Error("participantGatewayUrl must be an http(s) /collab URL without credentials, query, or fragment");
 }
 
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
   return {
-    getSnapshot: () => scope.getSnapshot().value?.gateway ?? actions.getSnapshot(),
+    getSnapshot: () => {
+      const persisted = scope.getSnapshot().value;
+      return persisted ? { ...persisted.gateway, participantGatewayUrl: persisted.participantGatewayUrl } : actions.getSnapshot();
+    },
     subscribe: (listener) => scope.subscribe(listener),
     async save(input) {
       if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 0 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 0 and 65535");
       if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
-      await scope.set("gateway", input);
+      const participantGatewayUrl = input.participantGatewayUrl ?? "";
+      validateParticipantGatewayUrl(participantGatewayUrl);
+      await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode });
+      await scope.set("participantGatewayUrl", participantGatewayUrl);
     },
     bootstrap: actions.bootstrap?.bind(actions),
     join: actions.join?.bind(actions),
@@ -155,12 +173,12 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
   const [host, setHost] = useState(initial.gatewayHost);
   const [port, setPort] = useState(String(initial.gatewayPort));
   const [exposeMode, setExposeMode] = useState(initial.exposeMode);
+  const [participantGatewayUrl, setParticipantGatewayUrl] = useState(initial.participantGatewayUrl ?? "");
   const [roomId, setRoomId] = useState("");
   const [inviteId, setInviteId] = useState("");
   const [inviteToken, setInviteToken] = useState("");
   const [memberId, setMemberId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [principalId, setPrincipalId] = useState("");
   const [status, setStatus] = useState<string>();
   useEffect(() => props.port?.subscribe?.(() => {
     const snapshot = props.port?.getSnapshot();
@@ -168,12 +186,13 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     setHost(snapshot.gatewayHost);
     setPort(String(snapshot.gatewayPort));
     setExposeMode(snapshot.exposeMode);
+    setParticipantGatewayUrl(snapshot.participantGatewayUrl ?? "");
   }), [props.port]);
   const warning = exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     try {
-      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode });
+      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode, participantGatewayUrl });
       setStatus("Gateway settings saved");
     } catch (cause) {
       setStatus(cause instanceof Error ? cause.message : "Unable to save Gateway settings");
@@ -186,7 +205,7 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
   const join = async (): Promise<void> => {
     if (!props.port?.join) return;
     try {
-      await props.port.join({ inviteId, inviteToken, memberId, displayName, principalId }, roomId.trim() || undefined);
+      await props.port.join({ inviteId, inviteToken, memberId, displayName, gatewayUrl: participantGatewayUrl.trim() || undefined }, roomId.trim() || undefined);
       setStatus(`Joined room ${roomId || "configured room"} as Participant`);
     } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to join room"); }
   };
@@ -204,6 +223,7 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     createElement("label", null, "Bind host ", createElement("select", { value: host, onChange: (event: ChangeEvent<HTMLSelectElement>) => setHost(event.target.value), name: "gatewayHost" }, createElement("option", { value: "127.0.0.1" }, "127.0.0.1 (loopback)"), createElement("option", { value: "0.0.0.0" }, "0.0.0.0 (network)"))),
     createElement("label", null, "Port ", createElement("input", { type: "number", min: 0, max: 65535, value: port, onChange: (event: ChangeEvent<HTMLInputElement>) => setPort(event.target.value), name: "gatewayPort" })),
     createElement("label", null, "Exposure ", createElement("select", { value: exposeMode, onChange: (event: ChangeEvent<HTMLSelectElement>) => setExposeMode(event.target.value as "loopback" | "network"), name: "exposeMode" }, createElement("option", { value: "loopback" }, "Loopback"), createElement("option", { value: "network" }, "Explicit network"))),
+    createElement("label", null, "Participant Gateway URL ", createElement("input", { type: "url", value: participantGatewayUrl, onChange: (event: ChangeEvent<HTMLInputElement>) => setParticipantGatewayUrl(event.target.value), name: "participantGatewayUrl", placeholder: "https://host.example/collab" })),
     warning,
     createElement("button", { type: "submit" }, "Save"),
     createElement("fieldset", null,
@@ -214,7 +234,6 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
       createElement("label", null, "Invite token ", createElement("input", { value: inviteToken, onChange: (event: ChangeEvent<HTMLInputElement>) => setInviteToken(event.target.value), name: "inviteToken" })),
       createElement("label", null, "Member ID ", createElement("input", { value: memberId, onChange: (event: ChangeEvent<HTMLInputElement>) => setMemberId(event.target.value), name: "memberId" })),
       createElement("label", null, "Display name ", createElement("input", { value: displayName, onChange: (event: ChangeEvent<HTMLInputElement>) => setDisplayName(event.target.value), name: "displayName" })),
-      createElement("label", null, "Principal ID ", createElement("input", { value: principalId, onChange: (event: ChangeEvent<HTMLInputElement>) => setPrincipalId(event.target.value), name: "principalId" })),
       createElement("button", { type: "button", onClick: () => { void createInvite(); }, disabled: !props.port?.createInvite || inviteId.trim() === "" }, "Create invite"),
       createElement("button", { type: "button", onClick: () => { void join(); }, disabled: !props.port?.join || inviteId.trim() === "" || inviteToken.trim() === "" }, "Join as Participant"),
     ),

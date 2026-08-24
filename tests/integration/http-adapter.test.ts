@@ -36,11 +36,15 @@ async function json(response: Response): Promise<Record<string, any>> {
 
 describe("localhost HTTP adapter", () => {
   it("mounts the public route, preserves request ids, and forwards gateway responses", async () => {
+    let remoteAddress: string | undefined;
     server = createCollabHttpServer({
       gateway: setup(),
       port: 0,
       requestIdFactory: () => "req-generated",
-      authenticate: ({ headers }) => ({ principalId: headers["x-principal-id"] }),
+      authenticate: ({ headers, remoteAddress: address }) => {
+        remoteAddress = address;
+        return { principalId: headers["x-principal-id"] };
+      },
     });
     const port = await server.listen();
     const base = `http://127.0.0.1:${String(port)}`;
@@ -56,6 +60,7 @@ describe("localhost HTTP adapter", () => {
     });
     const invite = await json(inviteResponse);
     expect(inviteResponse.status).toBe(201);
+    expect(remoteAddress).toMatch(/127\.0\.0\.1|::1/);
     expect(invite).toMatchObject({ protocol: "dsh-collab.v1", requestId: "req-invite", ok: true });
 
     const joinResponse = await fetch(`${base}/collab/v1/rooms/room-1/join`, {

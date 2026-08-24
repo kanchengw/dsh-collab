@@ -1,21 +1,33 @@
 import { describe, expect, it } from "vitest";
+import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime } from "../../src/host-runtime.js";
 import { decodeServerStreamFrame } from "../../src/protocol.js";
 import type { RoomEvent, StreamFrame } from "../../src/types.js";
 
 async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; principal?: string; token?: string; body?: unknown }): Promise<{ status: number; data: any }> {
-  const response = await fetch(base + "/collab" + input.path, {
-    method: input.method,
-    headers: {
+  const body = input.body === undefined ? undefined : JSON.stringify(input.body);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(base + "/collab" + input.path, {
+      method: input.method,
+      localAddress: "127.0.0.2",
+      headers: {
       "content-type": "application/json",
-      ...(input.principal ? { "x-dsh-principal-id": input.principal } : {}),
+      ...(input.principal ? { "x-forwarded-for": "198.51.100.20", "x-authenticated-user": input.principal } : {}),
       ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
-    },
-    ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+      ...(body === undefined ? {} : { "content-length": Buffer.byteLength(body) }),
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { data?: unknown };
+        resolve({ status: response.statusCode ?? 0, data: payload.data });
+      });
+    });
+    request.on("error", reject);
+    request.end(body);
   });
-  const payload = await response.json() as { data?: unknown };
-  return { status: response.status, data: payload.data };
 }
 
 function connect(base: string, roomId: string, token: string, connectionId: string): { socket: WebSocket; frames: StreamFrame[]; connected: Promise<void>; close: () => void } {
@@ -46,6 +58,10 @@ describe("local end-to-end collaboration", () => {
     const followups: string[] = [];
     runtime = createDshCollabHostRuntime({
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Release", hostDisplayName: "Host",
+      allowLoopbackPrincipal: false,
+      trustedProxyAddresses: ["127.0.0.2"],
+      trustedPrincipalHeader: "x-authenticated-user",
+      trustedProxyMarkerHeader: "x-forwarded-for",
       tokenFactory: () => issued.shift()!,
       sessions: {
         owns: (sessionId) => sessionId === "session-1",
@@ -62,6 +78,12 @@ describe("local end-to-end collaboration", () => {
     const base = `http://127.0.0.1:${String(port)}`;
     const sockets: Array<{ close: () => void }> = [];
     try {
+      const spoofed = await fetch(base + "/collab/v1/rooms/room-1/invites", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.20", "x-authenticated-user": "host" },
+        body: JSON.stringify({ inviteId: "spoofed", expiresAt: Date.now() + 60_000 }),
+      });
+      expect(spoofed.status).toBe(401);
       const invite1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-a", expiresAt: Date.now() + 60_000 } });
       const invite2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-b", expiresAt: Date.now() + 60_000 } });
       expect(invite1.status).toBe(201);

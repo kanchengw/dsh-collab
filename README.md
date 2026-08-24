@@ -52,6 +52,50 @@ The package's `dsh.client` declaration supplies the browser face. A DSH profile 
 
 The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port and exposure mode are stored as one atomic object through DSH `ctx.settings`; invite tokens and room/member join fields remain ephemeral UI state and are never persisted as plugin configuration. These Gateway settings apply after a DSH restart.
 
+## Remote Participant deployment
+
+Do not expose the DSH listener directly. The collab route is registered on DSH's existing `webServer`, so the DSH CLI/profile owns the actual listen host, TLS and port. Keep DSH on loopback and publish only `/collab` through an authenticated reverse proxy or equivalent private-network gateway.
+
+Use a dedicated backend source address or socket for the proxy. The Gateway trusts the TCP peer address, not `X-Forwarded-For`, and must be able to distinguish the proxy from a local browser or process. For example, configure the Host row as follows when the proxy binds its upstream connection to `127.0.0.2`:
+
+```yaml
+- insert:
+    - id: collab-host
+      name: dsh-collab
+      inject: [webServer, agents, settings]
+      config:
+        enabled: true
+        roomId: dsh-room
+        hostId: local-host
+        allowLoopbackPrincipal: false
+        trustedProxyAddresses: [127.0.0.2]
+        trustedProxyMarkerHeader: x-dsh-proxy
+        trustedPrincipalHeader: x-authenticated-user
+        title: DSH Collaboration
+        hostDisplayName: Local Host
+```
+
+The reverse proxy must authenticate the participant before forwarding, strip participant-supplied identity headers, set both configured headers itself, restrict browser origins, proxy WebSocket upgrades, and avoid logging the WebSocket token query. This nginx fragment shows the required boundary; `$authenticated_user` is a placeholder produced by the deployment's authentication module, not a client header:
+
+```nginx
+location /collab/ {
+    # Authenticate here and reject the request unless this variable is set.
+    proxy_bind 127.0.0.2;
+    proxy_pass http://127.0.0.1:3080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    proxy_set_header X-DSH-Principal-Id "";
+    proxy_set_header X-Authenticated-User $authenticated_user;
+    proxy_set_header X-DSH-Proxy "1";
+}
+```
+
+The Participant installs the same complete `dsh-collab` package in their DSH, opens its official plugin settings card, and saves the public URL including `/collab`, such as `https://collab.example/collab`. Joining a valid invite automatically selects Participant mode and all room/Agent traffic uses that Host URL; the Participant's local DSH Agent is never called. The URL field rejects credentials, query strings, fragments and paths other than `/collab`.
+
+For one-machine UI testing, run two DSH Web profiles on different ports and put the same authenticated proxy boundary in front of the Host profile. A browser tab must not be treated as the proxy merely because both are on loopback. `tests/integration/e2e-local.test.ts` uses `127.0.0.2` as the simulated trusted proxy source and verifies that a direct `127.0.0.1` request with forged marker and identity headers is rejected. A physical second-machine run is still a release acceptance check; it is not required for the automated regression suite.
+
 ## Design and development log
 
 - Architecture, slot/service/patch boundaries, role model, UI states and phased plan: [design.md](./design.md)
