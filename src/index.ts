@@ -3,6 +3,8 @@ export * from "./audit.js";
 export * from "./client.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
+export * from "./dsh-cordis-agent.js";
+export * from "./dsh-cordis-host.js";
 export * from "./host-runtime.js";
 export * from "./http.js";
 export * from "./manifest.js";
