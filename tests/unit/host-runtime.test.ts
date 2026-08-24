@@ -42,4 +42,38 @@ describe("host runtime factory", () => {
 
     await runtime.dispose();
   });
+
+  it("snapshots and restores room state, ledger events and queued requests", async () => {
+    const options = {
+      roomId: "room-1",
+      hostId: "host",
+      hostSessionId: "session-1",
+      title: "Room",
+      hostDisplayName: "Host",
+      sessions: { owns: () => true, followup: () => {}, steer: () => {}, cancel: () => {} },
+      now: () => 10,
+    };
+    const runtime = createDshCollabHostRuntime(options);
+    runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 11 });
+    runtime.ledger.append({
+      eventId: "event-1",
+      roomId: "room-1",
+      type: "human.message",
+      actor: { memberId: "member-bob", principalId: "bob" },
+      createdAt: 12,
+      payload: { text: "hello" },
+    });
+    await runtime.gateway.dispatcher.submit({
+      principalId: "bob",
+      message: { kind: "agent-request", messageId: "message-1", requestId: "request-1", roomId: "room-1", authorMemberId: "member-bob", text: "run tests", target: "dsh", deliveryMode: "followup" },
+    });
+    const snapshot = runtime.snapshot();
+    await runtime.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    expect(restored.rooms.listMembers("room-1")).toHaveLength(2);
+    expect(restored.ledger.readAfter("room-1", 0, 10)).toEqual(expect.arrayContaining([expect.objectContaining({ eventId: "event-1", seq: 1 })]));
+    expect(restored.gateway.dispatcher.get("request-1")).toMatchObject({ status: "queued", roomId: "room-1" });
+    await restored.dispose();
+  });
 });
