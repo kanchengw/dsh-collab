@@ -1,0 +1,11 @@
+# dsh-collab is one installable bundle. Its host row owns the gateway and its
+# browser row owns the participant/host room surface; the room role is resolved
+# from trusted session/token evidence at runtime.
+- insert:
+    - id: collab-host
+      name: dsh-collab
+      config:
+        enabled: true
+        path: /collab
+    - id: collab-client
+      name: dsh-collab/client

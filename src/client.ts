@@ -4,27 +4,19 @@ import type { RoomEvent, StreamFrame } from "./types.js";
 
 export type CursorApplyResult = "applied" | "duplicate" | "gap";
 
-function copy<T>(value: T): T {
-  return structuredClone(value);
-}
+function copy<T>(value: T): T { return structuredClone(value); }
 
 export class EventCursor {
   private readonly pending = new Map<number, RoomEvent>();
   private readonly seen = new Set<string>();
   private readonly received: RoomEvent[] = [];
   lastEventSeq = 0;
-
-  get events(): RoomEvent[] {
-    return this.received.map(copy);
-  }
-
+  get events(): RoomEvent[] { return this.received.map(copy); }
   apply(event: RoomEvent): CursorApplyResult {
     if (this.seen.has(event.eventId) || event.seq <= this.lastEventSeq) return "duplicate";
     const existing = this.pending.get(event.seq);
     if (existing) {
-      if (existing.eventId !== event.eventId) {
-        throw new CollabError("EVENT_CONFLICT", "two events use the same sequence", { seq: event.seq });
-      }
+      if (existing.eventId !== event.eventId) throw new CollabError("EVENT_CONFLICT", "two events use the same sequence", { seq: event.seq });
       return "duplicate";
     }
     this.seen.add(event.eventId);
@@ -39,51 +31,31 @@ export class EventCursor {
     }
     return hadGap && this.lastEventSeq < event.seq ? "gap" : "applied";
   }
-
-  applyFrame(frame: StreamFrame): CursorApplyResult | undefined {
-    if (frame.kind === "event") return this.apply(frame.event);
-    return undefined;
-  }
+  applyFrame(frame: StreamFrame): CursorApplyResult | undefined { return frame.kind === "event" ? this.apply(frame.event) : undefined; }
 }
 
 export class RoomClient {
   private connection: StreamConnection | undefined;
   readonly cursor = new EventCursor();
-
-  constructor(private readonly options: {
-    connectionId: string;
-    roomId: string;
-    token: string;
-    hub: RoomStreamHub;
-  }) {}
-
-  get lastEventSeq(): number {
-    return this.cursor.lastEventSeq;
-  }
-
-  get events(): RoomEvent[] {
-    return this.cursor.events;
-  }
-
+  constructor(private readonly options: { connectionId: string; roomId: string; token: string; hub: RoomStreamHub }) {}
+  get lastEventSeq(): number { return this.cursor.lastEventSeq; }
+  get events(): RoomEvent[] { return this.cursor.events; }
   connect(): void {
     if (this.connection) this.close();
-    this.connection = this.options.hub.connect({
-      connectionId: this.options.connectionId,
-      roomId: this.options.roomId,
-      token: this.options.token,
-      afterSeq: this.cursor.lastEventSeq,
-      onFrame: (frame) => this.cursor.applyFrame(frame),
-    });
+    this.connection = this.options.hub.connect({ connectionId: this.options.connectionId, roomId: this.options.roomId, token: this.options.token, afterSeq: this.cursor.lastEventSeq, onFrame: (frame) => this.cursor.applyFrame(frame) });
   }
-
   heartbeat(): { connectionId: string; serverTime: number } {
     if (!this.connection) throw new CollabError("CONNECTION_NOT_FOUND", "client is not connected");
     return this.connection.heartbeat();
   }
-
   close(): void {
     if (!this.connection) return;
     this.connection.close("client_closed");
     this.connection = undefined;
   }
 }
+
+export { renderCollabSession, type CollabSessionViewState } from "./session-ui.js";
+
+/** DSH browser entry discovered through the package `dsh.client` manifest. */
+export function apply(): void {}
