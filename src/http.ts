@@ -103,41 +103,42 @@ function writeResponse(response: ServerResponse, id: string, gatewayResponse: Ga
   response.end(body);
 }
 
+export function createCollabHttpHandler(options: CollabHttpOptions): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1) throw invalidInput("maxBodyBytes must be positive", { maxBodyBytes });
+  const makeRequestId = options.requestIdFactory ?? (() => "req_" + randomUUID());
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const headers = normalizeHeaders(request.headers);
+    const id = requestId(headers, makeRequestId);
+    try {
+      const path = gatewayPath(request.url);
+      if (path === undefined || (request.method !== "GET" && request.method !== "POST")) {
+        writeResponse(response, id, notFound());
+        return;
+      }
+      const auth = await options.authenticate?.({ method: request.method, path, headers });
+      const body = request.method === "POST" ? await readJsonBody(request, maxBodyBytes) : undefined;
+      const result = await options.gateway.handle({
+        method: request.method,
+        path,
+        headers,
+        auth,
+        body,
+      });
+      writeResponse(response, id, result);
+    } catch (error) {
+      writeResponse(response, id, errorResponse(error));
+    }
+  };
+}
+
 export function createCollabHttpServer(options: CollabHttpOptions): CollabHttpServer {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
-  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw invalidInput("port must be between 0 and 65535", { port });
-  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1) throw invalidInput("maxBodyBytes must be positive", { maxBodyBytes });
-  const makeRequestId = options.requestIdFactory ?? (() => "req_" + randomUUID());
   let listeningPort = 0;
-
-  const server = createServer((request, response) => {
-    void handleRequest(request, response).catch((error: unknown) => {
-      const headers = normalizeHeaders(request.headers);
-      writeResponse(response, requestId(headers, makeRequestId), errorResponse(error));
-    });
-  });
-
-  async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const headers = normalizeHeaders(request.headers);
-    const id = requestId(headers, makeRequestId);
-    const path = gatewayPath(request.url);
-    if (path === undefined || (request.method !== "GET" && request.method !== "POST")) {
-      writeResponse(response, id, notFound());
-      return;
-    }
-    const auth = await options.authenticate?.({ method: request.method, path, headers });
-    const body = request.method === "POST" ? await readJsonBody(request, maxBodyBytes) : undefined;
-    const result = await options.gateway.handle({
-      method: request.method,
-      path,
-      headers,
-      auth,
-      body,
-    });
-    writeResponse(response, id, result);
-  }
+  const handler = createCollabHttpHandler(options);
+  const server = createServer((request, response) => { void handler(request, response); });
 
   return {
     server,
