@@ -6,6 +6,9 @@ export type CollabErrorCode =
   | "MEMBER_NOT_FOUND"
   | "MEMBER_INACTIVE"
   | "EVENT_CONFLICT"
+  | "REQUEST_CONFLICT"
+  | "REQUEST_NOT_FOUND"
+  | "REQUEST_STATE"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {

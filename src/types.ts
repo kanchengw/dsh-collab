@@ -86,6 +86,35 @@ export interface AgentRequest {
 
 export type ClassifiedMessage = HumanMessage | AgentRequest;
 
+export interface AgentDelivery {
+  requestId: string;
+  roomId: string;
+  hostSessionId: string;
+  authorMemberId: string;
+  text: string;
+  contextRefs?: string[];
+}
+
+export interface HostAgentPort {
+  followup(input: AgentDelivery): Promise<void> | void;
+  steer(input: AgentDelivery): Promise<void> | void;
+  cancel(input: { requestId: string; roomId: string; hostSessionId: string; keepInbox: boolean }): Promise<void> | void;
+}
+
+export type QueueStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface QueueRecord {
+  requestId: string;
+  roomId: string;
+  hostSessionId: string;
+  authorMemberId: string;
+  deliveryMode: "followup" | "steer";
+  status: QueueStatus;
+  queueSeq: number;
+  message: AgentRequest;
+  error?: string;
+}
+
 export type RoomEventType =
   | "room.created"
   | "member.joined"
@@ -96,6 +125,7 @@ export type RoomEventType =
   | "agent.request.queued"
   | "agent.request.claimed"
   | "agent.request.rejected"
+  | "agent.request.failed"
   | "agent.request.cancelled"
   | "agent.request.completed"
   | "agent.state.changed";
