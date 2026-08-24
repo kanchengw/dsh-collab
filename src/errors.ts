@@ -5,6 +5,7 @@ export type CollabErrorCode =
   | "MEMBER_EXISTS"
   | "MEMBER_NOT_FOUND"
   | "MEMBER_INACTIVE"
+  | "EVENT_CONFLICT"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {

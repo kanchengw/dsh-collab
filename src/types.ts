@@ -46,3 +46,46 @@ export interface AddMemberInput {
   displayName: string;
   now?: number;
 }
+
+export type RoomEventType =
+  | "room.created"
+  | "member.joined"
+  | "member.suspended"
+  | "member.removed"
+  | "human.message"
+  | "agent.request.created"
+  | "agent.request.queued"
+  | "agent.request.claimed"
+  | "agent.request.rejected"
+  | "agent.request.cancelled"
+  | "agent.request.completed"
+  | "agent.state.changed";
+
+export interface RoomActor {
+  memberId: string;
+  principalId: string;
+}
+
+export interface RoomEvent {
+  eventId: string;
+  roomId: string;
+  seq: number;
+  type: RoomEventType;
+  actor: RoomActor;
+  createdAt: number;
+  payload: unknown;
+}
+
+export interface AppendEventInput {
+  eventId: string;
+  roomId: string;
+  type: RoomEventType;
+  actor: RoomActor;
+  createdAt?: number;
+  payload: unknown;
+}
+
+export interface LedgerSnapshot {
+  version: 1;
+  rooms: Array<{ roomId: string; events: RoomEvent[] }>;
+}
