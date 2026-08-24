@@ -175,7 +175,7 @@ export class CollabGateway {
       createdAt: this.now(),
       payload: { memberId: member.memberId, principalId: member.principalId, role: member.role },
     });
-    return { status: 201, body: { member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, event } };
+    return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, event } };
   }
 
   private snapshot(roomId: string, request: GatewayRequest): GatewayResponse {

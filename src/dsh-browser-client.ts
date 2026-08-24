@@ -50,9 +50,9 @@ export interface DshBrowserInviteInput {
 }
 
 export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
-  bootstrap(): Promise<void>;
-  join(input: DshBrowserJoinInput): Promise<void>;
-  createInvite(input: DshBrowserInviteInput): Promise<{ token: string }>;
+  bootstrap(roomId?: string): Promise<void>;
+  join(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
+  createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ token: string }>;
 }
 
 type RoomData = {
@@ -79,7 +79,7 @@ function randomId(prefix: string): string {
 function defaultFetch(): BrowserFetch {
   const fetch = (globalThis as unknown as { fetch?: BrowserFetch }).fetch;
   if (!fetch) throw new Error("browser fetch is unavailable");
-  return fetch;
+  return fetch.bind(globalThis);
 }
 
 function defaultWebSocket(): new (url: string) => BrowserSocket {
@@ -113,6 +113,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private readonly fetcher: BrowserFetch;
   private readonly socketFactory: new (url: string) => BrowserSocket;
   private readonly connectionIdFactory: () => string;
+  private roomId: string;
   private readonly listeners = new Set<() => void>();
   private socket: BrowserSocket | undefined;
   private token: string | undefined;
@@ -122,6 +123,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.base = normalizeBase(options.gatewayUrl);
+    this.roomId = options.roomId;
     this.fetcher = options.fetch ?? defaultFetch();
     this.socketFactory = options.WebSocket ?? defaultWebSocket();
     this.connectionIdFactory = options.connectionIdFactory ?? (() => randomId("conn"));
@@ -153,15 +155,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   settingsPort(): DshBrowserSettingsPort { return new DshBrowserCollabSettings(this); }
 
-  async bootstrap(): Promise<void> {
-    const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.options.roomId)}/bootstrap`, undefined, false)));
+  async bootstrap(roomId?: string): Promise<void> {
+    if (roomId?.trim()) this.roomId = roomId.trim();
+    const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
     this.applyRoom(data);
     await this.connect();
   }
 
-  async join(input: DshBrowserJoinInput): Promise<void> {
+  async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
+    if (roomId?.trim()) this.roomId = roomId.trim();
     this.principalId = input.principalId;
-    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.options.roomId)}/join`, {
+    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/join`, {
       inviteId: input.inviteId,
       token: input.inviteToken,
       memberId: input.memberId,
@@ -171,15 +175,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     await this.connect();
   }
 
-  async createInvite(input: DshBrowserInviteInput): Promise<{ token: string }> {
-    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.options.roomId)}/invites`, input, false));
+  async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ token: string }> {
+    if (roomId?.trim()) this.roomId = roomId.trim();
+    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/invites`, input, false));
     if (!data || typeof data !== "object" || typeof (data as { token?: unknown }).token !== "string") throw new Error("Gateway invite response is invalid");
     return { token: (data as { token: string }).token };
   }
 
   async send(input: { text: string; target: ComposerTarget }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
-    await this.request("POST", `/v1/rooms/${encodeURIComponent(this.options.roomId)}/messages`, {
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/messages`, {
       clientMessageId: randomId("message"),
       text: input.text,
       target: input.target,
@@ -195,7 +200,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   private async connect(): Promise<void> {
     if (!this.token) throw new Error("room token is missing");
-    const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.options.roomId)}/snapshot`, undefined, true)) as SnapshotData;
+    const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/snapshot`, undefined, true)) as SnapshotData;
     this.lastEventSeq = snapshot.lastEventSeq;
     this.snapshot = {
       ...this.snapshot,
@@ -208,7 +213,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.socket?.close(1000, "reconnect");
     this.setConnection("connecting");
     const url = new URL(this.base.replace(/^http/, "ws") + "/v1/stream");
-    url.searchParams.set("roomId", this.options.roomId);
+    url.searchParams.set("roomId", this.roomId);
     url.searchParams.set("after", String(this.lastEventSeq));
     url.searchParams.set("connectionId", this.connectionIdFactory());
     url.searchParams.set("token", this.token);
@@ -282,9 +287,9 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
       storage?.setItem("dsh-collab.gateway", next);
     } catch { /* localStorage may be unavailable in private/browser test contexts */ }
   }
-  bootstrap(): Promise<void> { return this.client.bootstrap(); }
-  join(input: DshBrowserJoinInput): Promise<void> { return this.client.join(input); }
-  createInvite(input: DshBrowserInviteInput): Promise<{ token: string }> { return this.client.createInvite(input); }
+  bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
+  join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
+  createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ token: string }> { return this.client.createInvite(input, roomId); }
 }
 
 export function createDshBrowserCollabClient(options: DshBrowserCollabOptions): DshBrowserCollabClient {

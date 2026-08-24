@@ -65,8 +65,9 @@ describe("browser Gateway client", () => {
       close(): void { this.readyState = 3; this.onclose?.(); }
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", role: "participant", fetch, WebSocket });
-    await client.join({ inviteId: "invite-1", inviteToken: "invite-token", memberId: "member-bob", displayName: "Bob", principalId: "bob" });
+    await client.join({ inviteId: "invite-1", inviteToken: "invite-token", memberId: "member-bob", displayName: "Bob", principalId: "bob" }, "room-2");
     expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online" });
     expect(requests[0]?.init?.headers).toMatchObject({ "x-dsh-principal-id": "bob" });
+    expect(requests[0]?.url).toContain("/rooms/room-2/join");
   });
 });

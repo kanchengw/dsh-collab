@@ -9,5 +9,6 @@
         enabled: true
         roomId: dsh-room
         hostId: local-host
+        allowLoopbackPrincipal: true
         title: DSH Collaboration
         hostDisplayName: Local Host
