@@ -10,6 +10,13 @@ export type CollabErrorCode =
   | "REQUEST_NOT_FOUND"
   | "REQUEST_STATE"
   | "SNAPSHOT_INVALID"
+  | "INVITE_EXISTS"
+  | "INVITE_NOT_FOUND"
+  | "INVITE_INVALID"
+  | "INVITE_EXPIRED"
+  | "INVITE_REVOKED"
+  | "INVITE_USED"
+  | "INVITE_STATE"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {

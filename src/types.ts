@@ -36,6 +36,55 @@ export interface RoomStoreSnapshot {
   rooms: Array<{ room: Room; members: RoomMember[] }>;
 }
 
+export type InviteState = "active" | "accepted" | "revoked" | "expired";
+
+export interface InviteView {
+  inviteId: string;
+  roomId: string;
+  hostId: string;
+  state: InviteState;
+  createdAt: number;
+  expiresAt: number;
+  acceptedAt?: number;
+  acceptedPrincipalId?: string;
+  acceptedMemberId?: string;
+  revokedAt?: number;
+}
+
+export interface CreatedInvite {
+  invite: InviteView;
+  token: string;
+}
+
+export interface CreateInviteInput {
+  roomId: string;
+  principalId: string;
+  inviteId: string;
+  expiresAt: number;
+  now?: number;
+}
+
+export interface AcceptInviteInput {
+  roomId: string;
+  inviteId: string;
+  token: string;
+  principalId: string;
+  memberId: string;
+  displayName: string;
+  now?: number;
+}
+
+export interface RevokeInviteInput {
+  roomId: string;
+  principalId: string;
+  inviteId: string;
+  now?: number;
+}
+
+export interface InviteStoreOptions {
+  tokenFactory?: () => string;
+}
+
 export interface CreateRoomInput {
   roomId: string;
   hostId: string;
