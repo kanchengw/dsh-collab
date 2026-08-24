@@ -92,6 +92,10 @@ export class AgentDispatcher {
       .map(copy);
   }
 
+  get(requestId: string): QueueRecord | undefined {
+    return this.records.get(requestId)?.record && copy(this.records.get(requestId)!.record);
+  }
+
   async drainOne(): Promise<QueueRecord | undefined> {
     if (this.activeRequestId !== undefined) return undefined;
     const requestId = this.queue.shift();
@@ -170,5 +174,61 @@ export class AgentDispatcher {
       payload: { requestId },
     });
     return copy(entry.record);
+  }
+
+  async cancel(input: { principalId: string; requestId: string; keepInbox: boolean }): Promise<QueueRecord> {
+    const entry = this.records.get(input.requestId);
+    if (!entry) {
+      throw new CollabError("REQUEST_NOT_FOUND", "request does not exist", { requestId: input.requestId });
+    }
+    const member = this.options.rooms.authorize(entry.record.roomId, input.principalId, "cancel");
+    if (entry.record.status === "completed" || entry.record.status === "failed" || entry.record.status === "cancelled") {
+      return copy(entry.record);
+    }
+    if (entry.record.status === "queued") {
+      this.removeFromQueue(input.requestId);
+      entry.record.status = "cancelled";
+      this.appendCancelled(entry.record, member);
+      return copy(entry.record);
+    }
+    if (this.activeRequestId !== input.requestId || entry.record.status !== "running") {
+      throw new CollabError("REQUEST_STATE", "request is not cancellable", { requestId: input.requestId });
+    }
+
+    await this.options.agent.cancel({
+      requestId: input.requestId,
+      roomId: entry.record.roomId,
+      hostSessionId: entry.record.hostSessionId,
+      keepInbox: input.keepInbox,
+    });
+    entry.record.status = "cancelled";
+    this.activeRequestId = undefined;
+    this.appendCancelled(entry.record, member);
+
+    if (!input.keepInbox) {
+      for (const queuedRequestId of [...this.queue]) {
+        const queued = this.records.get(queuedRequestId);
+        if (!queued || queued.record.status !== "queued") continue;
+        queued.record.status = "cancelled";
+        this.appendCancelled(queued.record, member);
+      }
+      this.queue.length = 0;
+    }
+    return copy(entry.record);
+  }
+
+  private removeFromQueue(requestId: string): void {
+    const index = this.queue.indexOf(requestId);
+    if (index >= 0) this.queue.splice(index, 1);
+  }
+
+  private appendCancelled(record: QueueRecord, actor: { memberId: string; principalId: string }): void {
+    this.options.ledger.append({
+      eventId: record.requestId + ":cancelled",
+      roomId: record.roomId,
+      type: "agent.request.cancelled",
+      actor: { memberId: actor.memberId, principalId: actor.principalId },
+      payload: { requestId: record.requestId },
+    });
   }
 }
