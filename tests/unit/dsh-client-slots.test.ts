@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshSettingsPort, DshCollabDock, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", memberCount: 3, canSteer: true };
 
@@ -18,6 +18,24 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain("Hosted by Host");
     expect(html).toContain("Steer Agent");
     expect(html).toContain('name="collab-target"');
+  });
+
+  it("renders a root-scoped Participant room surface without a local DSH session", () => {
+    const participant: DshCollabClientSnapshot = {
+      ...snapshot,
+      role: "participant",
+      canSteer: false,
+      timeline: [
+        { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "hello" },
+        { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "done" },
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: participant }));
+    expect(html).toContain('data-collab-surface="participant-overlay"');
+    expect(html).toContain("hello");
+    expect(html).toContain("done");
+    expect(html).toContain('name="collab-text"');
+    expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 
   it("renders a collab settings card with network warning", () => {
@@ -42,9 +60,11 @@ describe("real DSH client slot adapter", () => {
     applyDshCollabClient(context as DshCollabClientContext);
     expect(registrations).toEqual([
       { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5 }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab", order: 10 }) },
       { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab" }) },
     ]);
     expect(context.slots.inject).toHaveBeenCalledWith("conversation.input.dock", expect.any(Function));
+    expect(context.slots.inject).toHaveBeenCalledWith("shell.overlay", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("settings.plugin.item", expect.any(Function));
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
