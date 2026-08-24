@@ -4,6 +4,7 @@
   "description": "Human collaboration rooms for one host-side DSH Agent session",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.19.0",
   "license": "MIT",
   "scripts": {
     "test": "vitest run",
