@@ -230,7 +230,9 @@ export type RoomEventType =
   | "agent.request.failed"
   | "agent.request.cancelled"
   | "agent.request.completed"
-  | "agent.state.changed";
+  | "agent.state.changed"
+  | "approval.requested"
+  | "approval.decided";
 
 export interface RoomActor {
   memberId: string;

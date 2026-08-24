@@ -147,5 +147,7 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "agent.request.failed"
     || value === "agent.request.cancelled"
     || value === "agent.request.completed"
-    || value === "agent.state.changed";
+    || value === "agent.state.changed"
+    || value === "approval.requested"
+    || value === "approval.decided";
 }
