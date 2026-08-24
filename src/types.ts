@@ -47,6 +47,10 @@ export interface AddMemberInput {
   now?: number;
 }
 
+export interface AuthorizationOptions {
+  allowLeadControl?: boolean;
+}
+
 export type RoomEventType =
   | "room.created"
   | "member.joined"
