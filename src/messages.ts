@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 10_000;
+const MAX_CONTEXT_REFS = 64;
 
 function requiredText(value: string, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -52,6 +53,7 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
   if (input.sourceMessageId !== undefined) message.sourceMessageId = requiredText(input.sourceMessageId, "sourceMessageId");
   if (input.contextRefs !== undefined) {
     if (!Array.isArray(input.contextRefs)) throw invalidInput("contextRefs must be an array", { field: "contextRefs" });
+    if (input.contextRefs.length > MAX_CONTEXT_REFS) throw invalidInput("too many context references", { field: "contextRefs", max: MAX_CONTEXT_REFS });
     message.contextRefs = input.contextRefs.map((ref) => requiredText(ref, "contextRef"));
   }
   return message;
