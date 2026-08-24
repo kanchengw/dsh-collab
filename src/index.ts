@@ -18,9 +18,34 @@ export * from "./ui.js";
 export * from "./webserver.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
+import { DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings } from "./settings.js";
+
+interface DshSettingsRegistrationContext {
+  settings: {
+    register(namespace: string, schema: unknown, options: Record<string, unknown>): unknown;
+  };
+}
 
 export interface DshCollabCordisContext extends DshCordisHostContext {
   effect?: (factory: () => (() => void) | void, name?: string) => () => void;
+  inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
+}
+
+export function registerDshCollabSettings(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>): void {
+  const gatewayHost = config.host ?? "127.0.0.1";
+  context.inject?.(["settings"], (settingsContext) => {
+    settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
+      base: {
+        gateway: {
+          gatewayHost,
+          gatewayPort: config.port ?? 0,
+          exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
+        },
+      },
+      applies: "restart",
+      validate: validateDshCollabPersistedSettings,
+    });
+  });
 }
 
 /**
@@ -29,7 +54,9 @@ export interface DshCollabCordisContext extends DshCordisHostContext {
  * create a room without a trusted local Agent session.
  */
 export function apply(context?: DshCollabCordisContext, config?: Partial<DshCordisHostConfig>): void {
-  if (!context || !config || config.enabled === false) return;
+  if (!context || !config) return;
+  registerDshCollabSettings(context, config);
+  if (config.enabled === false) return;
   if (typeof config.roomId !== "string" || typeof config.hostId !== "string" || typeof config.title !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
   let disposeCreated: (() => void) | undefined;

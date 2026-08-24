@@ -20,6 +20,7 @@ export interface DshCollabClientPort {
 
 export interface DshCollabSettingsPort {
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
+  subscribe?(listener: () => void): () => void;
   save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" }): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
@@ -38,7 +39,49 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots"];
+export const inject = ["slots", "settingsScope"];
+
+interface DshSettingsScope<T> {
+  getSnapshot(): { status: "loading" | "ready" | "unavailable"; value?: T; writable: boolean };
+  subscribe(listener: () => void): () => void;
+  set(field: string, value: unknown): Promise<void>;
+  unset(field: string): Promise<void>;
+}
+
+interface DshSettingsScopeBinder {
+  bind<T>(spec: { namespace: string; decode?: (value: unknown) => T | undefined }): DshSettingsScope<T>;
+}
+
+interface PersistedCollabSettings {
+  gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
+}
+
+function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const gateway = (value as { gateway?: unknown }).gateway;
+  if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) return undefined;
+  const candidate = gateway as Record<string, unknown>;
+  if ((candidate.gatewayHost !== "127.0.0.1" && candidate.gatewayHost !== "0.0.0.0")
+    || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 0 || (candidate.gatewayPort as number) > 65535
+    || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
+  return { gateway: candidate as PersistedCollabSettings["gateway"] };
+}
+
+export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
+  return {
+    getSnapshot: () => scope.getSnapshot().value?.gateway ?? actions.getSnapshot(),
+    subscribe: (listener) => scope.subscribe(listener),
+    async save(input) {
+      if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 0 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 0 and 65535");
+      if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
+      if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
+      await scope.set("gateway", input);
+    },
+    bootstrap: actions.bootstrap?.bind(actions),
+    join: actions.join?.bind(actions),
+    createInvite: actions.createInvite?.bind(actions),
+  };
+}
 
 function snapshotOf(port: DshCollabClientPort | undefined, fallback: DshCollabClientSnapshot): DshCollabClientSnapshot {
   return port?.getSnapshot() ?? fallback;
@@ -119,11 +162,22 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
   const [displayName, setDisplayName] = useState("");
   const [principalId, setPrincipalId] = useState("");
   const [status, setStatus] = useState<string>();
+  useEffect(() => props.port?.subscribe?.(() => {
+    const snapshot = props.port?.getSnapshot();
+    if (!snapshot) return;
+    setHost(snapshot.gatewayHost);
+    setPort(String(snapshot.gatewayPort));
+    setExposeMode(snapshot.exposeMode);
+  }), [props.port]);
   const warning = exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode });
-    setStatus("Gateway settings saved");
+    try {
+      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode });
+      setStatus("Gateway settings saved");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : "Unable to save Gateway settings");
+    }
   };
   const bootstrap = async (): Promise<void> => {
     if (!props.port?.bootstrap) return;
@@ -144,7 +198,7 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
       setStatus("Invite created; share the invite id and token");
     } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to create invite"); }
   };
-  return createElement("form", { className: "dsh-collab-settings-card", onSubmit: save, "data-settings-namespace": "collab" },
+  return createElement("form", { className: "dsh-collab-settings-card", onSubmit: save, "data-settings-namespace": "dsh-collab" },
     createElement("h3", null, "dsh-collab"),
     createElement("p", null, "Configure the Host gateway used by collaboration rooms."),
     createElement("label", null, "Bind host ", createElement("select", { value: host, onChange: (event: ChangeEvent<HTMLSelectElement>) => setHost(event.target.value), name: "gatewayHost" }, createElement("option", { value: "127.0.0.1" }, "127.0.0.1 (loopback)"), createElement("option", { value: "0.0.0.0" }, "0.0.0.0 (network)"))),
@@ -183,12 +237,13 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const existing = optionalService<DshCollabClientPort>(context, "collabClient");
   const browserClient = existing ? undefined : createDshBrowserCollabClient(browserConfig());
   const client = existing ?? browserClient;
-  const settings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
+  const browserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
+  const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
+  const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
   context.slots.inject("conversation.input.dock", () => context.slots.register({ name: "conversation.input.dock", id: "collab", order: 5 }, () => createElement(DshCollabDock, { port: client })));
-  context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "collab" }, () => createElement(DshCollabSettingsCard, { port: settings })));
-  context.slots.inject("settings.plugins.tab", () => context.slots.register({ name: "settings.plugins.tab", id: "collab", order: 5, label: "Collaboration" }, () => createElement(DshCollabSettingsCard, { port: settings })));
+  context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab" }, () => createElement(DshCollabSettingsCard, { port: settings })));
 }
 
 /** DSH client runner entry expected by every `dsh.client` bundle. */

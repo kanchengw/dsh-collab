@@ -1,8 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
-import { apply } from "../../src/index.js";
+import { apply, DSH_COLLAB_SETTINGS_NAMESPACE } from "../../src/index.js";
 
 describe("Cordis Host mount", () => {
+  it("registers the formal dsh-collab settings namespace with safe composition defaults", () => {
+    const register = vi.fn();
+    const context = {
+      webServer: { register: vi.fn(), registerUpgrade: vi.fn() },
+      agents: { get: () => undefined },
+      inject: vi.fn((_services: string[], callback: (ctx: { settings: { register: typeof register } }) => void) => callback({ settings: { register } })),
+    };
+    apply(context, {
+      roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host",
+      host: "127.0.0.1", port: 3080,
+    });
+
+    expect(context.inject).toHaveBeenCalledWith(["settings"], expect.any(Function));
+    expect(register).toHaveBeenCalledWith(
+      DSH_COLLAB_SETTINGS_NAMESPACE,
+      expect.objectContaining({ toJSON: expect.any(Function) }),
+      expect.objectContaining({
+        base: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" } },
+        validate: expect.any(Function),
+      }),
+    );
+    const options = register.mock.calls[0]?.[2] as { validate(value: unknown): void };
+    expect(() => options.validate({ gateway: { gatewayHost: "0.0.0.0", gatewayPort: 3080, exposeMode: "loopback" } })).toThrow("loopback");
+  });
+
   it("mounts the Gateway into the real WebServer route contract and unwinds it", async () => {
     const http: string[] = [];
     const upgrades: string[] = [];

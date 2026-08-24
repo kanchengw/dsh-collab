@@ -4,7 +4,7 @@
 - insert:
     - id: collab-host
       name: dsh-collab
-      inject: [webServer, agents]
+      inject: [webServer, agents, settings]
       config:
         enabled: true
         roomId: dsh-room

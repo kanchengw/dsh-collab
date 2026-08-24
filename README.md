@@ -50,6 +50,8 @@ The bundle patch contains one row:
 
 The package's `dsh.client` declaration supplies the browser face. A DSH profile can install the package with its normal plugin command after `pnpm build`; the Host runtime is created through the public adapter seam (`createDshCollabHostRuntime`) and can be mounted by a profile-specific Host integration that supplies the trusted session service and room/session facts. No separate participant-only package is used.
 
+The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port and exposure mode are stored as one atomic object through DSH `ctx.settings`; invite tokens and room/member join fields remain ephemeral UI state and are never persisted as plugin configuration. These Gateway settings apply after a DSH restart.
+
 ## Design and development log
 
 - Architecture, slot/service/patch boundaries, role model, UI states and phased plan: [design.md](./design.md)

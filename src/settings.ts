@@ -1,3 +1,5 @@
+import z from "@deepseek-ai/schemastery";
+
 export type CollabExposeMode = "loopback" | "network";
 export type CollabApprovalPolicy = "host-only" | "disabled";
 
@@ -26,6 +28,32 @@ export const defaultCollabSettings: CollabSettings = {
   maxMessageBytes: 64 * 1024,
   maxQueue: 32,
 };
+
+export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
+
+export interface DshCollabGatewaySettings {
+  gatewayHost: "127.0.0.1" | "0.0.0.0";
+  gatewayPort: number;
+  exposeMode: CollabExposeMode;
+}
+
+export interface DshCollabPersistedSettings {
+  gateway: DshCollabGatewaySettings;
+}
+
+export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
+  gateway: z.object({
+    gatewayHost: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]).required(),
+    gatewayPort: z.number().step(1).min(0).max(65535).required(),
+    exposeMode: z.union([z.const("loopback"), z.const("network")]).required(),
+  }).required(),
+});
+
+export function validateDshCollabPersistedSettings(settings: DshCollabPersistedSettings): void {
+  const gateway = settings.gateway;
+  if (gateway.exposeMode === "loopback" && gateway.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
+  if (gateway.exposeMode === "network" && gateway.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
+}
 
 export function validateCollabSettings(settings: CollabSettings): void {
   if (!Number.isSafeInteger(settings.gatewayPort) || settings.gatewayPort < 0 || settings.gatewayPort > 65535) throw new Error("gatewayPort must be between 0 and 65535");
