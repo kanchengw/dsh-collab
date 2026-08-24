@@ -1,4 +1,4 @@
-import type { MessageInput, MessageTarget, RoomEvent } from "./types.js";
+import type { MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
 
 export type ParticipantConnection = "connecting" | "online" | "offline";
 export type ComposerTarget = MessageTarget;
@@ -29,6 +29,22 @@ export interface TimelineItem {
   requestId?: string;
   status?: TimelineAgentStatus;
   state?: string;
+}
+
+export interface HostRoomMemberView {
+  memberId: string;
+  displayName: string;
+  role: MemberRole;
+  status: MemberStatus;
+}
+
+export interface HostRoomManagementState {
+  roomId: string;
+  roomTitle: string;
+  roomState: RoomState;
+  hostSessionId: string;
+  canManage: boolean;
+  members: HostRoomMemberView[];
 }
 
 function escapeHtml(value: string): string {
@@ -178,4 +194,15 @@ export function renderTimeline(items: TimelineItem[]): string {
     const text = item.text ? escapeHtml(item.text) : "";
     return `<article class="collab-timeline__item" data-kind="${item.kind}" data-seq="${String(item.seq)}"${status}${state}>${text}</article>`;
   }).join("")}</div>`;
+}
+
+export function renderHostRoomManagement(state: HostRoomManagementState): string {
+  const members = state.members.map((member) => {
+    const controls = state.canManage && member.role !== "host"
+      ? `<button data-action="suspend" data-member-id="${escapeHtml(member.memberId)}">Suspend</button><button data-action="remove" data-member-id="${escapeHtml(member.memberId)}">Remove</button>`
+      : "";
+    return `<li data-member-id="${escapeHtml(member.memberId)}" data-status="${member.status}"><span>${escapeHtml(member.displayName)}</span><small>${member.role} · ${member.status}</small>${controls}</li>`;
+  }).join("");
+  const invite = state.canManage ? `<button data-action="invite">Invite</button>` : "";
+  return `<section class="collab-host-management" data-room-id="${escapeHtml(state.roomId)}" data-room-state="${state.roomState}"><header><h2>${escapeHtml(state.roomTitle)}</h2><p>Host Agent session: <code>${escapeHtml(state.hostSessionId)}</code></p>${invite}</header><ul>${members}</ul></section>`;
 }
