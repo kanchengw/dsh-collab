@@ -1,0 +1,104 @@
+import { describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { createDshCollabHostRuntime, type DshCollabHostRuntime } from "../../src/host-runtime.js";
+import { decodeServerStreamFrame } from "../../src/protocol.js";
+import type { RoomEvent, StreamFrame } from "../../src/types.js";
+
+async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; principal?: string; token?: string; body?: unknown }): Promise<{ status: number; data: any }> {
+  const response = await fetch(base + "/collab" + input.path, {
+    method: input.method,
+    headers: {
+      "content-type": "application/json",
+      ...(input.principal ? { "x-dsh-principal-id": input.principal } : {}),
+      ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
+    },
+    ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+  });
+  const payload = await response.json() as { data?: unknown };
+  return { status: response.status, data: payload.data };
+}
+
+function connect(base: string, roomId: string, token: string, connectionId: string): { socket: WebSocket; frames: StreamFrame[]; connected: Promise<void>; close: () => void } {
+  const frames: StreamFrame[] = [];
+  let resolveConnected!: () => void;
+  const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const socket = new WebSocket(base.replace("http", "ws") + `/collab/v1/stream?roomId=${roomId}&connectionId=${connectionId}`, { headers: { authorization: `Bearer ${token}` } });
+  socket.on("message", (data) => {
+    const frame = decodeServerStreamFrame(JSON.parse(data.toString()) as unknown);
+    frames.push(frame);
+    if (frame.kind === "connected") resolveConnected();
+  });
+  return { socket, frames, connected, close: () => socket.close() };
+}
+
+async function waitForEvent(frames: StreamFrame[], predicate: (event: RoomEvent) => boolean): Promise<RoomEvent> {
+  for (;;) {
+    const event = frames.find((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event" && predicate(frame.event));
+    if (event) return event.event;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+describe("local end-to-end collaboration", () => {
+  it("runs one Host DSH session with two remote participants over HTTP and WebSocket", async () => {
+    const issued = ["invite-1", "invite-2", "room-token-1", "room-token-2"];
+    let runtime!: DshCollabHostRuntime;
+    const followups: string[] = [];
+    runtime = createDshCollabHostRuntime({
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Release", hostDisplayName: "Host",
+      tokenFactory: () => issued.shift()!,
+      sessions: {
+        owns: (sessionId) => sessionId === "session-1",
+        followup: ({ text }) => {
+          followups.push(text);
+          runtime.ledger.append({ eventId: "agent-output-1", roomId: "room-1", type: "agent.state.changed", actor: { memberId: "member-host", principalId: "host" }, payload: { state: "output", text: "Agent: " + text, requestId: "request:room-1:m-agent" } });
+        },
+        steer: () => {},
+        cancel: () => {},
+      },
+    });
+    runtime.http.server.on("upgrade", (request, socket, head) => runtime.upgrade.handleUpgrade(request, socket, head));
+    const port = await runtime.http.listen();
+    const base = `http://127.0.0.1:${String(port)}`;
+    const sockets: Array<{ close: () => void }> = [];
+    try {
+      const invite1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-a", expiresAt: Date.now() + 60_000 } });
+      const invite2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-b", expiresAt: Date.now() + 60_000 } });
+      expect(invite1.status).toBe(201);
+      expect(invite2.status).toBe(201);
+      const joined1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", principal: "person-1", body: { inviteId: "invite-a", token: "invite-1", memberId: "member-1", displayName: "One" } });
+      const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", principal: "person-2", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two" } });
+      expect(joined1.status).toBe(201);
+      expect(joined2.status).toBe(201);
+      const one = connect(base, "room-1", joined1.data.roomToken, "connection-1");
+      const two = connect(base, "room-1", joined2.data.roomToken, "connection-2");
+      sockets.push(one, two);
+      await Promise.all([one.connected, two.connected]);
+
+      const human = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-1", token: joined1.data.roomToken, body: { clientMessageId: "m-human", text: "Can someone review this?", target: "room" } });
+      expect(human.status).toBe(201);
+      await Promise.all([waitForEvent(one.frames, (event) => event.type === "human.message"), waitForEvent(two.frames, (event) => event.type === "human.message")]);
+
+      const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-2", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
+      expect(agent.status).toBe(202);
+      const requestId = agent.data.request.requestId as string;
+      await runtime.gateway.dispatcher.drainOne();
+      await runtime.gateway.dispatcher.complete(requestId);
+      expect(followups).toEqual(["Summarize the thread"]);
+      await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
+
+      const cursor = two.frames.filter((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;
+      two.close();
+      const twoReconnected = connect(base, "room-1", joined2.data.roomToken, "connection-2-reconnect");
+      sockets.push(twoReconnected);
+      await twoReconnected.connected;
+      const afterReconnect = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-1", token: joined1.data.roomToken, body: { clientMessageId: "m-reconnect", text: "Welcome back", target: "room" } });
+      expect(afterReconnect.status).toBe(201);
+      const recovered = await waitForEvent(twoReconnected.frames, (event) => event.type === "human.message" && event.payload !== undefined && event.payload !== null && typeof event.payload === "object" && (event.payload as { messageId?: string }).messageId === "message:room-1:m-reconnect");
+      expect(recovered.seq).toBeGreaterThan(cursor);
+    } finally {
+      for (const socket of sockets) socket.close();
+      await runtime.dispose();
+    }
+  }, 15_000);
+});
