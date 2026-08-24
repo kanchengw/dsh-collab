@@ -54,7 +54,11 @@ describe("browser Gateway client", () => {
         roomToken: "bob-room-token",
       }, 201);
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
-      return response({ room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" }, members: [], lastEventSeq: 0 });
+      return response({
+        room: { roomId: "room-1", title: "Release" },
+        members: [{ memberId: "member-host", role: "host", displayName: "Local Host" }],
+        lastEventSeq: 0,
+      });
     };
     const WebSocket = class implements BrowserSocket {
       readyState = 1;
@@ -68,7 +72,7 @@ describe("browser Gateway client", () => {
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", role: "participant", fetch, WebSocket });
     await client.join({ inviteId: "invite-1", inviteToken: "invite-token", memberId: "member-bob", displayName: "Bob", principalId: "bob", gatewayUrl: "https://collab.example/collab" }, "room-2");
-    expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online" });
+    expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online", hostDisplayName: "Local Host" });
     expect(requests[0]?.init?.headers).not.toHaveProperty("x-dsh-principal-id");
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");
   });

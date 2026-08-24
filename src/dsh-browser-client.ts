@@ -60,14 +60,14 @@ export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
 }
 
 type RoomData = {
-  room: { roomId: string; title: string; hostDisplayName: string };
+  room: { roomId: string; title: string; hostDisplayName?: string };
   member: { memberId: string; role: string };
   roomToken: string;
 };
 
 type SnapshotData = {
-  room: { roomId: string; title: string; hostDisplayName: string };
-  members: Array<{ memberId: string; role: string; status?: string }>;
+  room: { roomId: string; title: string; hostDisplayName?: string };
+  members: Array<{ memberId: string; role: string; displayName?: string; status?: string }>;
   lastEventSeq: number;
 };
 
@@ -217,7 +217,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       ...this.snapshot,
       roomId: snapshot.room.roomId,
       roomTitle: snapshot.room.title,
-      hostDisplayName: snapshot.room.hostDisplayName,
+      hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? this.snapshot.hostDisplayName,
       memberCount: snapshot.members.filter((member) => member.status !== "removed" && member.status !== "suspended").length,
       timeline: projectTimeline([...this.events.values()]),
     };
@@ -256,7 +256,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.snapshot = {
       roomId: data.room.roomId,
       roomTitle: data.room.title,
-      hostDisplayName: data.room.hostDisplayName,
+      hostDisplayName: data.room.hostDisplayName ?? this.snapshot.hostDisplayName,
       role: data.member.role === "host" ? "host" : "participant",
       connection: "connecting",
       memberCount: this.snapshot.memberCount,
