@@ -2,6 +2,7 @@ import { CollabGateway } from "./gateway.js";
 import { EventLedger } from "./events.js";
 import { InviteStore } from "./invites.js";
 import { ResourceLimiter } from "./limits.js";
+import { ApprovalStore } from "./approvals.js";
 import { createDshHostAgentPort, type DshSessionService } from "./dsh-host.js";
 import { RoomStore } from "./room.js";
 import { CollabRuntime, type CollabRuntimeSnapshot } from "./runtime.js";
@@ -30,15 +31,17 @@ export interface DshCollabHostRuntimeOptions {
   trustedPrincipalHeader?: string;
   trustedProxyMarkerHeader?: string;
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
+  approvalAnswerer?: object;
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
 
-export type DshCollabHostRuntimeSnapshot = Pick<CollabRuntimeSnapshot, "version" | "rooms" | "ledger" | "dispatcher">;
+export type DshCollabHostRuntimeSnapshot = CollabRuntimeSnapshot;
 
 export interface DshCollabHostRuntime {
   readonly rooms: RoomStore;
   readonly ledger: EventLedger;
   readonly gateway: CollabGateway;
+  readonly approvals: ApprovalStore;
   readonly hub: RoomStreamHub;
   readonly upgrade: CollabStreamUpgrade;
   readonly http: CollabHttpServer;
@@ -54,6 +57,9 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   }
   const ledger = options.snapshot ? EventLedger.fromSnapshot(options.snapshot.ledger) : new EventLedger();
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
+  const approvals = options.snapshot?.approvals
+    ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: options.snapshot.approvals })
+    : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
     maxQueuedRequestsPerRoom: options.maxQueue,
@@ -68,9 +74,11 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     tokenFactory: options.tokenFactory,
     tokenTtlMs: options.tokenTtlMs,
     maxMessageBytes: options.maxMessageBytes,
+    approvals,
+    approvalPolicy: options.approvalPolicy,
   });
   if (options.snapshot) gateway.dispatcher.restore(options.snapshot.dispatcher);
-  const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher });
+  const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits });
   const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });
   const http = createCollabHttpServer({
@@ -87,7 +95,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     }),
   });
   return {
-    rooms, ledger, gateway, hub, upgrade, http,
+    rooms, ledger, gateway, approvals, hub, upgrade, http,
     snapshot: () => collabRuntime.snapshot(),
     async dispose(): Promise<void> {
       await http.close();

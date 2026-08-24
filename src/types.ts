@@ -225,6 +225,7 @@ export interface DispatcherSnapshot {
 export type RoomEventType =
   | "room.created"
   | "member.joined"
+  | "member.roleChanged"
   | "member.suspended"
   | "member.removed"
   | "human.message"

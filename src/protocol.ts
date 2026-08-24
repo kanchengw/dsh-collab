@@ -26,6 +26,7 @@ export type ServerStreamFrame =
 const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "room.created",
   "member.joined",
+  "member.roleChanged",
   "member.suspended",
   "member.removed",
   "human.message",

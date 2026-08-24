@@ -137,6 +137,7 @@ export class EventLedger {
 export function isRoomEventType(value: string): value is RoomEventType {
   return value === "room.created"
     || value === "member.joined"
+    || value === "member.roleChanged"
     || value === "member.suspended"
     || value === "member.removed"
     || value === "human.message"

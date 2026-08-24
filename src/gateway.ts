@@ -1,4 +1,5 @@
 import { CollabError, invalidInput } from "./errors.js";
+import { ApprovalStore } from "./approvals.js";
 import { AgentDispatcher } from "./dispatcher.js";
 import { EventLedger } from "./events.js";
 import { InviteStore } from "./invites.js";
@@ -33,6 +34,8 @@ interface GatewayOptions {
   tokenFactory?: () => string;
   limits?: ResourceLimiter;
   maxMessageBytes?: number;
+  approvals?: ApprovalStore;
+  approvalPolicy?: "host-only" | "disabled";
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -98,6 +101,8 @@ export class CollabGateway {
   readonly tokens: RoomTokenStore;
   private readonly now: () => number;
   private readonly maxMessageBytes: number | undefined;
+  private readonly approvals: ApprovalStore | undefined;
+  private readonly approvalPolicy: "host-only" | "disabled";
   private readonly submissions = new Map<string, SubmissionRecord>();
 
   constructor(private readonly options: GatewayOptions) {
@@ -106,6 +111,8 @@ export class CollabGateway {
       throw invalidInput("maxMessageBytes must be positive", { maxMessageBytes: options.maxMessageBytes });
     }
     this.maxMessageBytes = options.maxMessageBytes;
+    this.approvals = options.approvals;
+    this.approvalPolicy = options.approvalPolicy ?? "host-only";
     this.tokens = new RoomTokenStore(options.rooms, {
       tokenFactory: options.tokenFactory,
       ttlMs: options.tokenTtlMs,
@@ -127,6 +134,9 @@ export class CollabGateway {
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
+      if (request.method === "GET" && resource === "approvals") return this.listApprovals(roomId, request);
+      if (request.method === "POST" && resource === "approvals") return this.createApproval(roomId, request);
+      if (request.method === "POST" && resource === "actions") return await this.action(roomId, request);
       if (request.method === "POST" && resource === "messages") return await this.message(roomId, request);
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
     } catch (error) {
@@ -259,6 +269,84 @@ export class CollabGateway {
     this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });
     void this.dispatcher.processQueue();
     return copy(response);
+  }
+
+  private listApprovals(roomId: string, request: GatewayRequest): GatewayResponse {
+    if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
+    const claims = this.claims(roomId, request);
+    this.options.rooms.authorize(roomId, claims.principalId, "approval");
+    return { status: 200, body: { approvals: this.approvals.list(roomId, this.now()) } };
+  }
+
+  private createApproval(roomId: string, request: GatewayRequest): GatewayResponse {
+    if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
+    const claims = this.claims(roomId, request);
+    const body = objectBody(request.body);
+    const approval = this.approvals.request({
+      approvalId: requiredText(body.approvalId, "approvalId"),
+      roomId,
+      requesterPrincipalId: claims.principalId,
+      toolName: requiredText(body.toolName, "toolName"),
+      reason: requiredText(body.reason, "reason"),
+      expiresAt: numberField(body, "expiresAt"),
+      now: this.now(),
+    });
+    return { status: 201, body: { approval } };
+  }
+
+  private async action(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
+    const claims = this.claims(roomId, request);
+    const body = objectBody(request.body);
+    const action = requiredText(body.action, "action");
+    if (action === "cancel") {
+      const record = await this.dispatcher.cancel({
+        principalId: claims.principalId,
+        requestId: requiredText(body.requestId, "requestId"),
+        keepInbox: body.keepInbox === true,
+      });
+      return { status: 200, body: { request: record } };
+    }
+    if (action === "setMemberStatus") {
+      const actor = this.options.rooms.authorize(roomId, claims.principalId, "manageMembers");
+      const memberId = requiredText(body.memberId, "memberId");
+      const status = requiredText(body.status, "status");
+      if (status !== "suspended" && status !== "removed") throw invalidInput("member status action must suspend or remove a member", { status });
+      const member = this.options.rooms.setMemberStatus(roomId, memberId, status, this.now());
+      this.tokens.revokeMember(roomId, member.memberId, this.now());
+      this.options.ledger.append({
+        eventId: roomId + ":member.status:" + member.memberId + ":" + status + ":" + String(this.now()),
+        roomId,
+        type: status === "suspended" ? "member.suspended" : "member.removed",
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        createdAt: this.now(),
+        payload: { memberId: member.memberId, status },
+      });
+      return { status: 200, body: { member } };
+    }
+    if (action === "setMemberRole") {
+      const actor = this.options.rooms.authorize(roomId, claims.principalId, "manageMembers");
+      const member = this.options.rooms.setMemberRole(roomId, requiredText(body.memberId, "memberId"), requiredText(body.role, "role") as "lead" | "participant" | "observer");
+      this.options.ledger.append({
+        eventId: roomId + ":member.role:" + member.memberId + ":" + member.role + ":" + String(this.now()),
+        roomId,
+        type: "member.roleChanged",
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        createdAt: this.now(),
+        payload: { memberId: member.memberId, role: member.role },
+      });
+      return { status: 200, body: { member } };
+    }
+    if (action === "decideApproval") {
+      if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
+      const approval = this.approvals.decide({
+        approvalId: requiredText(body.approvalId, "approvalId"),
+        principalId: claims.principalId,
+        outcome: requiredText(body.outcome, "outcome") as "allowed-once" | "allowed-always" | "rejected" | "cancelled" | "unavailable",
+        now: this.now(),
+      });
+      return { status: 200, body: { approval } };
+    }
+    throw invalidInput("action is not supported", { action });
   }
 
   private claims(roomId: string, request: GatewayRequest): RoomTokenClaims {

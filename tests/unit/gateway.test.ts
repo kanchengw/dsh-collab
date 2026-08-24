@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
+import { ApprovalStore } from "../../src/approvals.js";
 import { RoomStore } from "../../src/room.js";
 import type { GatewayRequest, HostAgentPort } from "../../src/types.js";
 
-function setup(agentOverride?: HostAgentPort) {
+function setup(agentOverride?: HostAgentPort, withApprovals = false) {
   const rooms = new RoomStore();
   rooms.createRoom({
     roomId: "room-1",
@@ -39,8 +40,9 @@ function setup(agentOverride?: HostAgentPort) {
     cancel() {},
   };
   const invites = new InviteStore(rooms, { tokenFactory: () => "invite-token" });
-  const gateway = new CollabGateway({ rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10 });
-  return { gateway, calls };
+  const approvals = withApprovals ? new ApprovalStore({ rooms, ledger, answerer: {} }) : undefined;
+  const gateway = new CollabGateway({ rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10, approvals });
+  return { gateway, calls, rooms, ledger };
 }
 
 async function request(gateway: CollabGateway, input: GatewayRequest) {
@@ -123,7 +125,7 @@ describe("CollabGateway route contract", () => {
   });
 
   it("bootstraps the authenticated Host into a room-scoped browser token", async () => {
-    const { gateway } = setup();
+    const { gateway } = setup(undefined, true);
     const response = await request(gateway, {
       method: "GET",
       path: "/v1/rooms/room-1/bootstrap",
@@ -255,5 +257,63 @@ describe("CollabGateway route contract", () => {
     });
     expect(crossRoom.status).toBe(403);
     expect(crossRoom.body).toMatchObject({ error: { code: "TOKEN_SCOPE" } });
+  });
+
+  it("exposes Host-only actions, member management and approval decisions", async () => {
+    const { gateway } = setup(undefined, true);
+    const bootstrapped = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const hostToken = (bootstrapped.body as { roomToken: string }).roomToken;
+    const participantBootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
+    const participantToken = (participantBootstrap.body as { roomToken: string }).roomToken;
+
+    const submitted = await gateway.dispatcher.submit({
+      principalId: "host",
+      message: { kind: "agent-request", messageId: "message-cancel", requestId: "request-cancel", roomId: "room-1", authorMemberId: "member-host", text: "cancel me", target: "dsh", deliveryMode: "followup" },
+    });
+    expect(submitted.status).toBe("queued");
+    const cancelled = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(hostToken),
+      body: { action: "cancel", requestId: "request-cancel", keepInbox: true },
+    });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({ request: { status: "cancelled" } });
+
+    const forbidden = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(participantToken),
+      body: { action: "setMemberStatus", memberId: "member-alice", status: "suspended" },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body).toMatchObject({ error: { code: "ACTION_FORBIDDEN" } });
+
+    const suspended = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(hostToken),
+      body: { action: "setMemberStatus", memberId: "member-alice", status: "suspended" },
+    });
+    expect(suspended.status).toBe(200);
+    expect(suspended.body).toMatchObject({ member: { memberId: "member-alice", status: "suspended" } });
+
+    const approval = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/approvals",
+      headers: bearer(hostToken),
+      body: { approvalId: "approval-1", toolName: "shell", reason: "run tests", expiresAt: 100 },
+    });
+    expect(approval.status).toBe(201);
+    expect(approval.body).toMatchObject({ approval: { approvalId: "approval-1", state: "pending" } });
+    const decided = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(hostToken),
+      body: { action: "decideApproval", approvalId: "approval-1", outcome: "allowed-once" },
+    });
+    expect(decided.status).toBe(200);
+    expect(decided.body).toMatchObject({ approval: { approvalId: "approval-1", state: "decided", outcome: "allowed-once" } });
+
   });
 });
