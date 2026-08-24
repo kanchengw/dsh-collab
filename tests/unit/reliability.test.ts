@@ -5,7 +5,7 @@ import { InviteStore } from "../../src/invites.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { RoomStreamHub } from "../../src/stream.js";
-import { EventCursor, RoomClient } from "../../src/client.js";
+import { EventCursor, RoomClient } from "../../src/room-client.js";
 import type { GatewayRequest, HostAgentPort, RoomEvent } from "../../src/types.js";
 
 function setupGateway() {

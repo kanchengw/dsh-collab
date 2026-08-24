@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
-import { RoomClient } from "../../src/client.js";
+import { RoomClient } from "../../src/room-client.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomStreamHub } from "../../src/stream.js";
 import type { GatewayResponse, HostAgentPort, RoomEvent } from "../../src/types.js";

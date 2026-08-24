@@ -13,7 +13,7 @@
     "test:regression": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json && tsdown"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -23,7 +23,7 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client.d.ts",
+      "types": "./lib/dsh-client.d.ts",
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
@@ -32,7 +32,13 @@
   "dsh": {
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-ui-slots"]
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -51,7 +57,12 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.7",
     "@types/ws": "8.18.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsdown": "0.22.2",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   },
