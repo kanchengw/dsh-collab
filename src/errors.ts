@@ -22,7 +22,8 @@ export type CollabErrorCode =
   | "TOKEN_SCOPE"
   | "CONNECTION_EXISTS"
   | "CONNECTION_NOT_FOUND"
-  | "ACTION_FORBIDDEN";
+  | "ACTION_FORBIDDEN"
+  | "RESOURCE_LIMIT";
 
 export class CollabError extends Error {
   readonly code: CollabErrorCode;

@@ -41,13 +41,14 @@ function statusFor(error: CollabError): number {
   if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
   if (error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND" || error.code === "ACTION_FORBIDDEN") return 403;
   if (error.code === "ROOM_NOT_FOUND") return 404;
+  if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
 }
 
 function reject(socket: Duplex, status: number, message: string): void {
   const body = message + "\n";
   socket.end([
-    `HTTP/1.1 ${String(status)} ${status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Unprocessable Entity"}`,
+    `HTTP/1.1 ${String(status)} ${status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : status === 429 ? "Too Many Requests" : "Unprocessable Entity"}`,
     "Connection: close",
     "Content-Type: text/plain; charset=utf-8",
     `Content-Length: ${String(Buffer.byteLength(body))}`,

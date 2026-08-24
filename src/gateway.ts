@@ -2,6 +2,7 @@ import { CollabError, invalidInput } from "./errors.js";
 import { AgentDispatcher } from "./dispatcher.js";
 import { EventLedger } from "./events.js";
 import { InviteStore } from "./invites.js";
+import { ResourceLimiter } from "./limits.js";
 import { classifyMessage } from "./messages.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
@@ -30,6 +31,7 @@ interface GatewayOptions {
   now?: () => number;
   tokenTtlMs?: number;
   tokenFactory?: () => string;
+  limits?: ResourceLimiter;
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -73,6 +75,7 @@ function statusFor(error: CollabError): number {
   if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
   if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND") return 404;
   if (error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED") return 409;
+  if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
 }
 
@@ -138,6 +141,7 @@ export class CollabGateway {
 
   private join(roomId: string, request: GatewayRequest): GatewayResponse {
     const body = objectBody(request.body);
+    this.options.limits?.checkMembers(roomId, this.options.rooms.listMembers(roomId).length + 1);
     const member = this.options.invites.acceptInvite({
       roomId,
       inviteId: requiredText(body.inviteId, "inviteId"),
@@ -209,6 +213,7 @@ export class CollabGateway {
       }
       return copy(existing.response);
     }
+    this.options.limits?.consumeMessage(roomId, claims.memberId, this.now());
     if (message.kind === "human") {
       this.options.rooms.authorize(roomId, claims.principalId, "humanMessage");
       const event = this.options.ledger.append({
@@ -224,6 +229,7 @@ export class CollabGateway {
       return copy(response);
     }
     message.requestId = requestId;
+    this.options.limits?.checkQueue(roomId, this.dispatcher.queued().length + 1);
     const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
     const response = { status: 202, body: { request: record } };
     this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });

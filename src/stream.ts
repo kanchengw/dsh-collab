@@ -1,5 +1,6 @@
 import { CollabError, invalidInput } from "./errors.js";
 import { EventLedger } from "./events.js";
+import { ResourceLimiter } from "./limits.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import type { RoomEvent, StreamFrame } from "./types.js";
@@ -39,6 +40,7 @@ export class RoomStreamHub {
     tokens: RoomTokenStore;
     ledger: EventLedger;
     now?: () => number;
+    limits?: ResourceLimiter;
   }) {
     this.now = options.now ?? (() => Date.now());
     this.unsubscribe = options.ledger.subscribe((event) => this.publish(event));
@@ -61,25 +63,31 @@ export class RoomStreamHub {
     if (this.connections.has(connectionId)) {
       throw new CollabError("CONNECTION_EXISTS", "connection already exists", { connectionId });
     }
-    const record: ConnectionRecord = {
-      connectionId,
-      roomId,
-      memberId: claims.memberId,
-      principalId: claims.principalId,
-      token: input.token,
-      lastEventSeq: afterSeq,
-      onFrame: input.onFrame,
-    };
-    this.connections.set(connectionId, record);
-    this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
-    for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
-    return {
-      connectionId,
-      roomId,
-      memberId: claims.memberId,
-      heartbeat: () => this.heartbeat(connectionId),
-      close: (reason = "client_closed") => this.close(connectionId, reason),
-    };
+    this.options.limits?.acquireConnection(roomId);
+    try {
+      const record: ConnectionRecord = {
+        connectionId,
+        roomId,
+        memberId: claims.memberId,
+        principalId: claims.principalId,
+        token: input.token,
+        lastEventSeq: afterSeq,
+        onFrame: input.onFrame,
+      };
+      this.connections.set(connectionId, record);
+      this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
+      for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
+      return {
+        connectionId,
+        roomId,
+        memberId: claims.memberId,
+        heartbeat: () => this.heartbeat(connectionId),
+        close: (reason = "client_closed") => this.close(connectionId, reason),
+      };
+    } catch (error) {
+      this.options.limits?.releaseConnection(roomId);
+      throw error;
+    }
   }
 
   heartbeat(connectionId: string): { connectionId: string; serverTime: number } {
@@ -100,6 +108,7 @@ export class RoomStreamHub {
     const record = this.connections.get(connectionId);
     if (!record) return;
     this.connections.delete(connectionId);
+    this.options.limits?.releaseConnection(record.roomId);
     this.emit(record, { kind: "closed", connectionId, reason });
   }
 
