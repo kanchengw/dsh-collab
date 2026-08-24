@@ -23,6 +23,7 @@ export class AgentDispatcher {
   private readonly queue: string[] = [];
   private activeRequestId: string | undefined;
   private nextQueueSeq = 1;
+  private processing: Promise<void> | undefined;
 
   constructor(
     private readonly options: {
@@ -224,6 +225,17 @@ export class AgentDispatcher {
     return copy(entry.record);
   }
 
+  processQueue(): Promise<void> {
+    if (this.processing) return this.processing;
+    const processing = this.drainQueue();
+    this.processing = processing;
+    void processing.finally(() => {
+      if (this.processing === processing) this.processing = undefined;
+      if (this.queue.length > 0) void this.processQueue();
+    });
+    return processing;
+  }
+
   async complete(requestId: string): Promise<QueueRecord> {
     const entry = this.records.get(requestId);
     if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "request does not exist", { requestId });
@@ -288,6 +300,40 @@ export class AgentDispatcher {
   private removeFromQueue(requestId: string): void {
     const index = this.queue.indexOf(requestId);
     if (index >= 0) this.queue.splice(index, 1);
+  }
+
+  private async drainQueue(): Promise<void> {
+    while (this.activeRequestId === undefined && this.queue.length > 0) {
+      let record: QueueRecord | undefined;
+      try {
+        record = await this.drainOne();
+      } catch {
+        continue;
+      }
+      if (!record) return;
+      try {
+        await this.options.agent.whenIdle?.({
+          requestId: record.requestId,
+          roomId: record.roomId,
+          hostSessionId: record.hostSessionId,
+        });
+      } catch (error) {
+        const entry = this.records.get(record.requestId);
+        if (entry?.record.status === "running") {
+          entry.record.status = "failed";
+          entry.record.error = error instanceof Error ? error.message : String(error);
+          this.activeRequestId = undefined;
+        }
+        continue;
+      }
+      if (this.activeRequestId === record.requestId && this.records.get(record.requestId)?.record.status === "running") {
+        try {
+          await this.complete(record.requestId);
+        } catch {
+          continue;
+        }
+      }
+    }
   }
 
   private appendCancelled(record: QueueRecord, actor: { memberId: string; principalId: string }): void {

@@ -114,8 +114,7 @@ describe("P1 idempotency and cursor compensation", () => {
       body: { clientMessageId: "client-agent", text: "run tests", target: "dsh" },
     });
     expect(retry).toEqual(request);
-    expect(gateway.dispatcher.queued()).toHaveLength(1);
-    await gateway.dispatcher.drainOne();
+    expect(gateway.dispatcher.queued()).toHaveLength(0);
     expect(calls).toEqual([record.requestId]);
   });
 

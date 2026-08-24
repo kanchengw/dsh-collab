@@ -12,7 +12,7 @@ function setup(limits: ResourceLimiter) {
   rooms.createRoom({ roomId: "room-1", hostId: "host", hostSessionId: "session-host", title: "Release", hostDisplayName: "Host", now: 1 });
   const ledger = new EventLedger();
   const invites = new InviteStore(rooms, { tokenFactory: () => "invite-token" });
-  const agent: HostAgentPort = { followup() {}, steer() {}, cancel() {} };
+  const agent: HostAgentPort = { followup() {}, steer() {}, cancel() {}, whenIdle: () => new Promise(() => {}) };
   const gateway = new CollabGateway({ rooms, ledger, invites, agent, tokenFactory: () => "room-token", now: () => 10, limits });
   return { gateway, ledger, rooms };
 }
@@ -38,8 +38,10 @@ describe("resource limits at transport/domain boundaries", () => {
     const token = await joinParticipant(gateway, "invite-queue", "bob", "member-bob");
     const first = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-1", text: "first", target: "dsh" } });
     const second = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-2", text: "second", target: "dsh" } });
+    const third = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-3", text: "third", target: "dsh" } });
     expect(first.status).toBe(202);
-    expect(second.status).toBe(429);
+    expect(second.status).toBe(202);
+    expect(third.status).toBe(429);
     expect(gateway.dispatcher.queued()).toHaveLength(1);
   });
 

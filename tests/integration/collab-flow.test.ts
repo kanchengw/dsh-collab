@@ -97,9 +97,6 @@ describe("P1 two-participant collaboration flow", () => {
       body: { clientMessageId: "client-agent", text: "Run the release tests", target: "dsh" },
     });
     expect(agentRequest.status).toBe(202);
-    const requestId = body<{ request: { requestId: string } }>(agentRequest).request.requestId;
-    await gateway.dispatcher.drainOne();
-    await gateway.dispatcher.complete(requestId);
 
     expect(alice.events).toEqual(bob.events);
     expect(alice.events).toContainEqual(expect.objectContaining({

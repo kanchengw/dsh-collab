@@ -11,6 +11,7 @@ describe("real DSH Cordis Agent bridge", () => {
           followup: (message) => { calls.push("followup"); messages.push(message); },
           steer: (message) => { calls.push("steer"); messages.push(message); },
           cancel: (cause, options) => { calls.push(`cancel:${cause.kind}:${String(options?.keepInbox)}`); },
+          whenIdle: () => { calls.push("idle"); return Promise.resolve(); },
         } : undefined,
       },
     });
@@ -19,7 +20,8 @@ describe("real DSH Cordis Agent bridge", () => {
     await service.followup({ requestId: "request-1", sessionId: "session-1", text: "hello" });
     await service.steer({ requestId: "request-2", sessionId: "session-1", text: "stop" });
     await service.cancel({ requestId: "request-3", sessionId: "session-1", keepInbox: true });
-    expect(calls).toEqual(["followup", "steer", "cancel:user:true"]);
+    await service.whenIdle?.({ sessionId: "session-1", requestId: "request-1" });
+    expect(calls).toEqual(["followup", "steer", "cancel:user:true", "idle"]);
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "hello" }] });
   });

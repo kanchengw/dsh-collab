@@ -9,6 +9,7 @@ export interface DshSessionService {
   followup(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   steer(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   cancel(input: { sessionId: string; requestId: string; keepInbox: boolean }): Promise<void> | void;
+  whenIdle?(input: { sessionId: string; requestId: string }): Promise<void>;
 }
 
 async function assertOwned(service: DshSessionService, sessionId: string): Promise<void> {
@@ -31,6 +32,10 @@ export function createDshHostAgentPort(input: { sessions: DshSessionService }): 
     async cancel(request) {
       await assertOwned(input.sessions, request.hostSessionId);
       await input.sessions.cancel({ sessionId: request.hostSessionId, requestId: request.requestId, keepInbox: request.keepInbox });
+    },
+    async whenIdle(request) {
+      await assertOwned(input.sessions, request.hostSessionId);
+      await input.sessions.whenIdle?.({ sessionId: request.hostSessionId, requestId: request.requestId });
     },
   };
 }

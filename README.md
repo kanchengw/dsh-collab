@@ -30,7 +30,7 @@ pnpm audit --audit-level=high
 2. Creates two invites and joins two Participant identities.
 3. Connects two independent WebSocket clients to the same room.
 4. Sends a People message and asserts both clients receive the same ledger event.
-5. Sends one explicit `dsh` message, drains the one Host Agent queue, records the Host followup and fans out an Agent output event.
+5. Sends one explicit `dsh` message, automatically dispatches it to the one Host Agent, records the Host followup and fans out an Agent output event.
 6. Disconnects and reconnects one Participant, then verifies cursor-based event recovery.
 
 This is the repeatable endpoint for development on one machine; two physical hosts are not required. The test uses the same Gateway, token store, stream upgrade and Host adapter used by the eventual DSH composition. It is not a claim that Chrome DevTools or the complete DSH React shell has already been browser-verified; that requires a configured DSH profile/browser test environment.

@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
 import { RoomStore } from "../../src/room.js";
 import type { GatewayRequest, HostAgentPort } from "../../src/types.js";
 
-function setup() {
+function setup(agentOverride?: HostAgentPort) {
   const rooms = new RoomStore();
   rooms.createRoom({
     roomId: "room-1",
@@ -39,7 +39,7 @@ function setup() {
     cancel() {},
   };
   const invites = new InviteStore(rooms, { tokenFactory: () => "invite-token" });
-  const gateway = new CollabGateway({ rooms, ledger, invites, agent, now: () => 10 });
+  const gateway = new CollabGateway({ rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10 });
   return { gateway, calls };
 }
 
@@ -156,8 +156,50 @@ describe("CollabGateway route contract", () => {
       body: { messageId: "message-agent", text: "run tests", target: "dsh" },
     });
     expect(agentRequest.status).toBe(202);
-    await gateway.dispatcher.drainOne();
-    expect(calls).toEqual(["message-agent"]);
+    await vi.waitFor(() => {
+      expect(calls).toEqual(["message-agent"]);
+      expect(gateway.dispatcher.get("message-agent")).toMatchObject({ status: "completed" });
+    });
+  });
+
+  it("waits for the active DSH turn before dispatching the next request", async () => {
+    const calls: string[] = [];
+    const idleWaiters: Array<() => void> = [];
+    const agent = {
+      followup(input: { requestId: string }) { calls.push(input.requestId); },
+      steer() {},
+      cancel() {},
+      whenIdle() { return new Promise<void>((resolve) => idleWaiters.push(resolve)); },
+    };
+    const { gateway } = setup(agent);
+    const bootstrapped = await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "host" },
+    });
+    const roomToken = (bootstrapped.body as { roomToken: string }).roomToken;
+
+    await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer(roomToken),
+      body: { messageId: "message-first", text: "first", target: "dsh" },
+    });
+    await vi.waitFor(() => expect(calls).toEqual(["message-first"]));
+    await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer(roomToken),
+      body: { messageId: "message-second", text: "second", target: "dsh" },
+    });
+    expect(calls).toEqual(["message-first"]);
+
+    idleWaiters.shift()?.();
+    await vi.waitFor(() => expect(calls).toEqual(["message-first", "message-second"]));
+    expect(gateway.dispatcher.get("message-first")).toMatchObject({ status: "completed" });
+
+    idleWaiters.shift()?.();
+    await vi.waitFor(() => expect(gateway.dispatcher.get("message-second")).toMatchObject({ status: "completed" }));
   });
 
   it("rejects missing, invalid, and cross-room credentials with stable errors", async () => {

@@ -248,6 +248,7 @@ export class CollabGateway {
     const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
     const response = { status: 202, body: { request: record } };
     this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });
+    void this.dispatcher.processQueue();
     return copy(response);
   }
 

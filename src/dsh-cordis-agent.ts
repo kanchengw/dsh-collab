@@ -13,6 +13,7 @@ export interface DshCordisAgent {
   followup(message: DshUserMessage): Promise<void> | void;
   steer(message: DshUserMessage): Promise<void> | void;
   cancel(cause: { kind: "user" }, options: { keepInbox: boolean }): Promise<void> | void;
+  whenIdle?(): Promise<void>;
 }
 
 export interface DshCordisAgentRegistry {
@@ -46,6 +47,9 @@ export function createDshCordisSessionService(input: { agents: DshCordisAgentReg
     },
     async cancel(request): Promise<void> {
       await liveAgent(input.agents, request.sessionId).cancel({ kind: "user" }, { keepInbox: request.keepInbox });
+    },
+    async whenIdle(request): Promise<void> {
+      await liveAgent(input.agents, request.sessionId).whenIdle?.();
     },
   };
 }

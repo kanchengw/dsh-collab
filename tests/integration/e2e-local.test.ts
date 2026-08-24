@@ -81,9 +81,6 @@ describe("local end-to-end collaboration", () => {
 
       const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-2", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
       expect(agent.status).toBe(202);
-      const requestId = agent.data.request.requestId as string;
-      await runtime.gateway.dispatcher.drainOne();
-      await runtime.gateway.dispatcher.complete(requestId);
       expect(followups).toEqual(["Summarize the thread"]);
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
 
