@@ -1,4 +1,7 @@
+import type { MessageInput, MessageTarget } from "./types.js";
+
 export type ParticipantConnection = "connecting" | "online" | "offline";
+export type ComposerTarget = MessageTarget;
 
 export interface ParticipantShellState {
   roomId: string;
@@ -7,6 +10,12 @@ export interface ParticipantShellState {
   connection: ParticipantConnection;
   memberCount: number;
   error?: string;
+}
+
+export interface ComposerState {
+  target: ComposerTarget;
+  canSteer: boolean;
+  draft: string;
 }
 
 function escapeHtml(value: string): string {
@@ -33,4 +42,40 @@ export function renderParticipantShell(state: ParticipantShellState): string {
     error,
     "</section>",
   ].join("");
+}
+
+export function getComposerTargets(canSteer: boolean): ComposerTarget[] {
+  return canSteer ? ["room", "dsh", "dsh-steer"] : ["room", "dsh"];
+}
+
+export function createComposerSubmission(input: {
+  messageId: string;
+  roomId: string;
+  authorMemberId: string;
+  text: string;
+  target: ComposerTarget;
+  canSteer?: boolean;
+  sourceMessageId?: string;
+  contextRefs?: string[];
+}): MessageInput {
+  if (input.target === "dsh-steer" && input.canSteer !== true) {
+    throw new Error("steer target requires capability");
+  }
+  return {
+    messageId: input.messageId,
+    roomId: input.roomId,
+    authorMemberId: input.authorMemberId,
+    text: input.text,
+    target: input.target,
+    ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+    ...(input.contextRefs ? { contextRefs: [...input.contextRefs] } : {}),
+  };
+}
+
+export function renderComposer(state: ComposerState): string {
+  const options = getComposerTargets(state.canSteer).map((target) => {
+    const label = target === "room" ? "People" : target === "dsh" ? "DSH Agent" : "Steer Agent";
+    return `<option value="${target}"${target === state.target ? " selected" : ""}>${label}</option>`;
+  }).join("");
+  return `<form class="collab-composer" data-target="${state.target}"><label>Send to <select name="target">${options}</select></label><textarea name="text">${escapeHtml(state.draft)}</textarea></form>`;
 }
