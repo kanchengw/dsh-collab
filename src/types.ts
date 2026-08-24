@@ -117,6 +117,12 @@ export interface GatewayResponse {
   headers?: Record<string, string>;
 }
 
+export type StreamFrame =
+  | { kind: "connected"; connectionId: string; roomId: string; lastEventSeq: number }
+  | { kind: "event"; event: RoomEvent }
+  | { kind: "heartbeat"; connectionId: string; serverTime: number }
+  | { kind: "closed"; connectionId: string; reason: string };
+
 export interface CreateRoomInput {
   roomId: string;
   hostId: string;

@@ -32,6 +32,12 @@ function comparableEvent(input: AppendEventInput): string {
 export class EventLedger {
   private readonly rooms = new Map<string, RoomEvent[]>();
   private readonly eventsById = new Map<string, RoomEvent>();
+  private readonly listeners = new Set<(event: RoomEvent) => void>();
+
+  subscribe(listener: (event: RoomEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
 
   append(input: AppendEventInput): RoomEvent {
     const eventId = requiredText(input.eventId, "eventId");
@@ -67,6 +73,13 @@ export class EventLedger {
     events.push(event);
     this.rooms.set(roomId, events);
     this.eventsById.set(eventId, event);
+    for (const listener of this.listeners) {
+      try {
+        listener(copy(event));
+      } catch {
+        // A stream subscriber must not make a committed ledger append fail.
+      }
+    }
     return copy(event);
   }
 

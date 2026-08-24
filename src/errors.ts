@@ -20,6 +20,8 @@ export type CollabErrorCode =
   | "AUTH_REQUIRED"
   | "AUTH_INVALID"
   | "TOKEN_SCOPE"
+  | "CONNECTION_EXISTS"
+  | "CONNECTION_NOT_FOUND"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {
