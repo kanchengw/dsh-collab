@@ -122,6 +122,17 @@ describe("CollabGateway route contract", () => {
     ] });
   });
 
+  it("bootstraps the authenticated Host into a room-scoped browser token", async () => {
+    const { gateway } = setup();
+    const response = await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "host" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ member: { memberId: "member-host", role: "host" }, roomToken: expect.any(String) });
+  });
+
   it("routes an explicit DSH request through the one Host dispatcher", async () => {
     const { gateway, calls } = setup();
     const created = await request(gateway, {

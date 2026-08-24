@@ -30,11 +30,12 @@ function cursor(value: string | null): number {
   return parsed;
 }
 
-function bearer(value: string | string[] | undefined): string {
+function bearer(value: string | string[] | undefined, queryToken?: string | null): string {
   const authorization = Array.isArray(value) ? value[0] : value;
   const match = typeof authorization === "string" ? /^Bearer (.+)$/.exec(authorization) : undefined;
-  if (!match) throw new CollabError("AUTH_REQUIRED", "room token is required");
-  return text(match[1], "token");
+  if (match) return text(match[1], "token");
+  if (queryToken !== undefined && queryToken !== null) return text(queryToken, "token");
+  throw new CollabError("AUTH_REQUIRED", "room token is required");
 }
 
 function statusFor(error: CollabError): number {
@@ -77,7 +78,7 @@ export class CollabStreamUpgrade {
         return;
       }
       const roomId = text(url.searchParams.get("roomId"), "roomId");
-      const token = bearer(request.headers.authorization);
+      const token = bearer(request.headers.authorization, url.searchParams.get("token"));
       const afterSeq = cursor(url.searchParams.get("after"));
       const connectionId = text(url.searchParams.get("connectionId") ?? this.connectionIdFactory(), "connectionId");
       this.options.tokens.verify({ roomId, token, now: this.now() });

@@ -45,7 +45,11 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     gateway,
     host: options.host,
     port: options.port,
-    authenticate: ({ headers }) => ({ principalId: headers["x-dsh-principal-id"] }),
+    authenticate: ({ headers }) => ({
+      // A loopback-only DSH Web UI has no external identity header. Network
+      // exposure still requires the embedding host to provide one.
+      principalId: headers["x-dsh-principal-id"] ?? ((options.host ?? "127.0.0.1") === "127.0.0.1" ? options.hostId : undefined),
+    }),
   });
   return {
     rooms, ledger, gateway, hub, upgrade, http,

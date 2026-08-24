@@ -118,6 +118,25 @@ describe("DSH-compatible upgrade adapter", () => {
     await once(socket, "close");
   });
 
+  it("accepts a browser-compatible token query when no Authorization header is available", async () => {
+    const { hub, tokens, token } = setup();
+    const server = createServer();
+    const upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10, connectionIdFactory: () => "query-connection" });
+    server.on("upgrade", upgrade.handleUpgrade);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test address");
+    const socket = new WebSocket(`ws://127.0.0.1:${String(address.port)}/collab/v1/stream?roomId=room-1&token=${encodeURIComponent(token)}`);
+    const frame = await new Promise<string>((resolve, reject) => {
+      socket.once("message", (data) => resolve(data.toString()));
+      socket.once("error", reject);
+    });
+    expect(frame).toContain('"type":"connected"');
+    socket.close();
+    await upgrade.close();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
+
   it("rejects an invalid room token before websocket upgrade", async () => {
     const { hub, tokens } = setup();
     upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10 });

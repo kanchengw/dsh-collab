@@ -116,6 +116,7 @@ export class CollabGateway {
       }
       const roomId = requiredText(segments[2], "roomId");
       const resource = segments[3];
+      if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
@@ -137,6 +138,20 @@ export class CollabGateway {
       now: this.now(),
     });
     return { status: 201, body: invite };
+  }
+
+  private bootstrap(roomId: string, request: GatewayRequest): GatewayResponse {
+    const member = this.options.rooms.authorize(roomId, authPrincipal(request), "read");
+    const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+    return {
+      status: 200,
+      body: {
+        room: this.options.rooms.getRoom(roomId),
+        member,
+        roomToken: roomToken.token,
+        expiresAt: roomToken.expiresAt,
+      },
+    };
   }
 
   private join(roomId: string, request: GatewayRequest): GatewayResponse {
