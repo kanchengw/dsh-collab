@@ -2,6 +2,7 @@ export * from "./approvals.js";
 export * from "./audit.js";
 export * from "./client.js";
 export * from "./gateway.js";
+export * from "./dsh-host.js";
 export * from "./http.js";
 export * from "./manifest.js";
 export * from "./role.js";
