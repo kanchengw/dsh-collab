@@ -37,7 +37,11 @@ describe("Cordis Host mount", () => {
       DSH_COLLAB_SETTINGS_NAMESPACE,
       expect.objectContaining({ toJSON: expect.any(Function) }),
       expect.objectContaining({
-        base: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" }, participantGatewayUrl: "" },
+        base: expect.objectContaining({
+          gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" },
+          participantGatewayUrl: "",
+          security: { tokenTtlMs: 8 * 60 * 60 * 1000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32, approvalPolicy: "host-only" },
+        }),
         validate: expect.any(Function),
       }),
     );

@@ -37,9 +37,18 @@ export interface DshCollabGatewaySettings {
   exposeMode: CollabExposeMode;
 }
 
+export interface DshCollabSecuritySettings {
+  tokenTtlMs: number;
+  approvalPolicy: CollabApprovalPolicy;
+  maxMembers: number;
+  maxMessageBytes: number;
+  maxQueue: number;
+}
+
 export interface DshCollabPersistedSettings {
   gateway: DshCollabGatewaySettings;
   participantGatewayUrl: string;
+  security?: DshCollabSecuritySettings;
 }
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
@@ -49,6 +58,19 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
     exposeMode: z.union([z.const("loopback"), z.const("network")]).required(),
   }).required(),
   participantGatewayUrl: z.string().default(""),
+  security: z.object({
+    tokenTtlMs: z.number().step(1).min(1).required(),
+    approvalPolicy: z.union([z.const("host-only"), z.const("disabled")]).required(),
+    maxMembers: z.number().step(1).min(1).required(),
+    maxMessageBytes: z.number().step(1).min(1).required(),
+    maxQueue: z.number().step(1).min(0).required(),
+  }).default({
+    tokenTtlMs: defaultCollabSettings.tokenTtlMs,
+    approvalPolicy: defaultCollabSettings.approvalPolicy,
+    maxMembers: defaultCollabSettings.maxMembers,
+    maxMessageBytes: defaultCollabSettings.maxMessageBytes,
+    maxQueue: defaultCollabSettings.maxQueue,
+  }),
 });
 
 function validateParticipantGatewayUrl(value: string): void {
@@ -65,6 +87,10 @@ export function validateDshCollabPersistedSettings(settings: DshCollabPersistedS
   if (gateway.exposeMode === "loopback" && gateway.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
   if (gateway.exposeMode === "network" && gateway.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
   validateParticipantGatewayUrl(settings.participantGatewayUrl);
+  if (settings.security) {
+    const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...gateway, participantGatewayUrl: settings.participantGatewayUrl };
+    validateCollabSettings(security);
+  }
 }
 
 export function validateCollabSettings(settings: CollabSettings): void {

@@ -18,7 +18,7 @@ export * from "./ui.js";
 export * from "./webserver.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
-import { DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings } from "./settings.js";
+import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings } from "./settings.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -42,6 +42,13 @@ export function registerDshCollabSettings(context: DshCollabCordisContext, confi
           exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
         },
         participantGatewayUrl: "",
+        security: {
+          tokenTtlMs: config.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+          approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+          maxMembers: config.maxMembers ?? defaultCollabSettings.maxMembers,
+          maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+          maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
+        },
       },
       applies: "restart",
       validate: validateDshCollabPersistedSettings,

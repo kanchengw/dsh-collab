@@ -79,13 +79,14 @@ describe("real DSH client slot adapter", () => {
     const actions = { getSnapshot: () => value.gateway, save: vi.fn() };
     const port = createDshSettingsPort(scope, actions);
 
-    expect(port.getSnapshot()).toEqual({ ...value.gateway, participantGatewayUrl: "https://host.example/collab" });
+    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, participantGatewayUrl: "https://host.example/collab", tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
     await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", participantGatewayUrl: "https://new.example/collab" });
     expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network" });
     expect(set).toHaveBeenCalledWith("participantGatewayUrl", "https://new.example/collab");
-    expect(createDshSettingsPort(scope, actions).getSnapshot()).toEqual({ ...value.gateway, participantGatewayUrl: "https://new.example/collab" });
+    expect(createDshSettingsPort(scope, actions).getSnapshot()).toMatchObject({ ...value.gateway, participantGatewayUrl: "https://new.example/collab", tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
     await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "loopback", participantGatewayUrl: "https://new.example/collab" })).rejects.toThrow("loopback");
-    expect(set).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenCalledWith("security", { tokenTtlMs: 28_800_000, approvalPolicy: "host-only", maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(set).toHaveBeenCalledTimes(3);
 
     for (const participantGatewayUrl of [
       "not a URL",
@@ -96,6 +97,6 @@ describe("real DSH client slot adapter", () => {
     ]) {
       await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", participantGatewayUrl })).rejects.toThrow("participantGatewayUrl");
     }
-    expect(set).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenCalledTimes(3);
   });
 });

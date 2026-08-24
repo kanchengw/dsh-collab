@@ -1,6 +1,7 @@
 import { createElement, useEffect, useMemo, useState, type ChangeEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput } from "./dsh-browser-client.js";
+import { defaultCollabSettings, type DshCollabSecuritySettings } from "./settings.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -20,9 +21,9 @@ export interface DshCollabClientPort {
 }
 
 export interface DshCollabSettingsPort {
-  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string };
+  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string } & Partial<DshCollabSecuritySettings>;
   subscribe?(listener: () => void): () => void;
-  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string }): Promise<void>;
+  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId: string; expiresAt: number }, roomId?: string): Promise<{ token: string }>;
@@ -56,6 +57,7 @@ interface DshSettingsScopeBinder {
 interface PersistedCollabSettings {
   gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
   participantGatewayUrl: string;
+  security?: DshCollabSecuritySettings;
 }
 
 function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
@@ -68,7 +70,18 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
   const participantGatewayUrl = (value as { participantGatewayUrl?: unknown }).participantGatewayUrl;
   if (typeof participantGatewayUrl !== "string") return undefined;
-  return { gateway: candidate as PersistedCollabSettings["gateway"], participantGatewayUrl };
+  const securityValue = (value as { security?: unknown }).security;
+  const security = securityValue && typeof securityValue === "object" && !Array.isArray(securityValue)
+    ? securityValue as Partial<DshCollabSecuritySettings>
+    : {};
+  const normalized: DshCollabSecuritySettings = {
+    tokenTtlMs: security.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+    approvalPolicy: security.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+    maxMembers: security.maxMembers ?? defaultCollabSettings.maxMembers,
+    maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+    maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
+  };
+  return { gateway: candidate as PersistedCollabSettings["gateway"], participantGatewayUrl, security: normalized };
 }
 
 function validateParticipantGatewayUrl(value: string): void {
@@ -84,7 +97,24 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
   return {
     getSnapshot: () => {
       const persisted = scope.getSnapshot().value;
-      return persisted ? { ...persisted.gateway, participantGatewayUrl: persisted.participantGatewayUrl } : actions.getSnapshot();
+      if (persisted) return {
+        ...persisted.gateway,
+        participantGatewayUrl: persisted.participantGatewayUrl,
+        tokenTtlMs: persisted.security?.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        approvalPolicy: persisted.security?.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+        maxMembers: persisted.security?.maxMembers ?? defaultCollabSettings.maxMembers,
+        maxMessageBytes: persisted.security?.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+        maxQueue: persisted.security?.maxQueue ?? defaultCollabSettings.maxQueue,
+      };
+      const fallback = actions.getSnapshot();
+      return {
+        ...fallback,
+        tokenTtlMs: fallback.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        approvalPolicy: fallback.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+        maxMembers: fallback.maxMembers ?? defaultCollabSettings.maxMembers,
+        maxMessageBytes: fallback.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+        maxQueue: fallback.maxQueue ?? defaultCollabSettings.maxQueue,
+      };
     },
     subscribe: (listener) => scope.subscribe(listener),
     async save(input) {
@@ -93,8 +123,20 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
       const participantGatewayUrl = input.participantGatewayUrl ?? "";
       validateParticipantGatewayUrl(participantGatewayUrl);
+      const security = {
+        tokenTtlMs: input.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        approvalPolicy: input.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+        maxMembers: input.maxMembers ?? defaultCollabSettings.maxMembers,
+        maxMessageBytes: input.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+        maxQueue: input.maxQueue ?? defaultCollabSettings.maxQueue,
+      };
+      if (!Number.isSafeInteger(security.tokenTtlMs) || security.tokenTtlMs < 1) throw new Error("tokenTtlMs must be positive");
+      if (!Number.isSafeInteger(security.maxMembers) || security.maxMembers < 1) throw new Error("maxMembers must be positive");
+      if (!Number.isSafeInteger(security.maxMessageBytes) || security.maxMessageBytes < 1) throw new Error("maxMessageBytes must be positive");
+      if (!Number.isSafeInteger(security.maxQueue) || security.maxQueue < 0) throw new Error("maxQueue must be non-negative");
       await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode });
       await scope.set("participantGatewayUrl", participantGatewayUrl);
+      await scope.set("security", security);
     },
     bootstrap: actions.bootstrap?.bind(actions),
     join: actions.join?.bind(actions),
@@ -231,11 +273,16 @@ export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort;
 
 /** Settings card registered under DSH's plugin configuration tab. */
 export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): ReactNode {
-  const initial = useMemo(() => props.port?.getSnapshot() ?? { gatewayHost: "127.0.0.1", gatewayPort: 0, exposeMode: "loopback" as const }, [props.port]);
+  const initial = useMemo(() => props.port?.getSnapshot() ?? { ...defaultCollabSettings }, [props.port]);
   const [host, setHost] = useState(initial.gatewayHost);
   const [port, setPort] = useState(String(initial.gatewayPort));
   const [exposeMode, setExposeMode] = useState(initial.exposeMode);
   const [participantGatewayUrl, setParticipantGatewayUrl] = useState(initial.participantGatewayUrl ?? "");
+  const [tokenTtlMs, setTokenTtlMs] = useState(String(initial.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
+  const [approvalPolicy, setApprovalPolicy] = useState(initial.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
+  const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
+  const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
+  const [maxQueue, setMaxQueue] = useState(String(initial.maxQueue ?? defaultCollabSettings.maxQueue));
   const [roomId, setRoomId] = useState("");
   const [inviteId, setInviteId] = useState("");
   const [inviteToken, setInviteToken] = useState("");
@@ -249,12 +296,17 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     setPort(String(snapshot.gatewayPort));
     setExposeMode(snapshot.exposeMode);
     setParticipantGatewayUrl(snapshot.participantGatewayUrl ?? "");
+    setTokenTtlMs(String(snapshot.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
+    setApprovalPolicy(snapshot.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
+    setMaxMembers(String(snapshot.maxMembers ?? defaultCollabSettings.maxMembers));
+    setMaxMessageBytes(String(snapshot.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
+    setMaxQueue(String(snapshot.maxQueue ?? defaultCollabSettings.maxQueue));
   }), [props.port]);
   const warning = exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     try {
-      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode, participantGatewayUrl });
+      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode, participantGatewayUrl, tokenTtlMs: Number(tokenTtlMs), approvalPolicy, maxMembers: Number(maxMembers), maxMessageBytes: Number(maxMessageBytes), maxQueue: Number(maxQueue) });
       setStatus("Gateway settings saved");
     } catch (cause) {
       setStatus(cause instanceof Error ? cause.message : "Unable to save Gateway settings");
@@ -286,6 +338,11 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     createElement("label", null, "Port ", createElement("input", { type: "number", min: 0, max: 65535, value: port, onChange: (event: ChangeEvent<HTMLInputElement>) => setPort(event.target.value), name: "gatewayPort" })),
     createElement("label", null, "Exposure ", createElement("select", { value: exposeMode, onChange: (event: ChangeEvent<HTMLSelectElement>) => setExposeMode(event.target.value as "loopback" | "network"), name: "exposeMode" }, createElement("option", { value: "loopback" }, "Loopback"), createElement("option", { value: "network" }, "Explicit network"))),
     createElement("label", null, "Participant Gateway URL ", createElement("input", { type: "url", value: participantGatewayUrl, onChange: (event: ChangeEvent<HTMLInputElement>) => setParticipantGatewayUrl(event.target.value), name: "participantGatewayUrl", placeholder: "https://host.example/collab" })),
+    createElement("label", null, "Token lifetime (ms) ", createElement("input", { type: "number", min: 1, value: tokenTtlMs, onChange: (event: ChangeEvent<HTMLInputElement>) => setTokenTtlMs(event.target.value), name: "tokenTtlMs" })),
+    createElement("label", null, "Approval policy ", createElement("select", { value: approvalPolicy, onChange: (event: ChangeEvent<HTMLSelectElement>) => setApprovalPolicy(event.target.value as "host-only" | "disabled"), name: "approvalPolicy" }, createElement("option", { value: "host-only" }, "Host only"), createElement("option", { value: "disabled" }, "Disabled"))),
+    createElement("label", null, "Max members ", createElement("input", { type: "number", min: 1, value: maxMembers, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMembers(event.target.value), name: "maxMembers" })),
+    createElement("label", null, "Max message bytes ", createElement("input", { type: "number", min: 1, value: maxMessageBytes, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMessageBytes(event.target.value), name: "maxMessageBytes" })),
+    createElement("label", null, "Max queued Agent requests ", createElement("input", { type: "number", min: 0, value: maxQueue, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxQueue(event.target.value), name: "maxQueue" })),
     warning,
     createElement("button", { type: "submit" }, "Save"),
     createElement("fieldset", null,

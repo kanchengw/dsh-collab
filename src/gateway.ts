@@ -32,6 +32,7 @@ interface GatewayOptions {
   tokenTtlMs?: number;
   tokenFactory?: () => string;
   limits?: ResourceLimiter;
+  maxMessageBytes?: number;
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -96,10 +97,15 @@ export class CollabGateway {
   readonly dispatcher: AgentDispatcher;
   readonly tokens: RoomTokenStore;
   private readonly now: () => number;
+  private readonly maxMessageBytes: number | undefined;
   private readonly submissions = new Map<string, SubmissionRecord>();
 
   constructor(private readonly options: GatewayOptions) {
     this.now = options.now ?? (() => Date.now());
+    if (options.maxMessageBytes !== undefined && (!Number.isSafeInteger(options.maxMessageBytes) || options.maxMessageBytes < 1)) {
+      throw invalidInput("maxMessageBytes must be positive", { maxMessageBytes: options.maxMessageBytes });
+    }
+    this.maxMessageBytes = options.maxMessageBytes;
     this.tokens = new RoomTokenStore(options.rooms, {
       tokenFactory: options.tokenFactory,
       ttlMs: options.tokenTtlMs,
@@ -219,6 +225,9 @@ export class CollabGateway {
       sourceMessageId: body.sourceMessageId as string | undefined,
       contextRefs: body.contextRefs as string[] | undefined,
     });
+    if (this.maxMessageBytes !== undefined && Buffer.byteLength(message.text, "utf8") > this.maxMessageBytes) {
+      throw invalidInput("message exceeds the configured byte limit", { maxMessageBytes: this.maxMessageBytes });
+    }
     const key = roomId + ":" + clientMessageId;
     const fingerprint = JSON.stringify(message);
     const existing = this.submissions.get(key);
