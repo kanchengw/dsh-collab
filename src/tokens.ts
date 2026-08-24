@@ -27,6 +27,7 @@ function digest(token: string): string {
 
 interface TokenRecord {
   claims: RoomTokenClaims;
+  revokedAt?: number;
 }
 
 export class RoomTokenStore {
@@ -37,7 +38,7 @@ export class RoomTokenStore {
     private readonly options: RoomTokenStoreOptions = {},
   ) {}
 
-  issue(input: { roomId: string; member: RoomMember; now?: number }): IssuedRoomToken {
+  issue(input: { roomId: string; member: RoomMember; deviceId?: string; now?: number }): IssuedRoomToken {
     const roomId = requiredText(input.roomId, "roomId");
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
@@ -60,6 +61,7 @@ export class RoomTokenStore {
       role: authorized.role,
       expiresAt,
     };
+    if (input.deviceId !== undefined) claims.deviceId = requiredText(input.deviceId, "deviceId");
     this.tokens.set(digest(token), { claims });
     return { token, expiresAt };
   }
@@ -69,6 +71,7 @@ export class RoomTokenStore {
     const token = requiredText(input.token, "token");
     const record = this.tokens.get(digest(token));
     if (!record) throw new CollabError("AUTH_INVALID", "room token is invalid");
+    if (record.revokedAt !== undefined) throw new CollabError("AUTH_INVALID", "room token has been revoked");
     if (record.claims.roomId !== roomId) {
       throw new CollabError("TOKEN_SCOPE", "room token is scoped to another room", { roomId });
     }
@@ -80,5 +83,41 @@ export class RoomTokenStore {
       throw new CollabError("AUTH_INVALID", "room token membership binding is invalid");
     }
     return copy(record.claims);
+  }
+
+  revokeToken(token: string, now = Date.now()): boolean {
+    const normalized = requiredText(token, "token");
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    const record = this.tokens.get(digest(normalized));
+    if (!record || record.revokedAt !== undefined) return false;
+    record.revokedAt = now;
+    return true;
+  }
+
+  revokeMember(roomId: string, memberId: string, now = Date.now()): number {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    const normalizedMemberId = requiredText(memberId, "memberId");
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    let count = 0;
+    for (const record of this.tokens.values()) {
+      if (record.claims.roomId === normalizedRoomId && record.claims.memberId === normalizedMemberId && record.revokedAt === undefined) {
+        record.revokedAt = now;
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  revokeDevice(deviceId: string, now = Date.now()): number {
+    const normalizedDeviceId = requiredText(deviceId, "deviceId");
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    let count = 0;
+    for (const record of this.tokens.values()) {
+      if (record.claims.deviceId === normalizedDeviceId && record.revokedAt === undefined) {
+        record.revokedAt = now;
+        count += 1;
+      }
+    }
+    return count;
   }
 }

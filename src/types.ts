@@ -91,6 +91,7 @@ export interface RoomTokenClaims {
   principalId: string;
   role: MemberRole;
   expiresAt: number;
+  deviceId?: string;
 }
 
 export interface IssuedRoomToken {
