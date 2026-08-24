@@ -9,6 +9,7 @@ export type CollabErrorCode =
   | "REQUEST_CONFLICT"
   | "REQUEST_NOT_FOUND"
   | "REQUEST_STATE"
+  | "SNAPSHOT_INVALID"
   | "ACTION_FORBIDDEN";
 
 export class CollabError extends Error {

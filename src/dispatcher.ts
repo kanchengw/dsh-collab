@@ -4,8 +4,10 @@ import { RoomStore } from "./room.js";
 import type {
   AgentDelivery,
   AgentRequest,
+  DispatcherSnapshot,
   HostAgentPort,
   QueueRecord,
+  QueueStatus,
 } from "./types.js";
 
 function copy<T>(value: T): T {
@@ -93,7 +95,73 @@ export class AgentDispatcher {
   }
 
   get(requestId: string): QueueRecord | undefined {
-    return this.records.get(requestId)?.record && copy(this.records.get(requestId)!.record);
+    const record = this.records.get(requestId)?.record;
+    return record ? copy(record) : undefined;
+  }
+
+  snapshot(): DispatcherSnapshot {
+    const snapshot: DispatcherSnapshot = {
+      version: 1,
+      records: [...this.records.values()].map((entry) => copy(entry.record)),
+      queue: [...this.queue],
+      nextQueueSeq: this.nextQueueSeq,
+    };
+    if (this.activeRequestId !== undefined) snapshot.activeRequestId = this.activeRequestId;
+    return snapshot;
+  }
+
+  static fromSnapshot(input: {
+    rooms: RoomStore;
+    ledger: EventLedger;
+    agent: HostAgentPort;
+    snapshot: DispatcherSnapshot;
+  }): AgentDispatcher {
+    if (!input.snapshot || input.snapshot.version !== 1) {
+      throw new CollabError("SNAPSHOT_INVALID", "unsupported dispatcher snapshot");
+    }
+    const dispatcher = new AgentDispatcher({
+      rooms: input.rooms,
+      ledger: input.ledger,
+      agent: input.agent,
+    });
+    dispatcher.restore(input.snapshot);
+    return dispatcher;
+  }
+
+  restore(snapshot: DispatcherSnapshot): void {
+    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.records) || !Array.isArray(snapshot.queue)) {
+      throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher snapshot");
+    }
+    if (!Number.isSafeInteger(snapshot.nextQueueSeq) || snapshot.nextQueueSeq < 1) {
+      throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher queue sequence");
+    }
+    const records = new Map<string, { record: QueueRecord; fingerprint: string }>();
+    for (const record of snapshot.records) {
+      if (!record.requestId || records.has(record.requestId) || !isQueueStatus(record.status)) {
+        throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher record");
+      }
+      records.set(record.requestId, { record: copy(record), fingerprint: JSON.stringify(record.message) });
+    }
+    const queued = new Set<string>();
+    for (const requestId of snapshot.queue) {
+      const record = records.get(requestId)?.record;
+      if (!record || record.status !== "queued" || queued.has(requestId)) {
+        throw new CollabError("SNAPSHOT_INVALID", "dispatcher queue does not match records");
+      }
+      queued.add(requestId);
+    }
+    if (snapshot.activeRequestId !== undefined) {
+      const active = records.get(snapshot.activeRequestId)?.record;
+      if (!active || active.status !== "running") {
+        throw new CollabError("SNAPSHOT_INVALID", "dispatcher active request is not running");
+      }
+    }
+    this.records.clear();
+    for (const [requestId, record] of records) this.records.set(requestId, record);
+    this.queue.length = 0;
+    this.queue.push(...snapshot.queue);
+    this.activeRequestId = snapshot.activeRequestId;
+    this.nextQueueSeq = snapshot.nextQueueSeq;
   }
 
   async drainOne(): Promise<QueueRecord | undefined> {
@@ -231,4 +299,12 @@ export class AgentDispatcher {
       payload: { requestId: record.requestId },
     });
   }
+}
+
+function isQueueStatus(value: string): value is QueueStatus {
+  return value === "queued"
+    || value === "running"
+    || value === "completed"
+    || value === "failed"
+    || value === "cancelled";
 }

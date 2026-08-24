@@ -3,6 +3,7 @@ import type {
   AppendEventInput,
   LedgerSnapshot,
   RoomEvent,
+  RoomEventType,
 } from "./types.js";
 
 const MAX_READ_LIMIT = 500;
@@ -37,7 +38,7 @@ export class EventLedger {
     const roomId = requiredText(input.roomId, "roomId");
     const actorMemberId = requiredText(input.actor.memberId, "actor.memberId");
     const actorPrincipalId = requiredText(input.actor.principalId, "actor.principalId");
-    if (!input.type) throw invalidInput("event type must not be blank", { field: "type" });
+    if (!isRoomEventType(input.type)) throw invalidInput("event type is not supported", { field: "type", type: input.type });
 
     const existing = this.eventsById.get(eventId);
     if (existing) {
@@ -118,4 +119,20 @@ export class EventLedger {
     }
     return ledger;
   }
+}
+
+export function isRoomEventType(value: string): value is RoomEventType {
+  return value === "room.created"
+    || value === "member.joined"
+    || value === "member.suspended"
+    || value === "member.removed"
+    || value === "human.message"
+    || value === "agent.request.created"
+    || value === "agent.request.queued"
+    || value === "agent.request.claimed"
+    || value === "agent.request.rejected"
+    || value === "agent.request.failed"
+    || value === "agent.request.cancelled"
+    || value === "agent.request.completed"
+    || value === "agent.state.changed";
 }

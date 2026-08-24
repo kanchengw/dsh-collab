@@ -8,6 +8,7 @@ import type {
   MemberStatus,
   Room,
   RoomMember,
+  RoomStoreSnapshot,
   RoomState,
 } from "./types.js";
 
@@ -60,6 +61,47 @@ export class RoomStore {
 
   getRoom(roomId: string): Room {
     return copy(this.record(roomId).room);
+  }
+
+  snapshot(): RoomStoreSnapshot {
+    return {
+      version: 1,
+      rooms: [...this.rooms.values()].map((record) => ({
+        room: copy(record.room),
+        members: [...record.members.values()].map(copy),
+      })),
+    };
+  }
+
+  static fromSnapshot(snapshot: RoomStoreSnapshot): RoomStore {
+    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.rooms)) {
+      throw new CollabError("SNAPSHOT_INVALID", "unsupported room snapshot");
+    }
+    const store = new RoomStore();
+    for (const entry of snapshot.rooms) {
+      if (!entry || !entry.room || !Array.isArray(entry.members)) {
+        throw new CollabError("SNAPSHOT_INVALID", "invalid room snapshot entry");
+      }
+      const room = copy(entry.room);
+      if (!isRoomState(room.state) || !Number.isSafeInteger(room.revision) || room.revision < 1) {
+        throw new CollabError("SNAPSHOT_INVALID", "invalid room metadata", { roomId: room.roomId });
+      }
+      const members = new Map<string, RoomMember>();
+      const principals = new Set<string>();
+      for (const member of entry.members) {
+        if (!isMemberRole(member.role) || !isMemberStatus(member.status) || members.has(member.memberId) || principals.has(member.principalId)) {
+          throw new CollabError("SNAPSHOT_INVALID", "invalid or duplicate room member", { roomId: room.roomId });
+        }
+        members.set(member.memberId, copy(member));
+        principals.add(member.principalId);
+      }
+      const hosts = [...members.values()].filter((member) => member.role === "host" && member.principalId === room.hostId);
+      if (hosts.length !== 1 || store.rooms.has(room.roomId)) {
+        throw new CollabError("SNAPSHOT_INVALID", "room snapshot must have one unique host", { roomId: room.roomId });
+      }
+      store.rooms.set(room.roomId, { room, members });
+    }
+    return store;
   }
 
   listMembers(roomId: string): RoomMember[] {

@@ -31,6 +31,11 @@ export interface RoomMember {
   revokedAt?: number;
 }
 
+export interface RoomStoreSnapshot {
+  version: 1;
+  rooms: Array<{ room: Room; members: RoomMember[] }>;
+}
+
 export interface CreateRoomInput {
   roomId: string;
   hostId: string;
@@ -113,6 +118,14 @@ export interface QueueRecord {
   queueSeq: number;
   message: AgentRequest;
   error?: string;
+}
+
+export interface DispatcherSnapshot {
+  version: 1;
+  records: QueueRecord[];
+  queue: string[];
+  activeRequestId?: string;
+  nextQueueSeq: number;
 }
 
 export type RoomEventType =
