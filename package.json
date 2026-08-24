@@ -7,13 +7,14 @@
   "packageManager": "pnpm@11.19.0",
   "license": "MIT",
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --passWithNoTests",
     "test:regression": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json && tsdown"
+    "build": "pnpm clean && tsc -p tsconfig.build.json && tsdown"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -7,6 +7,8 @@ describe("installable package build", () => {
     const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
     const buildConfig = JSON.parse(readFileSync(resolve(process.cwd(), "tsconfig.build.json"), "utf8"));
     const patch = readFileSync(resolve(process.cwd(), "cordis.patch.yml"), "utf8");
+    expect(packageJson.scripts.clean).toContain("rmSync('lib'");
+    expect(packageJson.scripts.build).toMatch(/^pnpm clean && /);
     expect(packageJson.scripts.build).toContain("tsconfig.build.json");
     expect(buildConfig.compilerOptions.rootDir).toBe("src");
     expect(packageJson.exports["./client"]).toBeDefined();
