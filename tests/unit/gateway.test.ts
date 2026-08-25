@@ -316,4 +316,29 @@ describe("CollabGateway route contract", () => {
     expect(decided.body).toMatchObject({ approval: { approvalId: "approval-1", state: "decided", outcome: "allowed-once" } });
 
   });
+
+  it("revokes a Participant resume credential when the Host suspends that member", async () => {
+    const { gateway } = setup();
+    const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const created = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/invites", auth: { principalId: "host" },
+      body: { inviteId: "invite-bob", expiresAt: 100 },
+    });
+    const joined = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/join",
+      body: { inviteId: "invite-bob", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" },
+    });
+    const resumeCredential = (joined.body as { resumeCredential: string }).resumeCredential;
+
+    await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/actions",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { action: "setMemberStatus", memberId: "member-bob", status: "suspended" },
+    });
+    const resumed = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/resume", body: { credential: resumeCredential },
+    });
+    expect(resumed.status).toBe(401);
+    expect(resumed.body).toMatchObject({ error: { code: "AUTH_INVALID" } });
+  });
 });

@@ -7,6 +7,7 @@ import { ResourceLimiter } from "./limits.js";
 import { classifyMessage } from "./messages.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
+import { ResumeCredentialStore } from "./resume-credentials.js";
 import type {
   GatewayRequest,
   GatewayResponse,
@@ -36,6 +37,7 @@ interface GatewayOptions {
   maxMessageBytes?: number;
   approvals?: ApprovalStore;
   approvalPolicy?: "host-only" | "disabled";
+  resumes?: ResumeCredentialStore;
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -99,6 +101,7 @@ function copy<T>(value: T): T {
 export class CollabGateway {
   readonly dispatcher: AgentDispatcher;
   readonly tokens: RoomTokenStore;
+  readonly resumes: ResumeCredentialStore;
   private readonly now: () => number;
   private readonly maxMessageBytes: number | undefined;
   private readonly approvals: ApprovalStore | undefined;
@@ -117,6 +120,7 @@ export class CollabGateway {
       tokenFactory: options.tokenFactory,
       ttlMs: options.tokenTtlMs,
     });
+    this.resumes = options.resumes ?? new ResumeCredentialStore(options.rooms);
     this.dispatcher = new AgentDispatcher({ rooms: options.rooms, ledger: options.ledger, agent: options.agent });
   }
 
@@ -132,6 +136,7 @@ export class CollabGateway {
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
+      if (request.method === "POST" && resource === "resume") return this.resume(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
       if (request.method === "GET" && resource === "approvals") return this.listApprovals(roomId, request);
@@ -184,6 +189,7 @@ export class CollabGateway {
       now: this.now(),
     });
     const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+    const resumeCredential = this.resumes.issue({ roomId, memberId: member.memberId, principalId: member.principalId, now: this.now() });
     const event = this.options.ledger.append({
       eventId: roomId + ":member.joined:" + member.memberId,
       roomId,
@@ -192,7 +198,14 @@ export class CollabGateway {
       createdAt: this.now(),
       payload: { memberId: member.memberId, principalId: member.principalId, role: member.role },
     });
-    return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, event } };
+    return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, resumeCredential: resumeCredential.credential, event } };
+  }
+
+  private resume(roomId: string, request: GatewayRequest): GatewayResponse {
+    const binding = this.resumes.verify({ roomId, credential: requiredText(objectBody(request.body).credential, "credential") });
+    const member = this.options.rooms.authorize(roomId, binding.principalId, "read");
+    const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+    return { status: 200, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
   }
 
   private snapshot(roomId: string, request: GatewayRequest): GatewayResponse {
@@ -314,6 +327,7 @@ export class CollabGateway {
       if (status !== "suspended" && status !== "removed") throw invalidInput("member status action must suspend or remove a member", { status });
       const member = this.options.rooms.setMemberStatus(roomId, memberId, status, this.now());
       this.tokens.revokeMember(roomId, member.memberId, this.now());
+      this.resumes.revokeMember(roomId, member.memberId, this.now());
       this.options.ledger.append({
         eventId: roomId + ":member.status:" + member.memberId + ":" + status + ":" + String(this.now()),
         roomId,

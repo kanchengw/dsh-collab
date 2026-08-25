@@ -81,4 +81,28 @@ describe("host runtime factory", () => {
     expect(restored.gateway.dispatcher.get("request-1")?.hostSessionId).toBe("session-2");
     await restored.dispose();
   });
+
+  it("exchanges a restored Participant credential for a fresh room token after Host restart", async () => {
+    const tokens = ["invite-secret", "room-token-1", "room-token-2"];
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+      port: 0,
+      tokenFactory: () => tokens.shift()!,
+      resumeCredentialFactory: () => "resume-secret",
+    };
+    const runtime = createDshCollabHostRuntime(options);
+    const invite = await runtime.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/invites", auth: { principalId: "host" }, body: { inviteId: "invite-1", expiresAt: Date.now() + 60_000 } });
+    const joined = await runtime.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-1", token: (invite.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" } });
+    expect(joined.body).toMatchObject({ resumeCredential: "resume-secret" });
+    const snapshot = runtime.snapshot();
+    expect(JSON.stringify(snapshot)).not.toContain("resume-secret");
+    await runtime.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, hostSessionId: "session-2", snapshot });
+    const resumed = await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/resume", body: { credential: "resume-secret" } });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body).toMatchObject({ member: { memberId: "member-bob" }, roomToken: "room-token-2" });
+    await restored.dispose();
+  });
 });

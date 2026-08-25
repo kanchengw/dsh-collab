@@ -33,7 +33,7 @@ A reverse proxy/tunnel is optional and user-supplied only when the Host wants an
 
 Participant identity is first bound by possession of a valid one-time invite; subsequent requests use the issued room token. Optional trusted-proxy identity headers remain a deployment extension, but direct clients cannot self-assert them.
 
-The Host state file deliberately excludes one-time invitation secrets and short-lived room tokens. It is written as a versioned whole snapshot through a same-directory temporary file and rename, with private file/directory modes on platforms that enforce POSIX permissions. A malformed or unsupported state file stops Gateway startup instead of silently replacing room history.
+The Host state file deliberately excludes one-time invitation secrets, short-lived room tokens and raw Participant resume credentials. It stores only SHA-256 resume credential digests and their room/member bindings. Suspending or removing a member revokes both current room tokens and durable resume credentials. The file is written as a versioned whole snapshot through a same-directory temporary file and rename, with private file/directory modes on platforms that enforce POSIX permissions. A malformed or unsupported state file stops Gateway startup instead of silently replacing room history.
 
 ## Commands
 

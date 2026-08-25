@@ -62,12 +62,26 @@ The current routes are:
 | --- | --- | --- |
 | `POST` | `/collab/v1/rooms/:roomId/invites` | Host creates an invite |
 | `POST` | `/collab/v1/rooms/:roomId/join` | Participant accepts an invite |
+| `POST` | `/collab/v1/rooms/:roomId/resume` | Participant exchanges a durable resume credential for a new room token |
 | `GET` | `/collab/v1/rooms/:roomId/snapshot` | Read the authorized room snapshot |
 | `GET` | `/collab/v1/rooms/:roomId/events?after=&limit=` | Read events after an exclusive cursor |
 | `POST` | `/collab/v1/rooms/:roomId/messages` | Create a human message or AgentRequest |
 | `GET` | `/collab/v1/rooms/:roomId/approvals` | Host lists approval projections |
 | `POST` | `/collab/v1/rooms/:roomId/approvals` | Host creates an approval projection |
 | `POST` | `/collab/v1/rooms/:roomId/actions` | Host cancels, manages members or decides an approval |
+
+A successful `join` response includes both a short-lived `roomToken` and a
+durable `resumeCredential`. The raw resume credential is returned only once
+and must be stored on the Participant's own DSH host; the room owner stores
+only its SHA-256 digest. A later resume request uses this body:
+
+```json
+{ "credential": "opaque-participant-resume-secret" }
+```
+
+The Gateway validates the durable room/member binding and returns a fresh
+short-lived `roomToken`. Suspending or removing the member invalidates all of
+that member's resume credentials.
 
 The current implementation exposes the following explicit v1 actions:
 
@@ -201,4 +215,6 @@ cursor and uses exclusive replay, with event ID de-duplication at the client.
 - A required field, enum removal, or changed meaning requires a new protocol
   version and an explicit adapter negotiation decision.
 - The wire protocol never carries a local Agent handle, DSH connection ID,
-  filesystem path, credential, tool argument, or approval secret.
+  filesystem path, tool argument, or approval secret. Invite, room and resume
+  credentials appear only in their dedicated authentication fields and must
+  not be copied into events, logs or URLs.

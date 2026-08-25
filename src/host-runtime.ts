@@ -9,6 +9,7 @@ import { CollabRuntime, type CollabRuntimeSnapshot } from "./runtime.js";
 import { RoomStreamHub } from "./stream.js";
 import { CollabStreamUpgrade } from "./upgrade.js";
 import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServer, type HttpHeaders } from "./http.js";
+import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./resume-credentials.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId: string;
@@ -19,6 +20,7 @@ export interface DshCollabHostRuntimeOptions {
   sessions: DshSessionService;
   now?: () => number;
   tokenFactory?: () => string;
+  resumeCredentialFactory?: () => string;
   tokenTtlMs?: number;
   approvalPolicy?: "host-only" | "disabled";
   maxMembers?: number;
@@ -35,7 +37,9 @@ export interface DshCollabHostRuntimeOptions {
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
 
-export type DshCollabHostRuntimeSnapshot = CollabRuntimeSnapshot;
+export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
+  resumes?: ResumeCredentialStoreSnapshot;
+}
 
 export interface DshCollabHostRuntime {
   readonly rooms: RoomStore;
@@ -76,6 +80,9 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   }
   const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
+  const resumes = snapshot?.resumes
+    ? ResumeCredentialStore.fromSnapshot(rooms, snapshot.resumes)
+    : new ResumeCredentialStore(rooms, { credentialFactory: options.resumeCredentialFactory });
   const approvals = snapshot?.approvals
     ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: snapshot.approvals })
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
@@ -95,6 +102,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     maxMessageBytes: options.maxMessageBytes,
     approvals,
     approvalPolicy: options.approvalPolicy,
+    resumes,
   });
   if (snapshot) gateway.dispatcher.restore(snapshot.dispatcher);
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
@@ -116,7 +124,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
     rooms, ledger, gateway, approvals, hub, upgrade, http,
-    snapshot: () => collabRuntime.snapshot(),
+    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot() }),
     async dispose(): Promise<void> {
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);
