@@ -3,6 +3,7 @@ e2e/nginx/logs/
 e2e/nginx/temp/
 dist/
 lib/
+.tmp-dsh-*.png
 coverage/
 .env
 .env.local

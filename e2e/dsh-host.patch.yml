@@ -1,0 +1,18 @@
+# Host DSH runtime overlay used by the real two-profile browser acceptance run.
+- id: collab-host
+  config:
+    enabled: true
+    roomId: dsh-room
+    hostId: host
+    allowLoopbackPrincipal: false
+    trustedProxyAddresses: [127.0.0.2]
+    trustedPrincipalHeader: x-authenticated-user
+    trustedProxyMarkerHeader: x-dsh-proxy
+    title: DSH Collaboration
+    hostDisplayName: Host DSH
+    localProxy:
+      enabled: true
+      targetPort: 3082
+      collabTargetPort: 3082
+      listenPort: 3182
+      principalId: host

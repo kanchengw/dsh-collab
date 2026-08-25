@@ -27,6 +27,10 @@
       "types": "./lib/dsh-client.d.ts",
       "default": "./lib/client.js"
     },
+    "./nginx": {
+      "types": "./lib/nginx.d.ts",
+      "default": "./lib/nginx.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -49,6 +53,8 @@
     "lib/*.js",
     "lib/*.d.ts",
     "cordis.patch.yml",
+    "LICENSE.nginx",
+    "vendor",
     "README.md",
     "design.md",
     "protocol.md"

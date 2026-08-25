@@ -1,55 +1,6 @@
 import z from "@deepseek-ai/schemastery";
-
-export type CollabExposeMode = "loopback" | "network";
-export type CollabApprovalPolicy = "host-only" | "disabled";
-
-export interface CollabSettings {
-  enabled: boolean;
-  gatewayHost: "127.0.0.1" | "0.0.0.0";
-  gatewayPort: number;
-  exposeMode: CollabExposeMode;
-  participantGatewayUrl: string;
-  tokenTtlMs: number;
-  approvalPolicy: CollabApprovalPolicy;
-  maxMembers: number;
-  maxMessageBytes: number;
-  maxQueue: number;
-}
-
-export const defaultCollabSettings: CollabSettings = {
-  enabled: true,
-  gatewayHost: "127.0.0.1",
-  gatewayPort: 0,
-  exposeMode: "loopback",
-  participantGatewayUrl: "",
-  tokenTtlMs: 8 * 60 * 60 * 1000,
-  approvalPolicy: "host-only",
-  maxMembers: 16,
-  maxMessageBytes: 64 * 1024,
-  maxQueue: 32,
-};
-
-export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
-
-export interface DshCollabGatewaySettings {
-  gatewayHost: "127.0.0.1" | "0.0.0.0";
-  gatewayPort: number;
-  exposeMode: CollabExposeMode;
-}
-
-export interface DshCollabSecuritySettings {
-  tokenTtlMs: number;
-  approvalPolicy: CollabApprovalPolicy;
-  maxMembers: number;
-  maxMessageBytes: number;
-  maxQueue: number;
-}
-
-export interface DshCollabPersistedSettings {
-  gateway: DshCollabGatewaySettings;
-  participantGatewayUrl: string;
-  security?: DshCollabSecuritySettings;
-}
+import { defaultCollabSettings, type CollabSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
+export * from "./settings-shared.js";
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
   gateway: z.object({

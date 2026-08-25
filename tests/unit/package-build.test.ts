@@ -12,6 +12,9 @@ describe("installable package build", () => {
     expect(packageJson.scripts.build).toContain("tsconfig.build.json");
     expect(buildConfig.compilerOptions.rootDir).toBe("src");
     expect(packageJson.exports["./client"]).toBeDefined();
+    expect(packageJson.exports["./nginx"]).toBeDefined();
+    expect(packageJson.files).toContain("vendor");
+    expect(packageJson.files).toContain("LICENSE.nginx");
     expect((patch.match(/name: dsh-collab\s*$/gm) ?? []).length).toBe(1);
     expect(patch).not.toContain("dsh-collab/client");
   });

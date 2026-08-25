@@ -9,6 +9,11 @@
         enabled: true
         roomId: dsh-room
         hostId: local-host
-        allowLoopbackPrincipal: true
+        allowLoopbackPrincipal: false
+        trustedProxyAddresses: [127.0.0.2]
+        trustedPrincipalHeader: x-authenticated-user
+        trustedProxyMarkerHeader: x-dsh-proxy
+        localProxy:
+          enabled: true
         title: DSH Collaboration
         hostDisplayName: Local Host

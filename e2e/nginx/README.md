@@ -1,33 +1,38 @@
 # Local two-DSH nginx E2E
 
-This is a developer/acceptance harness, not an end-user plugin feature. The
-plugin does not start nginx automatically.
+This acceptance run uses the same runtime path as an end user: the installed
+`dsh-collab` plugin starts its bundled nginx automatically and keeps the nginx
+window hidden. The two overlays only select the Host and Participant roles.
 
 This harness reserves these ports:
 
 - DSH Host backend: `127.0.0.1:3082`
 - DSH Participant backend: `127.0.0.1:3083`
-- Host browser entry: `http://127.0.0.1:3182`
-- Participant browser entry: `http://127.0.0.1:3183`
+- Host DSH user entry: `http://127.0.0.1:3082`
+- Participant DSH user entry: `http://127.0.0.1:3083`
+- Hidden Host nginx proxy: `127.0.0.1:3182`
+- Hidden Participant nginx proxy: `127.0.0.1:3183`
 
-The `/collab/` route on both nginx entry points is forwarded to the Host DSH
-on `3082`. The Participant DSH on `3083` serves the Participant page itself;
-its browser client uses `http://127.0.0.1:3183/collab` as its Gateway URL.
+Users continue to open the two DSH URLs. The plugin routes its browser
+requests from `3082` and `3083` through the corresponding hidden nginx proxy;
+both `/collab/` routes are forwarded to the Host DSH on `3082`. The proxy
+injects the test identity and permits only its paired DSH origin for CORS.
 
 The config is local-test-only. It uses fixed `host` and `participant`
 identities instead of an SSO module, binds proxy upstream connections to
 `127.0.0.2`, and marks them with `X-DSH-Proxy: 1`. Do not deploy this file as
 production authentication.
 
-Start nginx from this directory so its relative `logs/` and `temp/` paths stay local:
+From the repository root, start two real DSH processes with the overlays:
 
 ```powershell
-nginx -p E:/projects/dsh-collab/e2e/nginx/ -c nginx.conf -t
-nginx -p E:/projects/dsh-collab/e2e/nginx/ -c nginx.conf
+node $env:USERPROFILE\.dsh\profiles\node_modules\@deepseek-ai\dsh\lib\bin.js --profile web --patch .\e2e\dsh-host.patch.yml --port 3082
+node $env:USERPROFILE\.dsh\profiles\node_modules\@deepseek-ai\dsh\lib\bin.js --profile web --patch .\e2e\dsh-participant.patch.yml --port 3083
 ```
 
-Stop it after both DSH profiles have been closed:
+Open the Host DSH at `http://127.0.0.1:3082` and the Participant DSH at
+`http://127.0.0.1:3083`. Close both DSH processes to let the plugin stop and
+remove its hidden nginx processes.
 
-```powershell
-nginx -p E:/projects/dsh-collab/e2e/nginx/ -c nginx.conf -s stop
-```
+The checked-in standalone nginx config remains available for low-level proxy
+diagnostics, but it is not the normal runtime path.

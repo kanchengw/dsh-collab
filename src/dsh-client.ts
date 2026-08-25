@@ -1,7 +1,7 @@
 import { createElement, useEffect, useMemo, useState, type ChangeEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput } from "./dsh-browser-client.js";
-import { defaultCollabSettings, type DshCollabSecuritySettings } from "./settings.js";
+import { defaultCollabSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -367,7 +367,14 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
   const location = (globalThis as unknown as { location?: { origin?: string } }).location;
   const origin = location?.origin ?? "http://127.0.0.1:3080";
-  return { gatewayUrl: `${origin}/collab`, roomId: "dsh-room" };
+  try {
+    const url = new URL(origin);
+    const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+    if (url.hostname === "127.0.0.1" && port >= 3000 && port < 3100) url.port = String(port + 100);
+    return { gatewayUrl: `${url.origin}/collab`, roomId: "dsh-room" };
+  } catch {
+    return { gatewayUrl: `${origin}/collab`, roomId: "dsh-room" };
+  }
 }
 
 /** Register additive conversation and settings contributions through real DSH slots. */

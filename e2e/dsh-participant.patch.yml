@@ -1,0 +1,19 @@
+# Participant DSH runtime overlay used by the real two-profile browser acceptance run.
+- id: collab-host
+  config:
+    enabled: true
+    roomId: dsh-room
+    hostId: participant
+    allowLoopbackPrincipal: false
+    trustedProxyAddresses: [127.0.0.2]
+    trustedPrincipalHeader: x-authenticated-user
+    trustedProxyMarkerHeader: x-dsh-proxy
+    title: DSH Collaboration
+    hostDisplayName: Participant DSH
+    participantGatewayUrl: http://127.0.0.1:3182/collab
+    localProxy:
+      enabled: true
+      targetPort: 3083
+      collabTargetPort: 3082
+      listenPort: 3183
+      principalId: participant
