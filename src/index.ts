@@ -29,7 +29,7 @@ interface DshSettingsRegistrationContext {
 }
 
 export interface DshCollabCordisContext extends DshCordisHostContext {
-  effect?: (factory: () => (() => void) | void, name?: string) => () => void;
+  effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
 }
 
@@ -80,7 +80,7 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     });
     void localProxy.start().catch((error: unknown) => console.warn("dsh-collab local nginx failed to start", error));
     const proxyForDispose = localProxy;
-    context.effect(() => () => { void proxyForDispose.dispose(); }, "dsh-collab: local nginx");
+    context.effect(() => async () => { await proxyForDispose.dispose(); }, "dsh-collab: local nginx");
   }
   if (typeof config.roomId !== "string" || typeof config.hostId !== "string" || typeof config.title !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
@@ -93,9 +93,9 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
   }
   if (!mounted && !disposeCreated) return;
   if (context.effect) {
-    context.effect(() => () => {
+    context.effect(() => async () => {
       disposeCreated?.();
-      if (mounted) void mounted.dispose();
+      if (mounted) await mounted.dispose();
     }, "dsh-collab: host routes");
   }
 }

@@ -1,7 +1,37 @@
+import { createConnection, createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_SETTINGS_NAMESPACE } from "../../src/index.js";
+
+async function freeTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+async function canConnect(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    socket.once("connect", () => { socket.destroy(); resolve(true); });
+    socket.once("error", () => { socket.destroy(); resolve(false); });
+  });
+}
+
+async function waitUntilListening(port: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (await canConnect(port)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`test port ${String(port)} did not start listening`);
+}
 
 describe("Cordis Host mount", () => {
   it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
@@ -80,21 +110,45 @@ describe("Cordis Host mount", () => {
 
   it("wires the package default apply to a configured Cordis context", async () => {
     const http: string[] = [];
-    const disposeEffects: Array<() => void> = [];
+    const disposeEffects: Array<() => void | Promise<void>> = [];
     const context = {
       webServer: {
         register: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
         registerUpgrade: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
       },
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
-      effect: (factory: () => (() => void) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
     apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host" });
     expect(http).toEqual(["/collab", "/collab/v1/stream"]);
-    for (const dispose of disposeEffects) dispose();
-    await new Promise((resolve) => setImmediate(resolve));
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(http).toEqual([]);
   });
+
+  it("returns an async Cordis disposer that waits for bundled nginx to stop", async () => {
+    if (process.platform !== "win32" || process.arch !== "x64") return;
+    const targetPort = await freeTcpPort();
+    const listenPort = await freeTcpPort();
+    const disposeEffects: Array<() => void | Promise<void>> = [];
+    const context = {
+      webServer: { register: vi.fn(), registerUpgrade: vi.fn() },
+      agents: { get: () => undefined },
+      effect: (factory: () => (() => void | Promise<void>) | void) => {
+        const dispose = factory();
+        if (dispose) disposeEffects.push(dispose);
+        return () => {};
+      },
+    };
+
+    apply(context, { localProxy: { enabled: true, targetPort, listenPort } });
+    await waitUntilListening(listenPort);
+    expect(disposeEffects).toHaveLength(1);
+
+    const disposal = disposeEffects[0]!();
+    expect(disposal).toBeInstanceOf(Promise);
+    await disposal;
+    expect(await canConnect(listenPort)).toBe(false);
+  }, 10_000);
 
   it("waits for the first real DSH Agent when Web creates sessions lazily", async () => {
     let created: ((payload: { agent: { id: string } }) => void) | undefined;
