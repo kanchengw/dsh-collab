@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { invalidInput } from "./errors.js";
@@ -165,8 +165,8 @@ export function createLocalNginxProxy(options: LocalNginxProxyOptions): LocalNgi
       await mkdir(join(runtimeDir, "temp", "client_body"), { recursive: true });
       await mkdir(join(runtimeDir, "temp", "proxy"), { recursive: true });
       await writeFile(configPath, renderLocalNginxConfig(options), "utf8");
-      child = spawn(executablePath, ["-p", runtimeDir + "\\", "-c", configPath, "-g", "daemon off;"], {
-        cwd: dirname(executablePath),
+      child = spawn(executablePath, ["-p", "./", "-c", "nginx.conf", "-g", "daemon off;"], {
+        cwd: runtimeDir,
         windowsHide: true,
         stdio: "ignore",
       });
@@ -177,14 +177,27 @@ export function createLocalNginxProxy(options: LocalNginxProxyOptions): LocalNgi
       child = undefined;
       if (!active || active.exitCode !== null) return;
       await new Promise<void>((resolve) => {
-        active.once("exit", () => resolve());
-        active.kill();
+        const stop = spawn(executablePath, ["-p", "./", "-c", "nginx.conf", "-s", "quit"], {
+          cwd: runtimeDir,
+          windowsHide: true,
+          stdio: "ignore",
+        });
+        stop.once("error", () => resolve());
+        stop.once("exit", () => resolve());
         setTimeout(resolve, 2000);
+      });
+      await new Promise<void>((resolve) => {
+        if (active.exitCode !== null) return resolve();
+        active.once("exit", () => resolve());
+        setTimeout(() => {
+          if (active.exitCode === null) active.kill();
+          resolve();
+        }, 2000);
       });
     },
     async dispose(): Promise<void> {
       await this.stop();
-      await rm(runtimeDir, { recursive: true, force: true });
+      await rm(runtimeDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     },
   };
 }

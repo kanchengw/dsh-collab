@@ -1,5 +1,21 @@
+import { mkdtemp } from "node:fs/promises";
+import { createConnection, createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { renderLocalNginxConfig, resolveDshPort, resolveLocalProxyPort } from "../../src/nginx.js";
+import { createLocalNginxProxy, renderLocalNginxConfig, resolveDshPort, resolveLocalProxyPort } from "../../src/nginx.js";
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
+  return address.port;
+}
 
 describe("bundled local nginx", () => {
   it("renders a restricted HTTP/WebSocket proxy with trusted identity injection", () => {
@@ -30,4 +46,25 @@ describe("bundled local nginx", () => {
   it("accepts the real DSH port override", () => {
     expect(resolveDshPort(3083)).toBe(3083);
   });
+
+  it("starts the bundled Windows nginx with its generated runtime config", async () => {
+    if (process.platform !== "win32" || process.arch !== "x64") return;
+    const listenPort = await freePort();
+    const runtimeDir = await mkdtemp(join(tmpdir(), "dsh-collab-nginx-test-"));
+    const proxy = createLocalNginxProxy({ targetPort: 3080, listenPort, principalId: "test", runtimeDir });
+
+    try {
+      await proxy.start();
+      await expect(new Promise<void>((resolve, reject) => {
+        const socket = createConnection({ host: "127.0.0.1", port: listenPort });
+        socket.once("error", reject);
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+      })).resolves.toBeUndefined();
+    } finally {
+      await proxy.dispose();
+    }
+  }, 10_000);
 });
