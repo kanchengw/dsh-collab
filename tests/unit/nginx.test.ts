@@ -68,4 +68,24 @@ describe("bundled local nginx", () => {
       await proxy.dispose();
     }
   }, 10_000);
+
+  it("rejects a proxy port already owned by another process", async () => {
+    if (process.platform !== "win32" || process.arch !== "x64") return;
+    const occupied = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", resolve);
+    });
+    const address = occupied.address();
+    if (!address || typeof address === "string") throw new Error("occupied test server did not bind a TCP port");
+    const runtimeDir = await mkdtemp(join(tmpdir(), "dsh-collab-nginx-collision-"));
+    const proxy = createLocalNginxProxy({ targetPort: 3080, listenPort: address.port, principalId: "test", runtimeDir });
+
+    try {
+      await expect(proxy.start()).rejects.toThrow(/proxy port/i);
+    } finally {
+      await proxy.dispose();
+      await new Promise<void>((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 10_000);
 });

@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { invalidInput } from "./errors.js";
 
 export interface LocalNginxProxyOptions {
@@ -135,15 +135,44 @@ http {
 `;
 }
 
-async function waitForPort(host: string, portNumber: number): Promise<void> {
+async function exitsWithin(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null) return true;
+  return await new Promise<boolean>((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function assertPortAvailable(host: string, portNumber: number): Promise<void> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", (error) => reject(new Error(`local proxy port ${host}:${String(portNumber)} is unavailable`, { cause: error })));
+    server.listen(portNumber, host, () => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+}
+
+async function waitForPort(host: string, portNumber: number, child: ChildProcess): Promise<void> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`bundled nginx exited before listening on ${host}:${String(portNumber)}`);
     const connected = await new Promise<boolean>((resolve) => {
       const socket = createConnection({ host, port: portNumber });
       socket.once("connect", () => { socket.destroy(); resolve(true); });
       socket.once("error", () => { socket.destroy(); resolve(false); });
     });
-    if (connected) return;
+    if (connected) {
+      if (await exitsWithin(child, 100)) throw new Error(`bundled nginx exited before listening on ${host}:${String(portNumber)}`);
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`bundled nginx did not listen on ${host}:${String(portNumber)}`);
@@ -166,12 +195,20 @@ export function createLocalNginxProxy(options: LocalNginxProxyOptions): LocalNgi
       await mkdir(join(runtimeDir, "temp", "client_body"), { recursive: true });
       await mkdir(join(runtimeDir, "temp", "proxy"), { recursive: true });
       await writeFile(configPath, renderLocalNginxConfig(options), "utf8");
-      child = spawn(executablePath, ["-p", "./", "-c", "nginx.conf", "-g", "daemon off;"], {
+      await assertPortAvailable(listenHost, options.listenPort);
+      const active = spawn(executablePath, ["-p", "./", "-c", "nginx.conf", "-g", "daemon off;"], {
         cwd: runtimeDir,
         windowsHide: true,
         stdio: "ignore",
       });
-      await waitForPort(listenHost, options.listenPort);
+      child = active;
+      try {
+        await waitForPort(listenHost, options.listenPort, active);
+      } catch (error) {
+        if (active.exitCode === null) active.kill();
+        if (child === active) child = undefined;
+        throw error;
+      }
     },
     async stop(): Promise<void> {
       const active = child;
