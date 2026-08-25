@@ -50,3 +50,13 @@ export function gatewayHttpUrl(endpoint: string): string {
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
   return url.toString();
 }
+
+export function normalizeAdvertisedGatewayEndpoint(value: string, exposeMode: "loopback" | "network"): string {
+  const normalized = normalizeGatewayEndpoint(value);
+  const url = new URL(normalized);
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (exposeMode === "network" && loopback) throw new Error("advertisedEndpoint cannot use a loopback address in network mode");
+  if (exposeMode === "loopback" && url.protocol === "ws:" && !loopback) throw new Error("advertisedEndpoint cannot use a LAN address in loopback mode");
+  return normalized;
+}

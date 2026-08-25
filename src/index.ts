@@ -43,10 +43,10 @@ export function registerDshCollabSettings(
       base: {
         gateway: {
           gatewayHost,
-          gatewayPort: config.port ?? 0,
+          gatewayPort: config.port ?? defaultCollabSettings.gatewayPort,
           exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
+          advertisedEndpoint: "",
         },
-        participantGatewayUrl: config.participantGatewayUrl ?? "",
         security: {
           tokenTtlMs: config.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
           approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,

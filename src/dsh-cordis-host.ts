@@ -10,7 +10,6 @@ export interface DshCordisHostContext {
 export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId"> & {
   enabled?: boolean;
   hostSessionId?: string;
-  participantGatewayUrl?: string;
 };
 
 export interface MountedDshCollabHost {

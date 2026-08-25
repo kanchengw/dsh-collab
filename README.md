@@ -8,7 +8,7 @@
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
-- Namespaced settings UI (`src/settings.ts`) separating Host gateway exposure from Participant connection preferences, with loopback defaults and network-exposure warning.
+- Namespaced settings UI (`src/settings.ts`) controls the dedicated Host Gateway bind mode, port, invitation address and room safety, with loopback defaults and a trusted-network warning. Participants get their remote endpoint from the invitation instead of persistent configuration.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
 
 ## Important deployment decision
@@ -74,7 +74,7 @@ The bundle patch contains one row:
 
 The package's `dsh.client` declaration supplies the browser face. A DSH profile can install the package with its normal plugin command after `pnpm build`; the Host runtime is created through the public adapter seam (`createDshCollabHostRuntime`) and can be mounted by a profile-specific Host integration that supplies the trusted session service and room/session facts. No separate participant-only package is used.
 
-The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port and exposure mode are stored as one atomic object through DSH `ctx.settings`; invite tokens and room/member join fields remain ephemeral UI state and are never persisted as plugin configuration. These Gateway settings apply after a DSH restart.
+The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; invite tokens and member join fields remain ephemeral UI state and are never persisted as plugin configuration. These Gateway settings apply after a DSH restart.
 
 ## LAN Participant deployment
 

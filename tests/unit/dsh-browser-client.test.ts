@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket } from "../../src/dsh-browser-client.js";
+import { decodeCollabInvitation } from "../../src/invitation.js";
 
 function response(data: unknown, status = 200): { ok: boolean; status: number; json(): Promise<unknown> } {
   return { ok: status < 400, status, json: async () => ({ protocol: "dsh-collab.v1", requestId: "test", ok: true, data }) };
@@ -22,6 +23,7 @@ describe("browser Gateway client", () => {
         lastEventSeq: 0,
       });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/invites")) return response({ invite: { inviteId: "invite-1", roomId: "room-1", expiresAt: 100 }, token: "invite-secret" }, 201);
       return response({ request: { requestId: "request-1" } }, 202);
     };
     const WebSocket = class implements BrowserSocket {
@@ -41,6 +43,8 @@ describe("browser Gateway client", () => {
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
     expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh" });
     expect(socketUrls[0]).toContain("token=host-room-token");
+    const created = await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
+    expect(decodeCollabInvitation(created.invitation)).toMatchObject({ gatewayEndpoint: "ws://192.168.1.20:4310/collab", roomId: "room-1", inviteId: "invite-1", token: "invite-secret" });
     client.dispose();
   });
 
@@ -71,7 +75,11 @@ describe("browser Gateway client", () => {
       close(): void { this.readyState = 3; this.onclose?.(); }
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", role: "participant", fetch, WebSocket });
-    await client.join({ inviteId: "invite-1", inviteToken: "invite-token", memberId: "member-bob", displayName: "Bob", principalId: "bob", gatewayUrl: "https://collab.example/collab" }, "room-2");
+    await client.join({
+      invitation: JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", inviteId: "invite-1", token: "invite-token", expiresAt: 100 }),
+      memberId: "member-bob",
+      displayName: "Bob",
+    });
     expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online", hostDisplayName: "Local Host" });
     expect(requests[0]?.init?.headers).not.toHaveProperty("x-dsh-principal-id");
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");

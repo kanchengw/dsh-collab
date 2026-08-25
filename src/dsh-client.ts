@@ -1,6 +1,7 @@
 import { createElement, useEffect, useMemo, useState, type ChangeEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput } from "./dsh-browser-client.js";
+import { normalizeAdvertisedGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 
 export interface DshCollabClientSnapshot {
@@ -21,12 +22,13 @@ export interface DshCollabClientPort {
 }
 
 export interface DshCollabSettingsPort {
-  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string } & Partial<DshCollabSecuritySettings>;
+  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>;
   subscribe?(listener: () => void): () => void;
-  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; participantGatewayUrl?: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
+  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
-  createInvite?(input: { inviteId: string; expiresAt: number }, roomId?: string): Promise<{ token: string }>;
+  createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string }, roomId?: string): Promise<{ invitation: string }>;
+  configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
 }
 
 export interface DshClientSlots {
@@ -55,8 +57,7 @@ interface DshSettingsScopeBinder {
 }
 
 interface PersistedCollabSettings {
-  gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network" };
-  participantGatewayUrl: string;
+  gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string };
   security?: DshCollabSecuritySettings;
 }
 
@@ -66,10 +67,9 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
   if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) return undefined;
   const candidate = gateway as Record<string, unknown>;
   if ((candidate.gatewayHost !== "127.0.0.1" && candidate.gatewayHost !== "0.0.0.0")
-    || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 0 || (candidate.gatewayPort as number) > 65535
+    || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 1 || (candidate.gatewayPort as number) > 65535
     || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
-  const participantGatewayUrl = (value as { participantGatewayUrl?: unknown }).participantGatewayUrl;
-  if (typeof participantGatewayUrl !== "string") return undefined;
+  const advertisedEndpoint = typeof candidate.advertisedEndpoint === "string" ? candidate.advertisedEndpoint : "";
   const securityValue = (value as { security?: unknown }).security;
   const security = securityValue && typeof securityValue === "object" && !Array.isArray(securityValue)
     ? securityValue as Partial<DshCollabSecuritySettings>
@@ -81,25 +81,21 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
     maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
   };
-  return { gateway: candidate as PersistedCollabSettings["gateway"], participantGatewayUrl, security: normalized };
-}
-
-function validateParticipantGatewayUrl(value: string): void {
-  if (value === "") return;
-  try {
-    const url = new URL(value);
-    if ((url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash && url.pathname.replace(/\/$/, "") === "/collab") return;
-  } catch { /* handled by the common validation error below */ }
-  throw new Error("participantGatewayUrl must be an http(s) /collab URL without credentials, query, or fragment");
+  return { gateway: { ...candidate as Omit<PersistedCollabSettings["gateway"], "advertisedEndpoint">, advertisedEndpoint }, security: normalized };
 }
 
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
+  const syncGateway = (): void => {
+    const gateway = scope.getSnapshot().value?.gateway;
+    if (gateway) actions.configureGateway?.(gateway);
+  };
+  syncGateway();
   return {
     getSnapshot: () => {
+      syncGateway();
       const persisted = scope.getSnapshot().value;
       if (persisted) return {
         ...persisted.gateway,
-        participantGatewayUrl: persisted.participantGatewayUrl,
         tokenTtlMs: persisted.security?.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
         approvalPolicy: persisted.security?.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: persisted.security?.maxMembers ?? defaultCollabSettings.maxMembers,
@@ -116,15 +112,15 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         maxQueue: fallback.maxQueue ?? defaultCollabSettings.maxQueue,
       };
     },
-    subscribe: (listener) => scope.subscribe(listener),
+    subscribe: (listener) => scope.subscribe(() => { syncGateway(); listener(); }),
     async save(input) {
       const current = scope.getSnapshot();
       if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 0 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 0 and 65535");
+      if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 1 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 1 and 65535");
       if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
-      const participantGatewayUrl = input.participantGatewayUrl ?? "";
-      validateParticipantGatewayUrl(participantGatewayUrl);
+      if (input.advertisedEndpoint === "" && input.exposeMode === "network") throw new Error("advertisedEndpoint is required in network mode");
+      const advertisedEndpoint = input.advertisedEndpoint === "" ? "" : normalizeAdvertisedGatewayEndpoint(input.advertisedEndpoint, input.exposeMode);
       const security = {
         tokenTtlMs: input.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
         approvalPolicy: input.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
@@ -136,15 +132,14 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       if (!Number.isSafeInteger(security.maxMembers) || security.maxMembers < 1) throw new Error("maxMembers must be positive");
       if (!Number.isSafeInteger(security.maxMessageBytes) || security.maxMessageBytes < 1) throw new Error("maxMessageBytes must be positive");
       if (!Number.isSafeInteger(security.maxQueue) || security.maxQueue < 0) throw new Error("maxQueue must be non-negative");
-      await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode });
-      await scope.set("participantGatewayUrl", participantGatewayUrl);
+      await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode, advertisedEndpoint });
       await scope.set("security", security);
       const committed = scope.getSnapshot().value;
       if (!committed
         || committed.gateway.gatewayHost !== input.gatewayHost
         || committed.gateway.gatewayPort !== input.gatewayPort
         || committed.gateway.exposeMode !== input.exposeMode
-        || committed.participantGatewayUrl !== participantGatewayUrl
+        || committed.gateway.advertisedEndpoint !== advertisedEndpoint
         || committed.security?.tokenTtlMs !== security.tokenTtlMs
         || committed.security.approvalPolicy !== security.approvalPolicy
         || committed.security.maxMembers !== security.maxMembers
@@ -152,10 +147,12 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         || committed.security.maxQueue !== security.maxQueue) {
         throw new Error("Collaboration settings were not persisted by DSH");
       }
+      syncGateway();
     },
     bootstrap: actions.bootstrap?.bind(actions),
     join: actions.join?.bind(actions),
     createInvite: actions.createInvite?.bind(actions),
+    configureGateway: actions.configureGateway?.bind(actions),
   };
 }
 
@@ -290,70 +287,73 @@ export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort;
 export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): ReactNode {
   const initial = useMemo(() => props.port?.getSnapshot() ?? { ...defaultCollabSettings }, [props.port]);
   const [deployment, setDeployment] = useState({ gatewayHost: initial.gatewayHost, gatewayPort: initial.gatewayPort, exposeMode: initial.exposeMode });
-  const [participantGatewayUrl, setParticipantGatewayUrl] = useState(initial.participantGatewayUrl ?? "");
+  const [advertisedEndpoint, setAdvertisedEndpoint] = useState(initial.advertisedEndpoint);
   const [tokenTtlMs, setTokenTtlMs] = useState(String(initial.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
   const [approvalPolicy, setApprovalPolicy] = useState(initial.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
   const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
   const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
   const [maxQueue, setMaxQueue] = useState(String(initial.maxQueue ?? defaultCollabSettings.maxQueue));
-  const [roomId, setRoomId] = useState("");
-  const [inviteId, setInviteId] = useState("");
-  const [inviteToken, setInviteToken] = useState("");
-  const [memberId, setMemberId] = useState("");
+  const [invitation, setInvitation] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [status, setStatus] = useState<string>();
   useEffect(() => props.port?.subscribe?.(() => {
     const snapshot = props.port?.getSnapshot();
     if (!snapshot) return;
     setDeployment({ gatewayHost: snapshot.gatewayHost, gatewayPort: snapshot.gatewayPort, exposeMode: snapshot.exposeMode });
-    setParticipantGatewayUrl(snapshot.participantGatewayUrl ?? "");
+    setAdvertisedEndpoint(snapshot.advertisedEndpoint);
     setTokenTtlMs(String(snapshot.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
     setApprovalPolicy(snapshot.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
     setMaxMembers(String(snapshot.maxMembers ?? defaultCollabSettings.maxMembers));
     setMaxMessageBytes(String(snapshot.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
     setMaxQueue(String(snapshot.maxQueue ?? defaultCollabSettings.maxQueue));
   }), [props.port]);
-  const warning = deployment.exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
+  const warning = deployment.exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone on this trusted LAN/VPN can reach the Gateway. Invite and room tokens still control access.") : null;
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     try {
-      await props.port?.save({ ...deployment, participantGatewayUrl, tokenTtlMs: Number(tokenTtlMs), approvalPolicy, maxMembers: Number(maxMembers), maxMessageBytes: Number(maxMessageBytes), maxQueue: Number(maxQueue) });
-      setStatus("Collaboration settings saved. Host safety changes apply after DSH restart.");
+      await props.port?.save({ ...deployment, advertisedEndpoint, tokenTtlMs: Number(tokenTtlMs), approvalPolicy, maxMembers: Number(maxMembers), maxMessageBytes: Number(maxMessageBytes), maxQueue: Number(maxQueue) });
+      setStatus("Collaboration settings saved. Gateway changes apply after DSH restart.");
     } catch (cause) {
       setStatus(cause instanceof Error ? cause.message : "Unable to save collaboration settings");
     }
   };
   const bootstrap = async (): Promise<void> => {
     if (!props.port?.bootstrap) return;
-    try { await props.port.bootstrap(roomId.trim() || undefined); setStatus(`Connected to room ${roomId || "configured room"} as Host`); } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to open Host room"); }
+    try { await props.port.bootstrap(); setStatus("Connected to the configured room as Host"); } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to open Host room"); }
   };
   const join = async (): Promise<void> => {
     if (!props.port?.join) return;
     try {
-      await props.port.join({ inviteId, inviteToken, memberId, displayName, gatewayUrl: participantGatewayUrl.trim() || undefined }, roomId.trim() || undefined);
-      setStatus(`Joined room ${roomId || "configured room"} as Participant`);
+      await props.port.join({ invitation, displayName });
+      setStatus("Joined the invitation room as Participant");
     } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to join room"); }
   };
   const createInvite = async (): Promise<void> => {
     if (!props.port?.createInvite) return;
     try {
-      const result = await props.port.createInvite({ inviteId, expiresAt: Date.now() + 60 * 60 * 1000 }, roomId.trim() || undefined);
-      setInviteToken(result.token);
-      setStatus("Invite created; share the invite id and token");
+      const gatewayEndpoint = advertisedEndpoint.trim() || `ws://127.0.0.1:${String(deployment.gatewayPort)}/collab`;
+      const result = await props.port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint });
+      setInvitation(result.invitation);
+      setStatus("Invitation created. Share the complete invitation text.");
     } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Unable to create invite"); }
   };
   return createElement("form", { className: "dsh-collab-settings-card", onSubmit: save, "data-settings-namespace": "dsh-collab" },
     createElement("h3", null, "dsh-collab"),
     createElement("fieldset", null,
-      createElement("legend", null, "Host network boundary"),
-      createElement("p", null, "The DSH profile/CLI owns the listener. Remote access must be configured in an authenticated reverse proxy, not in this card."),
-      createElement("p", { role: "status" }, `Current composition: ${deployment.gatewayHost}:${String(deployment.gatewayPort)} (${deployment.exposeMode}).`),
+      createElement("legend", null, "Dedicated Host Gateway"),
+      createElement("p", null, "This dedicated Collab Gateway is separate from the DSH UI listener. Use trusted LAN/VPN mode for another device."),
+      createElement("label", null, "Exposure ", createElement("select", {
+        value: deployment.exposeMode,
+        onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+          const exposeMode = event.target.value as "loopback" | "network";
+          setDeployment((current) => ({ ...current, exposeMode, gatewayHost: exposeMode === "loopback" ? "127.0.0.1" : "0.0.0.0" }));
+        },
+        name: "exposeMode",
+      }, createElement("option", { value: "loopback" }, "This device only"), createElement("option", { value: "network" }, "Trusted LAN / VPN"))),
+      createElement("label", null, "Gateway port ", createElement("input", { type: "number", min: 1, max: 65535, value: deployment.gatewayPort, onChange: (event: ChangeEvent<HTMLInputElement>) => setDeployment((current) => ({ ...current, gatewayPort: Number(event.target.value) })), name: "gatewayPort" })),
+      createElement("label", null, "Invitation address ", createElement("input", { type: "url", value: advertisedEndpoint, onChange: (event: ChangeEvent<HTMLInputElement>) => setAdvertisedEndpoint(event.target.value), name: "advertisedEndpoint", placeholder: deployment.exposeMode === "network" ? "ws://192.168.1.20:4310/collab" : "Optional wss:// public endpoint" })),
+      createElement("p", null, deployment.exposeMode === "loopback" ? "Leave blank to use the loopback Gateway in local invitations." : "Use this Host's reachable private IP, or an existing external wss:// endpoint."),
       warning,
-    ),
-    createElement("fieldset", null,
-      createElement("legend", null, "Participant connection"),
-      createElement("label", null, "Host Gateway URL ", createElement("input", { type: "url", value: participantGatewayUrl, onChange: (event: ChangeEvent<HTMLInputElement>) => setParticipantGatewayUrl(event.target.value), name: "participantGatewayUrl", placeholder: "https://host.example/collab" })),
-      createElement("p", null, "Use the public Host URL ending in /collab when joining another person's room."),
     ),
     createElement("fieldset", null,
       createElement("legend", null, "Host room safety (restart required)"),
@@ -366,14 +366,11 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     createElement("button", { type: "submit" }, "Save collaboration settings"),
     createElement("fieldset", null,
       createElement("legend", null, "Room access"),
-      createElement("label", null, "Room ID ", createElement("input", { value: roomId, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomId(event.target.value), name: "roomId", placeholder: "dsh-room" })),
       createElement("button", { type: "button", onClick: () => { void bootstrap(); }, disabled: !props.port?.bootstrap }, "Open Host room"),
-      createElement("label", null, "Invite ID ", createElement("input", { value: inviteId, onChange: (event: ChangeEvent<HTMLInputElement>) => setInviteId(event.target.value), name: "inviteId" })),
-      createElement("label", null, "Invite token ", createElement("input", { value: inviteToken, onChange: (event: ChangeEvent<HTMLInputElement>) => setInviteToken(event.target.value), name: "inviteToken" })),
-      createElement("label", null, "Member ID ", createElement("input", { value: memberId, onChange: (event: ChangeEvent<HTMLInputElement>) => setMemberId(event.target.value), name: "memberId" })),
+      createElement("button", { type: "button", onClick: () => { void createInvite(); }, disabled: !props.port?.createInvite || (deployment.exposeMode === "network" && advertisedEndpoint.trim() === "") }, "Create invitation"),
+      createElement("label", null, "Invitation ", createElement("textarea", { value: invitation, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setInvitation(event.target.value), name: "invitation", rows: 6, placeholder: "Paste the complete dsh-collab invitation here" })),
       createElement("label", null, "Display name ", createElement("input", { value: displayName, onChange: (event: ChangeEvent<HTMLInputElement>) => setDisplayName(event.target.value), name: "displayName" })),
-      createElement("button", { type: "button", onClick: () => { void createInvite(); }, disabled: !props.port?.createInvite || inviteId.trim() === "" }, "Create invite"),
-      createElement("button", { type: "button", onClick: () => { void join(); }, disabled: !props.port?.join || inviteId.trim() === "" || inviteToken.trim() === "" }, "Join as Participant"),
+      createElement("button", { type: "button", onClick: () => { void join(); }, disabled: !props.port?.join || invitation.trim() === "" || displayName.trim() === "" }, "Join as Participant"),
     ),
     status ? createElement("p", { role: "status" }, status) : null,
   );
@@ -384,14 +381,7 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
 }
 
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
-  const location = (globalThis as unknown as { location?: { origin?: string } }).location;
-  const origin = location?.origin ?? "http://127.0.0.1:3080";
-  try {
-    const url = new URL(origin);
-    return { gatewayUrl: `${url.origin}/collab`, roomId: "dsh-room" };
-  } catch {
-    return { gatewayUrl: `${origin}/collab`, roomId: "dsh-room" };
-  }
+  return { gatewayUrl: `http://127.0.0.1:${String(defaultCollabSettings.gatewayPort)}/collab`, roomId: "dsh-room" };
 }
 
 /** Register additive conversation and settings contributions through real DSH slots. */

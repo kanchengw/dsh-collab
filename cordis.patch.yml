@@ -10,5 +10,7 @@
         roomId: dsh-room
         hostId: local-host
         allowLoopbackPrincipal: true
+        host: 127.0.0.1
+        port: 4310
         title: DSH Collaboration
         hostDisplayName: Local Host

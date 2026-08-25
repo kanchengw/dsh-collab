@@ -6,7 +6,7 @@ export interface CollabSettings {
   gatewayHost: "127.0.0.1" | "0.0.0.0";
   gatewayPort: number;
   exposeMode: CollabExposeMode;
-  participantGatewayUrl: string;
+  advertisedEndpoint: string;
   tokenTtlMs: number;
   approvalPolicy: CollabApprovalPolicy;
   maxMembers: number;
@@ -17,9 +17,9 @@ export interface CollabSettings {
 export const defaultCollabSettings: CollabSettings = {
   enabled: true,
   gatewayHost: "127.0.0.1",
-  gatewayPort: 0,
+  gatewayPort: 4310,
   exposeMode: "loopback",
-  participantGatewayUrl: "",
+  advertisedEndpoint: "",
   tokenTtlMs: 8 * 60 * 60 * 1000,
   approvalPolicy: "host-only",
   maxMembers: 16,
@@ -33,6 +33,7 @@ export interface DshCollabGatewaySettings {
   gatewayHost: "127.0.0.1" | "0.0.0.0";
   gatewayPort: number;
   exposeMode: CollabExposeMode;
+  advertisedEndpoint: string;
 }
 
 export interface DshCollabSecuritySettings {
@@ -45,6 +46,5 @@ export interface DshCollabSecuritySettings {
 
 export interface DshCollabPersistedSettings {
   gateway: DshCollabGatewaySettings;
-  participantGatewayUrl: string;
   security?: DshCollabSecuritySettings;
 }
