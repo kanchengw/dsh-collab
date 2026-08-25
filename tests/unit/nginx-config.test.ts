@@ -30,5 +30,6 @@ describe("local two-DSH nginx boundary", () => {
     expect(config.match(/proxy_buffering off;/g)).toHaveLength(2);
     expect(config.match(/add_header Access-Control-Allow-Origin \$[a-z_]+ always;/g)).toHaveLength(4);
     expect(config.match(/return 204;/g)).toHaveLength(2);
+    expect(config).toContain("access_log off;");
   });
 });

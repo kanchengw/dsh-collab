@@ -34,6 +34,7 @@ describe("bundled local nginx", () => {
     expect(config).toContain("add_header Access-Control-Allow-Origin $dsh_collab_cors_origin always;");
     expect(config).toContain("add_header Access-Control-Allow-Headers \"Accept, Authorization, Content-Type\" always;");
     expect(config).toContain("return 204;");
+    expect(config).toContain("access_log off;");
     expect(config).toMatch(/location \^~ \/collab\/ \{[\s\S]*proxy_bind 127\.0\.0\.2;[\s\S]*proxy_pass http:\/\/dsh_collab_target;/);
     expect(config).toContain("location / {\n            proxy_pass http://dsh_browser_target;");
   });

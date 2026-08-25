@@ -70,6 +70,7 @@ events {
 }
 
 http {
+    access_log off;
     client_body_temp_path temp/client_body;
     proxy_temp_path temp/proxy;
 
