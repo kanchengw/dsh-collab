@@ -10,6 +10,7 @@
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
 - Namespaced settings UI (`src/settings.ts`) controls the dedicated Host Gateway bind mode, port, invitation address and room safety, with loopback defaults and a trusted-network warning. Participants get their remote endpoint from the invitation instead of persistent configuration.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
+- Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
 
 ## Important deployment decision
 
@@ -31,6 +32,8 @@ The in-process Collab Gateway is the application service owned by this package. 
 A reverse proxy/tunnel is optional and user-supplied only when the Host wants an external `wss://` endpoint. It terminates TLS and forwards HTTP plus WebSocket upgrades to the dedicated Gateway. It is not needed for the LAN MVP, is not a replacement for the Collab Gateway, and is not provisioned by this package.
 
 Participant identity is first bound by possession of a valid one-time invite; subsequent requests use the issued room token. Optional trusted-proxy identity headers remain a deployment extension, but direct clients cannot self-assert them.
+
+The Host state file deliberately excludes one-time invitation secrets and short-lived room tokens. It is written as a versioned whole snapshot through a same-directory temporary file and rename, with private file/directory modes on platforms that enforce POSIX permissions. A malformed or unsupported state file stops Gateway startup instead of silently replacing room history.
 
 ## Commands
 

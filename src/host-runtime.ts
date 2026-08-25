@@ -49,16 +49,35 @@ export interface DshCollabHostRuntime {
   dispose(): Promise<void>;
 }
 
+function rebindSnapshot(snapshot: DshCollabHostRuntimeSnapshot, roomId: string, hostSessionId: string): DshCollabHostRuntimeSnapshot {
+  const rebound = structuredClone(snapshot);
+  const room = rebound.rooms.rooms.find((entry) => entry.room.roomId === roomId);
+  if (room) room.room.hostSessionId = hostSessionId;
+  for (const record of rebound.dispatcher.records) {
+    if (record.roomId === roomId) record.hostSessionId = hostSessionId;
+  }
+  if (rebound.dispatcher.activeRequestId) {
+    const active = rebound.dispatcher.records.find((record) => record.requestId === rebound.dispatcher.activeRequestId);
+    if (active?.status === "running") {
+      active.status = "queued";
+      if (!rebound.dispatcher.queue.includes(active.requestId)) rebound.dispatcher.queue.unshift(active.requestId);
+      delete rebound.dispatcher.activeRequestId;
+    }
+  }
+  return rebound;
+}
+
 /** Build the one Host room runtime used by a DSH process or a local E2E harness. */
 export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions): DshCollabHostRuntime {
-  const rooms = options.snapshot ? RoomStore.fromSnapshot(options.snapshot.rooms) : new RoomStore();
-  if (!options.snapshot) {
+  const snapshot = options.snapshot ? rebindSnapshot(options.snapshot, options.roomId, options.hostSessionId) : undefined;
+  const rooms = snapshot ? RoomStore.fromSnapshot(snapshot.rooms) : new RoomStore();
+  if (!snapshot) {
     rooms.createRoom({ roomId: options.roomId, hostId: options.hostId, hostSessionId: options.hostSessionId, title: options.title, hostDisplayName: options.hostDisplayName, now: options.now?.() });
   }
-  const ledger = options.snapshot ? EventLedger.fromSnapshot(options.snapshot.ledger) : new EventLedger();
+  const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
-  const approvals = options.snapshot?.approvals
-    ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: options.snapshot.approvals })
+  const approvals = snapshot?.approvals
+    ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: snapshot.approvals })
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
@@ -77,7 +96,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     approvals,
     approvalPolicy: options.approvalPolicy,
   });
-  if (options.snapshot) gateway.dispatcher.restore(options.snapshot.dispatcher);
+  if (snapshot) gateway.dispatcher.restore(snapshot.dispatcher);
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits });
   const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });

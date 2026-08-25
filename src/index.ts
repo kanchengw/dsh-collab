@@ -13,6 +13,7 @@ export * from "./http.js";
 export * from "./manifest.js";
 export * from "./invitation.js";
 export * from "./participant.js";
+export * from "./persistence.js";
 export * from "./role.js";
 export * from "./runtime.js";
 export * from "./settings.js";

@@ -68,13 +68,17 @@ describe("host runtime factory", () => {
       principalId: "bob",
       message: { kind: "agent-request", messageId: "message-1", requestId: "request-1", roomId: "room-1", authorMemberId: "member-bob", text: "run tests", target: "dsh", deliveryMode: "followup" },
     });
+    await runtime.gateway.dispatcher.drainOne();
+    expect(runtime.gateway.dispatcher.get("request-1")?.status).toBe("running");
     const snapshot = runtime.snapshot();
     await runtime.dispose();
 
-    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    const restored = createDshCollabHostRuntime({ ...options, hostSessionId: "session-2", snapshot });
     expect(restored.rooms.listMembers("room-1")).toHaveLength(2);
     expect(restored.ledger.readAfter("room-1", 0, 10)).toEqual(expect.arrayContaining([expect.objectContaining({ eventId: "event-1", seq: 1 })]));
     expect(restored.gateway.dispatcher.get("request-1")).toMatchObject({ status: "queued", roomId: "room-1" });
+    expect(restored.rooms.getRoom("room-1").hostSessionId).toBe("session-2");
+    expect(restored.gateway.dispatcher.get("request-1")?.hostSessionId).toBe("session-2");
     await restored.dispose();
   });
 });

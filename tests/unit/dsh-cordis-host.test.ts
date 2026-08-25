@@ -1,4 +1,7 @@
 import { createConnection, createServer as createTcpServer } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
@@ -34,6 +37,7 @@ async function waitUntilListening(port: number): Promise<void> {
 }
 
 describe("Cordis Host mount", () => {
+  const noPersistence = { stateFile: false as const };
   it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
     const options = {
       hostPrincipalId: "host",
@@ -96,6 +100,7 @@ describe("Cordis Host mount", () => {
     apply(context, {
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
       allowLoopbackPrincipal: true, tokenTtlMs: 1000, maxMessageBytes: 1000, now: () => 10, tokenFactory: () => "room-token",
+      ...noPersistence,
     });
     await waitUntilListening(gatewayPort);
 
@@ -119,7 +124,7 @@ describe("Cordis Host mount", () => {
     const mounted = mountDshCollabCordisHost({
       agents: { get: (sessionId) => sessionId === "session-1" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined },
     }, {
-      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0, ...noPersistence,
     });
     expect(mounted).toBeDefined();
     const port = await mounted!.ready;
@@ -133,13 +138,37 @@ describe("Cordis Host mount", () => {
     const mounted = mountDshCollabCordisHost({
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
     }, {
-      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0, ...noPersistence,
     });
     if (!mounted) throw new Error("Gateway was not mounted");
     const ready = mounted.ready;
     await mounted.dispose();
     const port = await ready;
     expect(await canConnect(port)).toBe(false);
+  });
+
+  it("restores Host room members and timeline from its state file after restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-restart-"));
+    const stateFile = join(dir, "state.json");
+    const config = { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0, stateFile };
+    const context = { agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) } };
+    try {
+      const first = mountDshCollabCordisHost(context, config);
+      if (!first) throw new Error("first Gateway did not mount");
+      await first.ready;
+      first.runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 2 });
+      first.runtime.ledger.append({ eventId: "event-1", roomId: "room-1", type: "human.message", actor: { memberId: "member-bob", principalId: "bob" }, createdAt: 3, payload: { text: "hello" } });
+      await first.dispose();
+
+      const second = mountDshCollabCordisHost(context, config);
+      if (!second) throw new Error("second Gateway did not mount");
+      await second.ready;
+      expect(second.runtime.rooms.listMembers("room-1")).toContainEqual(expect.objectContaining({ memberId: "member-bob" }));
+      expect(second.runtime.ledger.readAfter("room-1", 0)).toContainEqual(expect.objectContaining({ eventId: "event-1" }));
+      await second.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("can be disabled without starting a Gateway", () => {
@@ -156,7 +185,7 @@ describe("Cordis Host mount", () => {
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
-    apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: gatewayPort });
+    apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
     await waitUntilListening(gatewayPort);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(await canConnect(gatewayPort)).toBe(false);
@@ -193,7 +222,7 @@ describe("Cordis Host mount", () => {
       on: (_event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => { created = listener; return () => { created = undefined; }; },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
-    apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: gatewayPort });
+    apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
     expect(await canConnect(gatewayPort)).toBe(false);
     created?.({ agent: { id: "session-created" } });
     await waitUntilListening(gatewayPort);
