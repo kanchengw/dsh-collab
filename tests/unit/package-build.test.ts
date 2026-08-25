@@ -3,6 +3,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("installable package build", () => {
+  it("keeps browser-only modules out of the built Host root", () => {
+    const entry = readFileSync(resolve(process.cwd(), "lib/index.js"), "utf8");
+    expect(entry).not.toMatch(/dsh-client|dsh-browser-client|collab-settings-card/);
+  });
+
   it("builds only the host and browser faces and keeps one package patch row", () => {
     const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
     const buildConfig = JSON.parse(readFileSync(resolve(process.cwd(), "tsconfig.build.json"), "utf8"));

@@ -44,6 +44,7 @@ describe("collab settings", () => {
   });
 
   it("validates hidden Participant resume state at the DSH persistence boundary", () => {
+    expect(DSH_COLLAB_PARTICIPANT_SCHEMA({})).toEqual({});
     expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).not.toThrow();
     expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "ws://public.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).toThrow("gatewayEndpoint");
     expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "", memberId: "member-bob", credential: "resume-secret" } })).toThrow("roomId");

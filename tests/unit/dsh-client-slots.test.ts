@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { apply, applyDshCollabClient, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", memberCount: 3, canSteer: true };
 
@@ -38,16 +39,17 @@ describe("real DSH client slot adapter", () => {
     expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 
-  it("renders dedicated Host Gateway controls and one-field invitation join", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabSettingsCard, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() } }));
+  it("renders separate Host configuration and Participant invitation flows", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() } }));
     expect(html).toContain('data-settings-namespace="dsh-collab"');
-    expect(html).toContain("trusted LAN/VPN");
+    expect(html).toContain("Private network exposure");
     expect(html).toContain("dedicated Collab Gateway");
     expect(html).not.toContain('name="gatewayHost"');
     expect(html).toContain('name="gatewayPort"');
     expect(html).toContain('name="exposeMode"');
     expect(html).toContain('name="advertisedEndpoint"');
-    expect(html).toContain('name="invitation"');
+    expect(html).toContain('name="hostInvitationOutput"');
+    expect(html).toContain('name="participantInvitation"');
     expect(html).not.toContain('name="participantGatewayUrl"');
     expect(html).not.toContain('name="inviteToken"');
   });
@@ -108,7 +110,7 @@ describe("real DSH client slot adapter", () => {
     const port = createDshSettingsPort(scope, actions);
 
     expect(configureGateway).toHaveBeenCalledWith(value.gateway);
-    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, writable: true, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
     await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
     expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
     expect(createDshSettingsPort(scope, actions).getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });

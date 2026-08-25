@@ -5,8 +5,6 @@ export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-cordis-agent.js";
 export * from "./dsh-cordis-host.js";
-export * from "./dsh-client.js";
-export * from "./dsh-browser-client.js";
 export * from "./endpoint-policy.js";
 export * from "./host-runtime.js";
 export * from "./http.js";

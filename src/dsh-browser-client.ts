@@ -374,6 +374,8 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } {
     return this.client.getSettingsSnapshot();
   }
+  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "roomTitle" | "hostDisplayName" | "role" | "connection"> { return this.client.getSnapshot(); }
+  subscribeRoom(listener: () => void): () => void { return this.client.subscribe(listener); }
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }

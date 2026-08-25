@@ -31,7 +31,7 @@ export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.
     roomId: z.string().min(1).required(),
     memberId: z.string().min(1).required(),
     credential: z.string().min(1).required(),
-  }).hidden(),
+  }).default(undefined as unknown as NonNullable<DshCollabParticipantSettings["resume"]>).hidden(),
 });
 
 function validateAdvertisedEndpoint(gateway: DshCollabPersistedSettings["gateway"]): void {
