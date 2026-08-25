@@ -38,11 +38,15 @@ describe("real DSH client slot adapter", () => {
     expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 
-  it("renders a collab settings card with network warning", () => {
+  it("renders deployment-owned Host network settings as read-only guidance", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsCard, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 0, exposeMode: "network" as const }), save: vi.fn() } }));
     expect(html).toContain('data-settings-namespace="dsh-collab"');
     expect(html).toContain("Anyone who can reach this address");
-    expect(html).toContain('name="gatewayPort"');
+    expect(html).toContain("DSH profile/CLI");
+    expect(html).not.toContain('name="gatewayHost"');
+    expect(html).not.toContain('name="gatewayPort"');
+    expect(html).not.toContain('name="exposeMode"');
+    expect(html).toContain('name="participantGatewayUrl"');
   });
 
   it("registers only additive DSH slots and waits for their declarations", () => {

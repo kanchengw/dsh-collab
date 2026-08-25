@@ -274,9 +274,7 @@ export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort;
 /** Settings card registered under DSH's plugin configuration tab. */
 export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): ReactNode {
   const initial = useMemo(() => props.port?.getSnapshot() ?? { ...defaultCollabSettings }, [props.port]);
-  const [host, setHost] = useState(initial.gatewayHost);
-  const [port, setPort] = useState(String(initial.gatewayPort));
-  const [exposeMode, setExposeMode] = useState(initial.exposeMode);
+  const [deployment, setDeployment] = useState({ gatewayHost: initial.gatewayHost, gatewayPort: initial.gatewayPort, exposeMode: initial.exposeMode });
   const [participantGatewayUrl, setParticipantGatewayUrl] = useState(initial.participantGatewayUrl ?? "");
   const [tokenTtlMs, setTokenTtlMs] = useState(String(initial.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
   const [approvalPolicy, setApprovalPolicy] = useState(initial.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
@@ -292,9 +290,7 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
   useEffect(() => props.port?.subscribe?.(() => {
     const snapshot = props.port?.getSnapshot();
     if (!snapshot) return;
-    setHost(snapshot.gatewayHost);
-    setPort(String(snapshot.gatewayPort));
-    setExposeMode(snapshot.exposeMode);
+    setDeployment({ gatewayHost: snapshot.gatewayHost, gatewayPort: snapshot.gatewayPort, exposeMode: snapshot.exposeMode });
     setParticipantGatewayUrl(snapshot.participantGatewayUrl ?? "");
     setTokenTtlMs(String(snapshot.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
     setApprovalPolicy(snapshot.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
@@ -302,14 +298,14 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
     setMaxMessageBytes(String(snapshot.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
     setMaxQueue(String(snapshot.maxQueue ?? defaultCollabSettings.maxQueue));
   }), [props.port]);
-  const warning = exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
+  const warning = deployment.exposeMode === "network" ? createElement("p", { role: "alert" }, "Anyone who can reach this address may attempt to join. Use authenticated access.") : null;
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     try {
-      await props.port?.save({ gatewayHost: host, gatewayPort: Number(port), exposeMode, participantGatewayUrl, tokenTtlMs: Number(tokenTtlMs), approvalPolicy, maxMembers: Number(maxMembers), maxMessageBytes: Number(maxMessageBytes), maxQueue: Number(maxQueue) });
-      setStatus("Gateway settings saved");
+      await props.port?.save({ ...deployment, participantGatewayUrl, tokenTtlMs: Number(tokenTtlMs), approvalPolicy, maxMembers: Number(maxMembers), maxMessageBytes: Number(maxMessageBytes), maxQueue: Number(maxQueue) });
+      setStatus("Collaboration settings saved. Host safety changes apply after DSH restart.");
     } catch (cause) {
-      setStatus(cause instanceof Error ? cause.message : "Unable to save Gateway settings");
+      setStatus(cause instanceof Error ? cause.message : "Unable to save collaboration settings");
     }
   };
   const bootstrap = async (): Promise<void> => {
@@ -333,18 +329,26 @@ export function DshCollabSettingsCard(props: { port?: DshCollabSettingsPort }): 
   };
   return createElement("form", { className: "dsh-collab-settings-card", onSubmit: save, "data-settings-namespace": "dsh-collab" },
     createElement("h3", null, "dsh-collab"),
-    createElement("p", null, "Configure the Host gateway used by collaboration rooms."),
-    createElement("label", null, "Bind host ", createElement("select", { value: host, onChange: (event: ChangeEvent<HTMLSelectElement>) => setHost(event.target.value), name: "gatewayHost" }, createElement("option", { value: "127.0.0.1" }, "127.0.0.1 (loopback)"), createElement("option", { value: "0.0.0.0" }, "0.0.0.0 (network)"))),
-    createElement("label", null, "Port ", createElement("input", { type: "number", min: 0, max: 65535, value: port, onChange: (event: ChangeEvent<HTMLInputElement>) => setPort(event.target.value), name: "gatewayPort" })),
-    createElement("label", null, "Exposure ", createElement("select", { value: exposeMode, onChange: (event: ChangeEvent<HTMLSelectElement>) => setExposeMode(event.target.value as "loopback" | "network"), name: "exposeMode" }, createElement("option", { value: "loopback" }, "Loopback"), createElement("option", { value: "network" }, "Explicit network"))),
-    createElement("label", null, "Participant Gateway URL ", createElement("input", { type: "url", value: participantGatewayUrl, onChange: (event: ChangeEvent<HTMLInputElement>) => setParticipantGatewayUrl(event.target.value), name: "participantGatewayUrl", placeholder: "https://host.example/collab" })),
-    createElement("label", null, "Token lifetime (ms) ", createElement("input", { type: "number", min: 1, value: tokenTtlMs, onChange: (event: ChangeEvent<HTMLInputElement>) => setTokenTtlMs(event.target.value), name: "tokenTtlMs" })),
-    createElement("label", null, "Approval policy ", createElement("select", { value: approvalPolicy, onChange: (event: ChangeEvent<HTMLSelectElement>) => setApprovalPolicy(event.target.value as "host-only" | "disabled"), name: "approvalPolicy" }, createElement("option", { value: "host-only" }, "Host only"), createElement("option", { value: "disabled" }, "Disabled"))),
-    createElement("label", null, "Max members ", createElement("input", { type: "number", min: 1, value: maxMembers, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMembers(event.target.value), name: "maxMembers" })),
-    createElement("label", null, "Max message bytes ", createElement("input", { type: "number", min: 1, value: maxMessageBytes, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMessageBytes(event.target.value), name: "maxMessageBytes" })),
-    createElement("label", null, "Max queued Agent requests ", createElement("input", { type: "number", min: 0, value: maxQueue, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxQueue(event.target.value), name: "maxQueue" })),
-    warning,
-    createElement("button", { type: "submit" }, "Save"),
+    createElement("fieldset", null,
+      createElement("legend", null, "Host network boundary"),
+      createElement("p", null, "The DSH profile/CLI owns the listener. Remote access must be configured in an authenticated reverse proxy, not in this card."),
+      createElement("p", { role: "status" }, `Current composition: ${deployment.gatewayHost}:${String(deployment.gatewayPort)} (${deployment.exposeMode}).`),
+      warning,
+    ),
+    createElement("fieldset", null,
+      createElement("legend", null, "Participant connection"),
+      createElement("label", null, "Host Gateway URL ", createElement("input", { type: "url", value: participantGatewayUrl, onChange: (event: ChangeEvent<HTMLInputElement>) => setParticipantGatewayUrl(event.target.value), name: "participantGatewayUrl", placeholder: "https://host.example/collab" })),
+      createElement("p", null, "Use the public Host URL ending in /collab when joining another person's room."),
+    ),
+    createElement("fieldset", null,
+      createElement("legend", null, "Host room safety (restart required)"),
+      createElement("label", null, "Token lifetime (ms) ", createElement("input", { type: "number", min: 1, value: tokenTtlMs, onChange: (event: ChangeEvent<HTMLInputElement>) => setTokenTtlMs(event.target.value), name: "tokenTtlMs" })),
+      createElement("label", null, "Approval policy ", createElement("select", { value: approvalPolicy, onChange: (event: ChangeEvent<HTMLSelectElement>) => setApprovalPolicy(event.target.value as "host-only" | "disabled"), name: "approvalPolicy" }, createElement("option", { value: "host-only" }, "Host only"), createElement("option", { value: "disabled" }, "Disabled"))),
+      createElement("label", null, "Max members ", createElement("input", { type: "number", min: 1, value: maxMembers, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMembers(event.target.value), name: "maxMembers" })),
+      createElement("label", null, "Max message bytes ", createElement("input", { type: "number", min: 1, value: maxMessageBytes, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxMessageBytes(event.target.value), name: "maxMessageBytes" })),
+      createElement("label", null, "Max queued Agent requests ", createElement("input", { type: "number", min: 0, value: maxQueue, onChange: (event: ChangeEvent<HTMLInputElement>) => setMaxQueue(event.target.value), name: "maxQueue" })),
+    ),
+    createElement("button", { type: "submit" }, "Save collaboration settings"),
     createElement("fieldset", null,
       createElement("legend", null, "Room access"),
       createElement("label", null, "Room ID ", createElement("input", { value: roomId, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomId(event.target.value), name: "roomId", placeholder: "dsh-room" })),
