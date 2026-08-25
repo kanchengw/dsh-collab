@@ -18,13 +18,8 @@
 The plugin does **not** download, install, or start nginx. The plugin owns a
 dedicated Collab Gateway, room authorization, HTTP/WebSocket routes, and DSH
 UI. A trusted LAN/VPN deployment connects directly to that Gateway and does
-not require a reverse proxy.
-
-The checked-in nginx files under `e2e/nginx` are for local two-DSH development
-and acceptance only. They do not describe a one-click end-user installation.
-An optional managed local proxy would be a separate future feature and must
-include signed binaries, upgrades, lifecycle handling, and an explicit
-security consent flow.
+not require a reverse proxy. The two-DSH browser environment also connects
+directly and keeps all same-machine isolation under `e2e/`.
 
 ## Gateway boundary
 
@@ -59,7 +54,14 @@ pnpm audit --audit-level=high
 5. Sends one explicit `dsh` message, automatically dispatches it to the one Host Agent, records the Host followup and fans out an Agent output event.
 6. Disconnects and reconnects one Participant, then verifies cursor-based event recovery.
 
-This is the repeatable endpoint for development on one machine; two physical hosts are not required. The test uses the same Gateway, token store, stream upgrade and Host adapter used by the eventual DSH composition. It is not a claim that Chrome DevTools or the complete DSH React shell has already been browser-verified; that requires a configured DSH profile/browser test environment.
+This is the repeatable protocol endpoint for development on one machine; two physical hosts are not required. The test uses the same Gateway, token store, stream upgrade and Host adapter used by DSH composition.
+
+For complete browser testing, run `e2e/prepare.ps1`, then start
+`e2e/start-host.ps1` and `e2e/start-participant.ps1` in separate terminals.
+They install the same complete plugin through DSH's official profile command,
+use isolated `DSH_HOME` directories, and expose the two DSH UIs at `3082` and
+`3083` while their independent Collab Gateways use `4312` and `4313`. See
+[`e2e/README.md`](./e2e/README.md).
 
 ## DSH package shape
 
@@ -88,7 +90,7 @@ Do not expose the DSH listener. In network mode the dedicated Collab Gateway bin
 
 Plain `ws://` accepts only literal loopback, RFC1918/link-local, `100.64.0.0/10`, ULA and IPv6 link-local addresses. Public IPs and hostnames require a user-supplied `wss://` endpoint. The plugin does not create a tunnel, configure a router, issue a certificate, or operate an official Relay in this MVP.
 
-The current automated `tests/integration/e2e-local.test.ts` exercises this dedicated listener directly with two Participant clients. Complete two-DSH browser instructions will replace the old nginx development fixture when the settings and invitation UI are connected.
+The automated `tests/integration/e2e-local.test.ts` exercises this dedicated listener directly with two Participant clients. The isolated two-DSH environment under `e2e/` is the browser-level test harness; it adds no production port rewriting or proxy behavior.
 
 ## Design and development log
 

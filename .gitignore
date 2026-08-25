@@ -1,6 +1,5 @@
 node_modules/
-e2e/nginx/logs/
-e2e/nginx/temp/
+/e2e/.state/
 dist/
 lib/
 .tmp-dsh-*.png

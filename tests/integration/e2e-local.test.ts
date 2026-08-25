@@ -5,15 +5,13 @@ import { createDshCollabHostRuntime, type DshCollabHostRuntime } from "../../src
 import { decodeServerStreamFrame } from "../../src/protocol.js";
 import type { RoomEvent, StreamFrame } from "../../src/types.js";
 
-async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; principal?: string; token?: string; body?: unknown }): Promise<{ status: number; data: any }> {
+async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; token?: string; body?: unknown }): Promise<{ status: number; data: any }> {
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
   return new Promise((resolve, reject) => {
     const request = httpRequest(base + "/collab" + input.path, {
       method: input.method,
-      localAddress: "127.0.0.2",
       headers: {
       "content-type": "application/json",
-      ...(input.principal ? { "x-forwarded-for": "198.51.100.20", "x-authenticated-user": input.principal } : {}),
       ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
       ...(body === undefined ? {} : { "content-length": Buffer.byteLength(body) }),
       },
@@ -58,10 +56,7 @@ describe("local end-to-end collaboration", () => {
     const followups: string[] = [];
     runtime = createDshCollabHostRuntime({
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Release", hostDisplayName: "Host",
-      allowLoopbackPrincipal: false,
-      trustedProxyAddresses: ["127.0.0.2"],
-      trustedPrincipalHeader: "x-authenticated-user",
-      trustedProxyMarkerHeader: "x-forwarded-for",
+      allowLoopbackPrincipal: true,
       tokenFactory: () => issued.shift()!,
       sessions: {
         owns: (sessionId) => sessionId === "session-1",
@@ -77,20 +72,16 @@ describe("local end-to-end collaboration", () => {
     const base = `http://127.0.0.1:${String(port)}`;
     const sockets: Array<{ close: () => void }> = [];
     try {
-      const spoofed = await fetch(base + "/collab/v1/rooms/room-1/invites", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.20", "x-authenticated-user": "host" },
-        body: JSON.stringify({ inviteId: "spoofed", expiresAt: Date.now() + 60_000 }),
-      });
-      expect(spoofed.status).toBe(401);
-      const invite1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-a", expiresAt: Date.now() + 60_000 } });
-      const invite2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", principal: "host", body: { inviteId: "invite-b", expiresAt: Date.now() + 60_000 } });
+      const invite1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", body: { inviteId: "invite-a", expiresAt: Date.now() + 60_000 } });
+      const invite2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", body: { inviteId: "invite-b", expiresAt: Date.now() + 60_000 } });
       expect(invite1.status).toBe(201);
       expect(invite2.status).toBe(201);
-      const joined1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", principal: "person-1", body: { inviteId: "invite-a", token: "invite-1", memberId: "member-1", displayName: "One" } });
-      const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", principal: "person-2", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two" } });
+      const joined1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-a", token: "invite-1", memberId: "member-1", displayName: "One" } });
+      const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two" } });
       expect(joined1.status).toBe(201);
       expect(joined2.status).toBe(201);
+      expect(joined1.data.member.principalId).toBe("invite:invite-a");
+      expect(joined2.data.member.principalId).toBe("invite:invite-b");
       const forbiddenAction = await jsonRequest(base, {
         method: "POST",
         path: "/v1/rooms/room-1/actions",
@@ -103,11 +94,11 @@ describe("local end-to-end collaboration", () => {
       sockets.push(one, two);
       await Promise.all([one.connected, two.connected]);
 
-      const human = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-1", token: joined1.data.roomToken, body: { clientMessageId: "m-human", text: "Can someone review this?", target: "room" } });
+      const human = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined1.data.roomToken, body: { clientMessageId: "m-human", text: "Can someone review this?", target: "room" } });
       expect(human.status).toBe(201);
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "human.message"), waitForEvent(two.frames, (event) => event.type === "human.message")]);
 
-      const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-2", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
+      const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
       expect(agent.status).toBe(202);
       expect(followups).toEqual(["Summarize the thread"]);
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
@@ -117,7 +108,7 @@ describe("local end-to-end collaboration", () => {
       const twoReconnected = connect(base, "room-1", joined2.data.roomToken, "connection-2-reconnect");
       sockets.push(twoReconnected);
       await twoReconnected.connected;
-      const afterReconnect = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", principal: "person-1", token: joined1.data.roomToken, body: { clientMessageId: "m-reconnect", text: "Welcome back", target: "room" } });
+      const afterReconnect = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined1.data.roomToken, body: { clientMessageId: "m-reconnect", text: "Welcome back", target: "room" } });
       expect(afterReconnect.status).toBe(201);
       const recovered = await waitForEvent(twoReconnected.frames, (event) => event.type === "human.message" && event.payload !== undefined && event.payload !== null && typeof event.payload === "object" && (event.payload as { messageId?: string }).messageId === "message:room-1:m-reconnect");
       expect(recovered.seq).toBeGreaterThan(cursor);

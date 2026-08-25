@@ -183,7 +183,7 @@ export class CollabGateway {
       roomId,
       inviteId,
       token: requiredText(body.token, "token"),
-      principalId: request.auth?.principalId?.trim() || `invite:${inviteId}`,
+      principalId: `invite:${inviteId}`,
       memberId: requiredText(body.memberId, "memberId"),
       displayName: requiredText(body.displayName, "displayName"),
       now: this.now(),

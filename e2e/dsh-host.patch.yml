@@ -4,9 +4,8 @@
     enabled: true
     roomId: dsh-room
     hostId: host
-    allowLoopbackPrincipal: false
-    trustedProxyAddresses: [127.0.0.2]
-    trustedPrincipalHeader: x-authenticated-user
-    trustedProxyMarkerHeader: x-dsh-proxy
+    allowLoopbackPrincipal: true
+    host: 127.0.0.1
+    port: 4312
     title: DSH Collaboration
     hostDisplayName: Host DSH

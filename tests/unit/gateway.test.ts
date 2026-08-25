@@ -92,7 +92,7 @@ describe("CollabGateway route contract", () => {
       body: { inviteId: "invite-1", token: inviteToken, memberId: "member-bob", displayName: "Bob" },
     });
     expect(joined.status).toBe(201);
-    expect(joined.body).toMatchObject({ room: { roomId: "room-1" }, member: { principalId: "bob", role: "participant" } });
+    expect(joined.body).toMatchObject({ room: { roomId: "room-1" }, member: { principalId: "invite:invite-1", role: "participant" } });
     const roomToken = (joined.body as { roomToken: string }).roomToken;
 
     const snapshot = await request(gateway, {
