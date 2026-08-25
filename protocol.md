@@ -13,6 +13,35 @@ independent of the DSH native Agent or Session protocol.
 - HTTP status remains authoritative for transport behavior. The JSON envelope
   gives clients a stable request correlation and error shape.
 
+## Shareable invitation
+
+The Host shares one JSON invitation. The Participant pastes that invitation
+into the same complete `dsh-collab` plugin; no separate Gateway URL setup is
+required:
+
+```json
+{
+  "protocol": "dsh-collab.v1",
+  "type": "invite",
+  "gatewayEndpoint": "ws://192.168.1.20:4310/collab",
+  "roomId": "room-1",
+  "inviteId": "invite-1",
+  "token": "opaque-one-time-secret",
+  "expiresAt": 1720000000000
+}
+```
+
+`gatewayEndpoint` is the canonical stream address. The client derives the
+same-origin HTTP API by mapping `ws` to `http` and `wss` to `https`. Plain
+`ws://` is accepted only for literal loopback/private addresses; public IPs
+and hostnames require `wss://`. Credentials, query strings, fragments,
+wildcard bind addresses, and paths other than `/collab` are rejected.
+
+The invitation is a secret because it contains a one-time token. It must not
+be placed in a URL, browser history, access log, or analytics event. The
+external `wss://` endpoint is declarative: v1 does not provision a tunnel,
+reverse proxy, public Relay, TLS certificate, or NAT traversal.
+
 ## HTTP requests
 
 Every request uses:
