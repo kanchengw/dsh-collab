@@ -1,11 +1,12 @@
-import { createConnection, createServer } from "node:net";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createConnection, createServer as createTcpServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
-import { apply, DSH_COLLAB_SETTINGS_NAMESPACE } from "../../src/index.js";
+import { apply, DSH_COLLAB_SETTINGS_NAMESPACE, type DshCollabPersistedSettings } from "../../src/index.js";
 
 async function freeTcpPort(): Promise<number> {
-  const server = createServer();
+  const server = createTcpServer();
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -51,7 +52,7 @@ describe("Cordis Host mount", () => {
   });
 
   it("registers the formal dsh-collab settings namespace with safe composition defaults", () => {
-    const register = vi.fn();
+    const register = vi.fn((_namespace: string, _schema: unknown, options: { base: DshCollabPersistedSettings; validate(value: unknown): void }) => ({ get: () => options.base }));
     const context = {
       webServer: { register: vi.fn(), registerUpgrade: vi.fn() },
       agents: { get: () => undefined },
@@ -75,8 +76,56 @@ describe("Cordis Host mount", () => {
         validate: expect.any(Function),
       }),
     );
-    const options = register.mock.calls[0]?.[2] as { validate(value: unknown): void };
+    const options = register.mock.calls[0]?.[2];
+    if (!options) throw new Error("settings registration options were not captured");
     expect(() => options.validate({ gateway: { gatewayHost: "0.0.0.0", gatewayPort: 3080, exposeMode: "loopback" } })).toThrow("loopback");
+  });
+
+  it("applies persisted security settings to the Host runtime after restart", async () => {
+    let routeHandler: ((request: IncomingMessage, response: ServerResponse) => void | Promise<void>) | undefined;
+    const disposeEffects: Array<() => void | Promise<void>> = [];
+    const persisted = {
+      gateway: { gatewayHost: "127.0.0.1" as const, gatewayPort: 0, exposeMode: "loopback" as const },
+      participantGatewayUrl: "",
+      security: { tokenTtlMs: 25, approvalPolicy: "disabled" as const, maxMembers: 2, maxMessageBytes: 4, maxQueue: 1 },
+    };
+    const context = {
+      webServer: {
+        register: ({ handler }: { handler: typeof routeHandler }) => { routeHandler = handler; return () => { routeHandler = undefined; }; },
+        registerUpgrade: vi.fn(() => () => {}),
+      },
+      agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): typeof persisted } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted }) } }),
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+    };
+
+    apply(context, {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      allowLoopbackPrincipal: true, tokenTtlMs: 1000, maxMessageBytes: 1000, now: () => 10, tokenFactory: () => "room-token",
+    });
+    expect(routeHandler).toBeDefined();
+    const server = createHttpServer((request, response) => { void routeHandler?.(request, response); });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test HTTP server did not bind a TCP port");
+
+    try {
+      const bootstrap = await fetch(`http://127.0.0.1:${String(address.port)}/collab/v1/rooms/room-1/bootstrap`);
+      const bootstrapBody = await bootstrap.json() as { data: { expiresAt: number; roomToken: string } };
+      expect(bootstrapBody.data.expiresAt).toBe(35);
+      const oversized = await fetch(`http://127.0.0.1:${String(address.port)}/collab/v1/rooms/room-1/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${bootstrapBody.data.roomToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ clientMessageId: "message-1", text: "hello" }),
+      });
+      expect(oversized.status).toBe(422);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+    }
   });
 
   it("mounts the Gateway into the real WebServer route contract and unwinds it", async () => {

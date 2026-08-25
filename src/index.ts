@@ -20,11 +20,11 @@ export * from "./webserver.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { createLocalNginxProxy, resolveDshPort, resolveLocalProxyPort, type LocalNginxProxy } from "./nginx.js";
-import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings } from "./settings.js";
+import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
-    register(namespace: string, schema: unknown, options: Record<string, unknown>): unknown;
+    register(namespace: string, schema: unknown, options: Record<string, unknown>): { get(): DshCollabPersistedSettings };
   };
 }
 
@@ -33,10 +33,14 @@ export interface DshCollabCordisContext extends DshCordisHostContext {
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
 }
 
-export function registerDshCollabSettings(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>): void {
+export function registerDshCollabSettings(
+  context: DshCollabCordisContext,
+  config: Partial<DshCordisHostConfig>,
+  onResolved?: (settings: DshCollabPersistedSettings) => void,
+): void {
   const gatewayHost = config.host ?? "127.0.0.1";
   context.inject?.(["settings"], (settingsContext) => {
-    settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
+    const scope = settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
       base: {
         gateway: {
           gatewayHost,
@@ -55,33 +59,23 @@ export function registerDshCollabSettings(context: DshCollabCordisContext, confi
       applies: "restart",
       validate: validateDshCollabPersistedSettings,
     });
+    onResolved?.(scope.get());
   });
 }
 
-/**
- * Host entry point for a DSH Cordis row. Room/session fields are deliberately
- * opt-in: a profile that only installs the browser face cannot accidentally
- * create a room without a trusted local Agent session.
- */
-export function apply(context?: DshCollabCordisContext, config?: Partial<DshCordisHostConfig>): void {
-  if (!context || !config) return;
-  registerDshCollabSettings(context, config);
-  if (config.enabled === false) return;
-  let localProxy: LocalNginxProxy | undefined;
-  if (config.localProxy?.enabled === true && context.effect) {
-    const targetPort = resolveDshPort(config.localProxy.targetPort ?? config.port);
-    localProxy = createLocalNginxProxy({
-      targetPort,
-      collabTargetPort: config.localProxy.collabTargetPort,
-      listenPort: resolveLocalProxyPort(targetPort, config.localProxy.listenPort),
-      principalId: config.localProxy.principalId ?? config.hostId ?? "local-host",
-      trustedProxyMarkerHeader: config.trustedProxyMarkerHeader,
-      trustedPrincipalHeader: config.trustedPrincipalHeader,
-    });
-    void localProxy.start().catch((error: unknown) => console.warn("dsh-collab local nginx failed to start", error));
-    const proxyForDispose = localProxy;
-    context.effect(() => async () => { await proxyForDispose.dispose(); }, "dsh-collab: local nginx");
-  }
+function applyPersistedSecurity(config: Partial<DshCordisHostConfig>, settings: DshCollabPersistedSettings): Partial<DshCordisHostConfig> {
+  const security = settings.security ?? defaultCollabSettings;
+  return {
+    ...config,
+    tokenTtlMs: security.tokenTtlMs,
+    approvalPolicy: security.approvalPolicy,
+    maxMembers: security.maxMembers,
+    maxMessageBytes: security.maxMessageBytes,
+    maxQueue: security.maxQueue,
+  };
+}
+
+function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>): void {
   if (typeof config.roomId !== "string" || typeof config.hostId !== "string" || typeof config.title !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
   let disposeCreated: (() => void) | undefined;
@@ -98,6 +92,36 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
       if (mounted) await mounted.dispose();
     }, "dsh-collab: host routes");
   }
+}
+
+/**
+ * Host entry point for a DSH Cordis row. Room/session fields are deliberately
+ * opt-in: a profile that only installs the browser face cannot accidentally
+ * create a room without a trusted local Agent session.
+ */
+export function apply(context?: DshCollabCordisContext, config?: Partial<DshCordisHostConfig>): void {
+  if (!context || !config) return;
+  if (config.enabled === false) {
+    registerDshCollabSettings(context, config);
+    return;
+  }
+  let localProxy: LocalNginxProxy | undefined;
+  if (config.localProxy?.enabled === true && context.effect) {
+    const targetPort = resolveDshPort(config.localProxy.targetPort ?? config.port);
+    localProxy = createLocalNginxProxy({
+      targetPort,
+      collabTargetPort: config.localProxy.collabTargetPort,
+      listenPort: resolveLocalProxyPort(targetPort, config.localProxy.listenPort),
+      principalId: config.localProxy.principalId ?? config.hostId ?? "local-host",
+      trustedProxyMarkerHeader: config.trustedProxyMarkerHeader,
+      trustedPrincipalHeader: config.trustedPrincipalHeader,
+    });
+    void localProxy.start().catch((error: unknown) => console.warn("dsh-collab local nginx failed to start", error));
+    const proxyForDispose = localProxy;
+    context.effect(() => async () => { await proxyForDispose.dispose(); }, "dsh-collab: local nginx");
+  }
+  if (context.inject) registerDshCollabSettings(context, config, (settings) => mountConfiguredHost(context, applyPersistedSecurity(config, settings)));
+  else mountConfiguredHost(context, config);
 }
 
 export default apply;
