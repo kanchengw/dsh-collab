@@ -118,6 +118,8 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     },
     subscribe: (listener) => scope.subscribe(listener),
     async save(input) {
+      const current = scope.getSnapshot();
+      if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
       if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 0 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 0 and 65535");
       if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
@@ -137,6 +139,19 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode });
       await scope.set("participantGatewayUrl", participantGatewayUrl);
       await scope.set("security", security);
+      const committed = scope.getSnapshot().value;
+      if (!committed
+        || committed.gateway.gatewayHost !== input.gatewayHost
+        || committed.gateway.gatewayPort !== input.gatewayPort
+        || committed.gateway.exposeMode !== input.exposeMode
+        || committed.participantGatewayUrl !== participantGatewayUrl
+        || committed.security?.tokenTtlMs !== security.tokenTtlMs
+        || committed.security.approvalPolicy !== security.approvalPolicy
+        || committed.security.maxMembers !== security.maxMembers
+        || committed.security.maxMessageBytes !== security.maxMessageBytes
+        || committed.security.maxQueue !== security.maxQueue) {
+        throw new Error("Collaboration settings were not persisted by DSH");
+      }
     },
     bootstrap: actions.bootstrap?.bind(actions),
     join: actions.join?.bind(actions),

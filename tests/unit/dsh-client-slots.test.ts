@@ -73,7 +73,7 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
-  it("reads and atomically persists gateway settings through the DSH settings scope", async () => {
+  it("reads and persists namespaced settings through the DSH settings scope", async () => {
     let value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" as const }, participantGatewayUrl: "https://host.example/collab" };
     const set = vi.fn(async (field: string, next: unknown) => { value = { ...value, [field]: next }; });
     const scope = {
@@ -102,5 +102,23 @@ describe("real DSH client slot adapter", () => {
       await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", participantGatewayUrl })).rejects.toThrow("participantGatewayUrl");
     }
     expect(set).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects a save when the DSH settings scope does not commit it", async () => {
+    const value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" as const }, participantGatewayUrl: "" };
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async () => {}),
+      unset: vi.fn(),
+    };
+    const port = createDshSettingsPort(scope, { getSnapshot: () => value.gateway, save: vi.fn() });
+
+    await expect(port.save({
+      gatewayHost: "127.0.0.1",
+      gatewayPort: 3080,
+      exposeMode: "loopback",
+      participantGatewayUrl: "https://host.example/collab",
+    })).rejects.toThrow(/not persisted/i);
   });
 });
