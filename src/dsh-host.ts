@@ -1,8 +1,5 @@
 import { CollabError } from "./errors.js";
-import { registerCollabRoutes, type CollabWebServer } from "./webserver.js";
-import type { CollabHttpOptions } from "./http.js";
 import type { AgentDelivery, AgentDeliveryResult, HostAgentPort } from "./types.js";
-import type { CollabStreamUpgrade } from "./upgrade.js";
 
 export interface DshSessionService {
   owns(sessionId: string): boolean | Promise<boolean>;
@@ -38,12 +35,4 @@ export function createDshHostAgentPort(input: { sessions: DshSessionService }): 
       return await input.sessions.whenIdle?.({ sessionId: request.hostSessionId, requestId: request.requestId });
     },
   };
-}
-
-export function registerDshCollabHost(options: {
-  webServer: CollabWebServer;
-  http: Omit<CollabHttpOptions, "host" | "port"> & Partial<Pick<CollabHttpOptions, "host" | "port">>;
-  upgrade: CollabStreamUpgrade;
-}): () => void {
-  return registerCollabRoutes(options);
 }

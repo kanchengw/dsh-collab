@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
-import { createCollabHttpServer, type CollabHttpServer } from "../../src/http.js";
+import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServer } from "../../src/http.js";
 import { RoomStore } from "../../src/room.js";
 import type { HostAgentPort } from "../../src/types.js";
 
@@ -68,13 +68,12 @@ describe("localhost HTTP adapter", () => {
       headers: {
         "content-type": "application/json",
         "x-request-id": "req-join",
-        "x-principal-id": "bob",
       },
       body: JSON.stringify({ inviteId: "invite-1", token: invite.data.token, memberId: "member-bob", displayName: "Bob" }),
     });
     const join = await json(joinResponse);
     expect(joinResponse.status).toBe(201);
-    expect(join).toMatchObject({ protocol: "dsh-collab.v1", requestId: "req-join", ok: true });
+    expect(join).toMatchObject({ protocol: "dsh-collab.v1", requestId: "req-join", ok: true, data: { member: { principalId: "invite:invite-1" } } });
 
     const snapshotResponse = await fetch(`${base}/collab/v1/rooms/room-1/snapshot`, {
       headers: { authorization: `Bearer ${join.data.roomToken}`, "x-request-id": "req-snapshot" },
@@ -82,6 +81,28 @@ describe("localhost HTTP adapter", () => {
     const snapshot = await json(snapshotResponse);
     expect(snapshotResponse.status).toBe(200);
     expect(snapshot).toMatchObject({ protocol: "dsh-collab.v1", requestId: "req-snapshot", ok: true, data: { room: { roomId: "room-1" } } });
+  });
+
+  it("answers CORS preflight without trusting a public browser origin as the Host", async () => {
+    server = createCollabHttpServer({
+      gateway: setup(),
+      port: 0,
+      authenticate: (input) => authenticateCollabRequest(input, { hostPrincipalId: "host", allowLoopbackPrincipal: true }),
+    });
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${String(port)}`;
+    const origin = "http://127.0.0.1:3080";
+    const preflight = await fetch(`${base}/collab/v1/rooms/room-1/join`, {
+      method: "OPTIONS",
+      headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type, authorization" },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
+
+    const blocked = await fetch(`${base}/collab/v1/rooms/room-1/bootstrap`, { headers: { origin: "https://evil.example" } });
+    expect(blocked.status).toBe(401);
+    const allowed = await fetch(`${base}/collab/v1/rooms/room-1/bootstrap`, { headers: { origin } });
+    expect(allowed.status).toBe(200);
   });
 
   it("returns protocol errors for malformed JSON and unknown public paths", async () => {

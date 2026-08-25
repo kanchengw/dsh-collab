@@ -1,11 +1,8 @@
 import { createDshCordisSessionService, type DshCordisAgentRegistry } from "./dsh-cordis-agent.js";
-import { registerDshCollabHost, type DshSessionService } from "./dsh-host.js";
+import type { DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
-import { authenticateCollabRequest } from "./http.js";
-import type { CollabWebServer } from "./webserver.js";
 
 export interface DshCordisHostContext {
-  webServer: CollabWebServer;
   agents: DshCordisAgentRegistry;
   on?: (event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => () => void;
 }
@@ -18,6 +15,7 @@ export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" |
 
 export interface MountedDshCollabHost {
   runtime: DshCollabHostRuntime;
+  ready: Promise<number>;
   dispose(): Promise<void>;
 }
 
@@ -28,25 +26,13 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   if (!hostSessionId) return undefined;
   const sessions: DshSessionService = createDshCordisSessionService({ agents: context.agents });
   const runtime = createDshCollabHostRuntime({ ...config, hostSessionId, sessions });
-  const disposeRoutes = registerDshCollabHost({
-    webServer: context.webServer,
-    http: {
-      gateway: runtime.gateway,
-      authenticate: (input) => authenticateCollabRequest(input, {
-        hostPrincipalId: config.hostId,
-        allowLoopbackPrincipal: config.allowLoopbackPrincipal,
-        trustedProxyAddresses: config.trustedProxyAddresses,
-        trustedPrincipalHeader: config.trustedPrincipalHeader,
-        trustedProxyMarkerHeader: config.trustedProxyMarkerHeader,
-        principalFromHeaders: config.principalFromHeaders,
-      }),
-    },
-    upgrade: runtime.upgrade,
-  });
+  const ready = runtime.http.listen();
+  void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
   return {
     runtime,
+    ready,
     async dispose(): Promise<void> {
-      disposeRoutes();
+      await ready.catch(() => undefined);
       await runtime.dispose();
     },
   };

@@ -16,6 +16,7 @@ describe("installable package build", () => {
     expect(packageJson.files).not.toContain("vendor");
     expect(packageJson.files).not.toContain("LICENSE.nginx");
     expect(existsSync(resolve(process.cwd(), "src/nginx.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "src/webserver.ts"))).toBe(false);
     expect(existsSync(resolve(process.cwd(), "vendor/nginx/windows-x64/nginx.exe"))).toBe(false);
     expect((patch.match(/name: dsh-collab\s*$/gm) ?? []).length).toBe(1);
     expect(patch).not.toContain("dsh-collab/client");

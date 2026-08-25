@@ -53,7 +53,14 @@ export function authenticateCollabRequest(input: CollabAuthInput, options: Colla
     const principal = options.principalFromHeaders?.(input.headers) ?? input.headers[principalHeader];
     return principal?.trim() ? { principalId: principal.trim() } : {};
   }
-  if (options.allowLoopbackPrincipal === true && isLoopbackAddress(remoteAddress)) {
+  const origin = input.headers.origin?.trim();
+  let loopbackOrigin = origin === undefined;
+  if (origin) {
+    try {
+      loopbackOrigin = isLoopbackAddress(new URL(origin).hostname.replace(/^\[|\]$/g, "")) || new URL(origin).hostname === "localhost";
+    } catch { /* invalid browser origins are not trusted */ }
+  }
+  if (options.allowLoopbackPrincipal === true && isLoopbackAddress(remoteAddress) && loopbackOrigin) {
     return { principalId: options.hostPrincipalId };
   }
   return {};
@@ -137,12 +144,17 @@ async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise
   }
 }
 
-function writeResponse(response: ServerResponse, id: string, gatewayResponse: GatewayResponse): void {
+function corsHeaders(origin: string | undefined): Record<string, string> {
+  return origin ? { "access-control-allow-origin": origin, vary: "origin" } : {};
+}
+
+function writeResponse(response: ServerResponse, id: string, gatewayResponse: GatewayResponse, origin?: string): void {
   const body = JSON.stringify(encodeGatewayResponse(id, gatewayResponse));
   response.writeHead(gatewayResponse.status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "x-request-id": id,
+    ...corsHeaders(origin),
   });
   response.end(body);
 }
@@ -156,8 +168,19 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
     const id = requestId(headers, makeRequestId);
     try {
       const path = gatewayPath(request.url);
+      const origin = headers.origin?.trim();
+      if (path !== undefined && request.method === "OPTIONS") {
+        response.writeHead(204, {
+          ...corsHeaders(origin),
+          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type, x-request-id",
+          "access-control-max-age": "600",
+        });
+        response.end();
+        return;
+      }
       if (path === undefined || (request.method !== "GET" && request.method !== "POST")) {
-        writeResponse(response, id, notFound());
+        writeResponse(response, id, notFound(), origin);
         return;
       }
       const auth = await options.authenticate?.({ method: request.method, path, headers, remoteAddress: request.socket.remoteAddress });
@@ -169,9 +192,9 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
         auth,
         body,
       });
-      writeResponse(response, id, result);
+      writeResponse(response, id, result, origin);
     } catch (error) {
-      writeResponse(response, id, errorResponse(error));
+      writeResponse(response, id, errorResponse(error), headers.origin?.trim());
     }
   };
 }

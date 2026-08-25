@@ -9,6 +9,7 @@ describe("host runtime factory", () => {
     } });
     expect(runtime.rooms.getRoom("room-1").hostSessionId).toBe("session-1");
     expect(runtime.gateway.tokens).toBeDefined();
+    expect(runtime.http.server.listenerCount("upgrade")).toBe(1);
     await runtime.dispose();
   });
 

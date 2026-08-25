@@ -7,9 +7,6 @@ import { RoomStreamHub } from "../../src/stream.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { CollabStreamUpgrade, COLLAB_STREAM_PATH } from "../../src/upgrade.js";
-import { registerCollabRoutes } from "../../src/webserver.js";
-import type { CollabHttpOptions } from "../../src/http.js";
-import type { CollabWebServer } from "../../src/webserver.js";
 
 let httpServer: Server | undefined;
 let upgrade: CollabStreamUpgrade | undefined;
@@ -58,28 +55,7 @@ function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
-describe("DSH-compatible upgrade adapter", () => {
-  it("registers one prefix HTTP route and one exact stream route with symmetric disposal", () => {
-    const registrations: string[] = [];
-    const webServer: CollabWebServer = {
-      register(route) {
-        registrations.push(`${route.kind}:${route.path}`);
-        return () => { registrations.splice(registrations.indexOf(`${route.kind}:${route.path}`), 1); };
-      },
-      registerUpgrade(route) {
-        registrations.push(`upgrade:${route.path}`);
-        return () => { registrations.splice(registrations.indexOf(`upgrade:${route.path}`), 1); };
-      },
-    };
-    const fakeUpgrade = { handleUpgrade() {} } as unknown as CollabStreamUpgrade;
-    const http: CollabHttpOptions = { gateway: {} as CollabHttpOptions["gateway"] };
-
-    const dispose = registerCollabRoutes({ webServer, http, upgrade: fakeUpgrade });
-    expect(registrations).toEqual(["prefix:/collab", `upgrade:${COLLAB_STREAM_PATH}`]);
-    dispose();
-    expect(registrations).toEqual([]);
-  });
-
+describe("WebSocket upgrade adapter", () => {
   it("authenticates, upgrades, replays and streams versioned room frames", async () => {
     const { ledger, hub, tokens, token } = setup();
     upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10, connectionIdFactory: () => "conn-1" });

@@ -73,7 +73,6 @@ describe("local end-to-end collaboration", () => {
         cancel: () => {},
       },
     });
-    runtime.http.server.on("upgrade", (request, socket, head) => runtime.upgrade.handleUpgrade(request, socket, head));
     const port = await runtime.http.listen();
     const base = `http://127.0.0.1:${String(port)}`;
     const sockets: Array<{ close: () => void }> = [];

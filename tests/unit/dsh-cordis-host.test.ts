@@ -1,4 +1,3 @@
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
@@ -25,6 +24,15 @@ async function canConnect(port: number): Promise<boolean> {
   });
 }
 
+async function waitUntilListening(port: number): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (await canConnect(port)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Gateway did not listen on ${String(port)}`);
+}
+
 describe("Cordis Host mount", () => {
   it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
     const options = {
@@ -38,6 +46,8 @@ describe("Cordis Host mount", () => {
     expect(isLoopbackAddress("::ffff:127.0.0.1")).toBe(true);
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-dsh-principal-id": "host" }, remoteAddress: "203.0.113.4" }, options)).toEqual({});
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: {}, remoteAddress: "::1" }, options)).toEqual({ principalId: "host" });
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { origin: "https://evil.example" }, remoteAddress: "::1" }, options)).toEqual({});
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { origin: "http://127.0.0.1:3080" }, remoteAddress: "::1" }, options)).toEqual({ principalId: "host" });
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9" }, remoteAddress: "10.0.0.5" }, options)).toEqual({});
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9", "x-authenticated-user": "alice" }, remoteAddress: "10.0.0.5" }, options)).toEqual({ principalId: "alice" });
   });
@@ -45,7 +55,6 @@ describe("Cordis Host mount", () => {
   it("registers the formal dsh-collab settings namespace with safe composition defaults", () => {
     const register = vi.fn((_namespace: string, _schema: unknown, options: { base: DshCollabPersistedSettings; validate(value: unknown): void }) => ({ get: () => options.base }));
     const context = {
-      webServer: { register: vi.fn(), registerUpgrade: vi.fn() },
       agents: { get: () => undefined },
       inject: vi.fn((_services: string[], callback: (ctx: { settings: { register: typeof register } }) => void) => callback({ settings: { register } })),
     };
@@ -73,18 +82,14 @@ describe("Cordis Host mount", () => {
   });
 
   it("applies persisted security settings to the Host runtime after restart", async () => {
-    let routeHandler: ((request: IncomingMessage, response: ServerResponse) => void | Promise<void>) | undefined;
+    const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
     const persisted = {
-      gateway: { gatewayHost: "127.0.0.1" as const, gatewayPort: 0, exposeMode: "loopback" as const },
+      gateway: { gatewayHost: "127.0.0.1" as const, gatewayPort, exposeMode: "loopback" as const },
       participantGatewayUrl: "",
       security: { tokenTtlMs: 25, approvalPolicy: "disabled" as const, maxMembers: 2, maxMessageBytes: 4, maxQueue: 1 },
     };
     const context = {
-      webServer: {
-        register: ({ handler }: { handler: typeof routeHandler }) => { routeHandler = handler; return () => { routeHandler = undefined; }; },
-        registerUpgrade: vi.fn(() => () => {}),
-      },
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): typeof persisted } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted }) } }),
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
@@ -94,75 +99,69 @@ describe("Cordis Host mount", () => {
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
       allowLoopbackPrincipal: true, tokenTtlMs: 1000, maxMessageBytes: 1000, now: () => 10, tokenFactory: () => "room-token",
     });
-    expect(routeHandler).toBeDefined();
-    const server = createHttpServer((request, response) => { void routeHandler?.(request, response); });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("test HTTP server did not bind a TCP port");
+    await waitUntilListening(gatewayPort);
 
     try {
-      const bootstrap = await fetch(`http://127.0.0.1:${String(address.port)}/collab/v1/rooms/room-1/bootstrap`);
+      const bootstrap = await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/bootstrap`);
       const bootstrapBody = await bootstrap.json() as { data: { expiresAt: number; roomToken: string } };
       expect(bootstrapBody.data.expiresAt).toBe(35);
-      const oversized = await fetch(`http://127.0.0.1:${String(address.port)}/collab/v1/rooms/room-1/messages`, {
+      const oversized = await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/messages`, {
         method: "POST",
         headers: { authorization: `Bearer ${bootstrapBody.data.roomToken}`, "content-type": "application/json" },
         body: JSON.stringify({ clientMessageId: "message-1", text: "hello" }),
       });
       expect(oversized.status).toBe(422);
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     }
+    expect(await canConnect(gatewayPort)).toBe(false);
   });
 
-  it("mounts the Gateway into the real WebServer route contract and unwinds it", async () => {
-    const http: string[] = [];
-    const upgrades: string[] = [];
+  it("starts a dedicated Gateway without mounting routes into the DSH WebServer", async () => {
     const mounted = mountDshCollabCordisHost({
-      webServer: {
-        register: vi.fn(({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); }),
-        registerUpgrade: vi.fn(({ path }: { path: string }) => { upgrades.push(path); return () => upgrades.splice(upgrades.indexOf(path), 1); }),
-      },
       agents: { get: (sessionId) => sessionId === "session-1" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined },
     }, {
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
     });
     expect(mounted).toBeDefined();
-    expect(http).toEqual(["/collab"]);
-    expect(upgrades).toEqual(["/collab/v1/stream"]);
+    const port = await mounted!.ready;
+    expect(port).toBeGreaterThan(0);
+    expect(await canConnect(port)).toBe(true);
     await mounted!.dispose();
-    expect(http).toEqual([]);
-    expect(upgrades).toEqual([]);
+    expect(await canConnect(port)).toBe(false);
   });
 
-  it("can be disabled without touching WebServer", () => {
-    const register = vi.fn();
-    const mounted = mountDshCollabCordisHost({ webServer: { register, registerUpgrade: vi.fn() }, agents: { get: () => undefined } }, {
+  it("waits for an in-flight Gateway listen before immediate disposal", async () => {
+    const mounted = mountDshCollabCordisHost({
+      agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+    }, {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
+    });
+    if (!mounted) throw new Error("Gateway was not mounted");
+    const ready = mounted.ready;
+    await mounted.dispose();
+    const port = await ready;
+    expect(await canConnect(port)).toBe(false);
+  });
+
+  it("can be disabled without starting a Gateway", () => {
+    const mounted = mountDshCollabCordisHost({ agents: { get: () => undefined } }, {
       enabled: false, roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
     });
     expect(mounted).toBeUndefined();
-    expect(register).not.toHaveBeenCalled();
   });
 
-  it("wires the package default apply to a configured Cordis context", async () => {
-    const http: string[] = [];
+  it("wires the package default apply to a dedicated Gateway", async () => {
+    const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
     const context = {
-      webServer: {
-        register: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
-        registerUpgrade: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
-      },
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
-    apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host" });
-    expect(http).toEqual(["/collab", "/collab/v1/stream"]);
+    apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: gatewayPort });
+    await waitUntilListening(gatewayPort);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
-    expect(http).toEqual([]);
+    expect(await canConnect(gatewayPort)).toBe(false);
   });
 
   it("does not start the removed local proxy when stale config is present", async () => {
@@ -170,7 +169,6 @@ describe("Cordis Host mount", () => {
     const listenPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
     const context = {
-      webServer: { register: vi.fn(), registerUpgrade: vi.fn() },
       agents: { get: () => undefined },
       effect: (factory: () => (() => void | Promise<void>) | void) => {
         const dispose = factory();
@@ -188,20 +186,20 @@ describe("Cordis Host mount", () => {
     }
   }, 10_000);
 
-  it("waits for the first real DSH Agent when Web creates sessions lazily", async () => {
+  it("waits for the first real DSH Agent before starting the Gateway", async () => {
     let created: ((payload: { agent: { id: string } }) => void) | undefined;
-    const http: string[] = [];
+    const gatewayPort = await freeTcpPort();
+    const disposeEffects: Array<() => void | Promise<void>> = [];
     const context = {
-      webServer: {
-        register: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
-        registerUpgrade: ({ path }: { path: string }) => { http.push(path); return () => http.splice(http.indexOf(path), 1); },
-      },
       agents: { get: (id: string) => id === "session-created" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined },
       on: (_event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => { created = listener; return () => { created = undefined; }; },
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
-    apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host" });
-    expect(http).toEqual([]);
+    apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: gatewayPort });
+    expect(await canConnect(gatewayPort)).toBe(false);
     created?.({ agent: { id: "session-created" } });
-    expect(http).toEqual(["/collab", "/collab/v1/stream"]);
+    await waitUntilListening(gatewayPort);
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+    expect(await canConnect(gatewayPort)).toBe(false);
   });
 });

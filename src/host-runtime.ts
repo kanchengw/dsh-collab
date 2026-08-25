@@ -94,12 +94,14 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       principalFromHeaders: options.principalFromHeaders,
     }),
   });
+  http.server.on("upgrade", upgrade.handleUpgrade);
   return {
     rooms, ledger, gateway, approvals, hub, upgrade, http,
     snapshot: () => collabRuntime.snapshot(),
     async dispose(): Promise<void> {
-      await http.close();
       await upgrade.close();
+      http.server.off("upgrade", upgrade.handleUpgrade);
+      await http.close();
       hub.dispose();
     },
   };

@@ -17,7 +17,6 @@ export * from "./role.js";
 export * from "./runtime.js";
 export * from "./settings.js";
 export * from "./ui.js";
-export * from "./webserver.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
@@ -63,10 +62,12 @@ export function registerDshCollabSettings(
   });
 }
 
-function applyPersistedSecurity(config: Partial<DshCordisHostConfig>, settings: DshCollabPersistedSettings): Partial<DshCordisHostConfig> {
+function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: DshCollabPersistedSettings): Partial<DshCordisHostConfig> {
   const security = settings.security ?? defaultCollabSettings;
   return {
     ...config,
+    host: settings.gateway.gatewayHost,
+    port: settings.gateway.gatewayPort,
     tokenTtlMs: security.tokenTtlMs,
     approvalPolicy: security.approvalPolicy,
     maxMembers: security.maxMembers,
@@ -90,7 +91,7 @@ function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<Ds
     context.effect(() => async () => {
       disposeCreated?.();
       if (mounted) await mounted.dispose();
-    }, "dsh-collab: host routes");
+    }, "dsh-collab: Host Gateway");
   }
 }
 
@@ -105,7 +106,7 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     registerDshCollabSettings(context, config);
     return;
   }
-  if (context.inject) registerDshCollabSettings(context, config, (settings) => mountConfiguredHost(context, applyPersistedSecurity(config, settings)));
+  if (context.inject) registerDshCollabSettings(context, config, (settings) => mountConfiguredHost(context, applyPersistedSettings(config, settings)));
   else mountConfiguredHost(context, config);
 }
 

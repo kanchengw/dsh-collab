@@ -172,12 +172,13 @@ export class CollabGateway {
 
   private join(roomId: string, request: GatewayRequest): GatewayResponse {
     const body = objectBody(request.body);
+    const inviteId = requiredText(body.inviteId, "inviteId");
     this.options.limits?.checkMembers(roomId, this.options.rooms.listMembers(roomId).length + 1);
     const member = this.options.invites.acceptInvite({
       roomId,
-      inviteId: requiredText(body.inviteId, "inviteId"),
+      inviteId,
       token: requiredText(body.token, "token"),
-      principalId: authPrincipal(request),
+      principalId: request.auth?.principalId?.trim() || `invite:${inviteId}`,
       memberId: requiredText(body.memberId, "memberId"),
       displayName: requiredText(body.displayName, "displayName"),
       now: this.now(),
