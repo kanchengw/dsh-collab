@@ -10,7 +10,6 @@ export * from "./dsh-browser-client.js";
 export * from "./host-runtime.js";
 export * from "./http.js";
 export * from "./manifest.js";
-export * from "./nginx.js";
 export * from "./participant.js";
 export * from "./role.js";
 export * from "./runtime.js";
@@ -19,7 +18,6 @@ export * from "./ui.js";
 export * from "./webserver.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
-import { createLocalNginxProxy, resolveDshPort, resolveLocalProxyPort, type LocalNginxProxy } from "./nginx.js";
 import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 
 interface DshSettingsRegistrationContext {
@@ -104,21 +102,6 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
   if (config.enabled === false) {
     registerDshCollabSettings(context, config);
     return;
-  }
-  let localProxy: LocalNginxProxy | undefined;
-  if (config.localProxy?.enabled === true && context.effect) {
-    const targetPort = resolveDshPort(config.localProxy.targetPort ?? config.port);
-    localProxy = createLocalNginxProxy({
-      targetPort,
-      collabTargetPort: config.localProxy.collabTargetPort,
-      listenPort: resolveLocalProxyPort(targetPort, config.localProxy.listenPort),
-      principalId: config.localProxy.principalId ?? config.hostId ?? "local-host",
-      trustedProxyMarkerHeader: config.trustedProxyMarkerHeader,
-      trustedPrincipalHeader: config.trustedPrincipalHeader,
-    });
-    void localProxy.start().catch((error: unknown) => console.warn("dsh-collab local nginx failed to start", error));
-    const proxyForDispose = localProxy;
-    context.effect(() => async () => { await proxyForDispose.dispose(); }, "dsh-collab: local nginx");
   }
   if (context.inject) registerDshCollabSettings(context, config, (settings) => mountConfiguredHost(context, applyPersistedSecurity(config, settings)));
   else mountConfiguredHost(context, config);

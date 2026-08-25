@@ -73,6 +73,26 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
+  it("uses the actual DSH origin without a development-only port rewrite", () => {
+    const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+    const socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    let settings: { getSnapshot(): { gatewayPort: number; participantGatewayUrl?: string } } | undefined;
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://127.0.0.1:3082" } });
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: class {} });
+    try {
+      applyDshCollabClient({
+        slots: { inject: (_name, register) => register(), register: () => () => {} },
+        provide: (name, value) => { if (name === "collabSettings") settings = value as typeof settings; },
+      });
+      expect(settings?.getSnapshot()).toMatchObject({ gatewayPort: 3082, participantGatewayUrl: "http://127.0.0.1:3082/collab" });
+    } finally {
+      if (locationDescriptor) Object.defineProperty(globalThis, "location", locationDescriptor);
+      else Reflect.deleteProperty(globalThis, "location");
+      if (socketDescriptor) Object.defineProperty(globalThis, "WebSocket", socketDescriptor);
+      else Reflect.deleteProperty(globalThis, "WebSocket");
+    }
+  });
+
   it("reads and persists namespaced settings through the DSH settings scope", async () => {
     let value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 3080, exposeMode: "loopback" as const }, participantGatewayUrl: "https://host.example/collab" };
     const set = vi.fn(async (field: string, next: unknown) => { value = { ...value, [field]: next }; });

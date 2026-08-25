@@ -14,7 +14,6 @@ export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" |
   enabled?: boolean;
   hostSessionId?: string;
   participantGatewayUrl?: string;
-  localProxy?: { enabled?: boolean; targetPort?: number; collabTargetPort?: number; listenPort?: number; principalId?: string };
 };
 
 export interface MountedDshCollabHost {

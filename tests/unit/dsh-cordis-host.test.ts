@@ -25,15 +25,6 @@ async function canConnect(port: number): Promise<boolean> {
   });
 }
 
-async function waitUntilListening(port: number): Promise<void> {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    if (await canConnect(port)) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`test port ${String(port)} did not start listening`);
-}
-
 describe("Cordis Host mount", () => {
   it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
     const options = {
@@ -174,8 +165,7 @@ describe("Cordis Host mount", () => {
     expect(http).toEqual([]);
   });
 
-  it("returns an async Cordis disposer that waits for bundled nginx to stop", async () => {
-    if (process.platform !== "win32" || process.arch !== "x64") return;
+  it("does not start the removed local proxy when stale config is present", async () => {
     const targetPort = await freeTcpPort();
     const listenPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
@@ -189,14 +179,13 @@ describe("Cordis Host mount", () => {
       },
     };
 
-    apply(context, { localProxy: { enabled: true, targetPort, listenPort } });
-    await waitUntilListening(listenPort);
-    expect(disposeEffects).toHaveLength(1);
-
-    const disposal = disposeEffects[0]!();
-    expect(disposal).toBeInstanceOf(Promise);
-    await disposal;
-    expect(await canConnect(listenPort)).toBe(false);
+    try {
+      apply(context, { localProxy: { enabled: true, targetPort, listenPort } } as Parameters<typeof apply>[1]);
+      expect(disposeEffects).toHaveLength(0);
+      expect(await canConnect(listenPort)).toBe(false);
+    } finally {
+      await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+    }
   }, 10_000);
 
   it("waits for the first real DSH Agent when Web creates sessions lazily", async () => {

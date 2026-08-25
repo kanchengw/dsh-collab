@@ -388,8 +388,6 @@ function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | 
   const origin = location?.origin ?? "http://127.0.0.1:3080";
   try {
     const url = new URL(origin);
-    const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-    if (url.hostname === "127.0.0.1" && port >= 3000 && port < 3100) url.port = String(port + 100);
     return { gatewayUrl: `${url.origin}/collab`, roomId: "dsh-room" };
   } catch {
     return { gatewayUrl: `${origin}/collab`, roomId: "dsh-room" };

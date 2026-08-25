@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -12,10 +12,14 @@ describe("installable package build", () => {
     expect(packageJson.scripts.build).toContain("tsconfig.build.json");
     expect(buildConfig.compilerOptions.rootDir).toBe("src");
     expect(packageJson.exports["./client"]).toBeDefined();
-    expect(packageJson.exports["./nginx"]).toBeDefined();
-    expect(packageJson.files).toContain("vendor");
-    expect(packageJson.files).toContain("LICENSE.nginx");
+    expect(packageJson.exports["./nginx"]).toBeUndefined();
+    expect(packageJson.files).not.toContain("vendor");
+    expect(packageJson.files).not.toContain("LICENSE.nginx");
+    expect(existsSync(resolve(process.cwd(), "src/nginx.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "vendor/nginx/windows-x64/nginx.exe"))).toBe(false);
     expect((patch.match(/name: dsh-collab\s*$/gm) ?? []).length).toBe(1);
     expect(patch).not.toContain("dsh-collab/client");
+    expect(patch).not.toContain("localProxy");
+    expect(patch).not.toContain("127.0.0.2");
   });
 });

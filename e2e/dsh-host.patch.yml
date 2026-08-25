@@ -10,9 +10,3 @@
     trustedProxyMarkerHeader: x-dsh-proxy
     title: DSH Collaboration
     hostDisplayName: Host DSH
-    localProxy:
-      enabled: true
-      targetPort: 3082
-      collabTargetPort: 3082
-      listenPort: 3182
-      principalId: host

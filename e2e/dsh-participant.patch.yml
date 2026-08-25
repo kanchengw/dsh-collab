@@ -11,9 +11,3 @@
     title: DSH Collaboration
     hostDisplayName: Participant DSH
     participantGatewayUrl: http://127.0.0.1:3182/collab
-    localProxy:
-      enabled: true
-      targetPort: 3083
-      collabTargetPort: 3082
-      listenPort: 3183
-      principalId: participant
