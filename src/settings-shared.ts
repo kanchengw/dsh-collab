@@ -28,6 +28,7 @@ export const defaultCollabSettings: CollabSettings = {
 };
 
 export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
+export const DSH_COLLAB_PARTICIPANT_NAMESPACE = "dsh-collab-participant";
 
 export interface DshCollabGatewaySettings {
   gatewayHost: "127.0.0.1" | "0.0.0.0";
@@ -47,4 +48,13 @@ export interface DshCollabSecuritySettings {
 export interface DshCollabPersistedSettings {
   gateway: DshCollabGatewaySettings;
   security?: DshCollabSecuritySettings;
+}
+
+export interface DshCollabParticipantSettings {
+  resume?: {
+    gatewayEndpoint: string;
+    roomId: string;
+    memberId: string;
+    credential: string;
+  };
 }

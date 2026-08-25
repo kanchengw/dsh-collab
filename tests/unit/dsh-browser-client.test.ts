@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket } from "../../src/dsh-browser-client.js";
+import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket, type ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import { decodeCollabInvitation } from "../../src/invitation.js";
 
 function response(data: unknown, status = 200): { ok: boolean; status: number; json(): Promise<unknown> } {
@@ -46,6 +46,30 @@ describe("browser Gateway client", () => {
     const created = await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
     expect(decodeCollabInvitation(created.invitation)).toMatchObject({ gatewayEndpoint: "ws://192.168.1.20:4310/collab", roomId: "room-1", inviteId: "invite-1", token: "invite-secret" });
     client.dispose();
+  });
+
+  it("clears a saved remote Participant role after opening the local Host room", async () => {
+    let persisted: ParticipantResumeState | undefined = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+    const fetch: BrowserFetch = async (url) => url.endsWith("/bootstrap") ? response({
+      room: { roomId: "room-1", title: "Local" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token",
+    }) : response({ room: { roomId: "room-1", title: "Local" }, members: [], lastEventSeq: 0 });
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket,
+      participantPersistence: { load: () => persisted, save: async (state) => { persisted = state; }, clear: async () => { persisted = undefined; } },
+    });
+    await client.bootstrap();
+    expect(client.getSnapshot().role).toBe("host");
+    expect(persisted).toBeUndefined();
   });
 
   it("joins as a Participant with its own principal and never enables steer", async () => {
@@ -130,5 +154,72 @@ describe("browser Gateway client", () => {
       actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { text: "live" },
     } }) });
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
+  });
+
+  it("persists join credentials in the Participant DSH and resumes without reusing the invite", async () => {
+    let persisted: ParticipantResumeState | undefined;
+    const urls: string[] = [];
+    const fetch: BrowserFetch = async (url) => {
+      urls.push(url);
+      if (url.endsWith("/join")) return response({
+        room: { roomId: "room-2", title: "Remote" },
+        member: { memberId: "member-bob", role: "participant" },
+        roomToken: "room-token-1",
+        resumeCredential: "resume-secret",
+      }, 201);
+      if (url.endsWith("/resume")) return response({
+        room: { roomId: "room-2", title: "Remote" },
+        member: { memberId: "member-bob", role: "participant" },
+        roomToken: "room-token-2",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 });
+      return response({ events: [], nextSeq: 0 });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const persistence = {
+      load: () => persisted,
+      save: async (state: ParticipantResumeState) => { persisted = state; },
+      clear: async () => { persisted = undefined; },
+    };
+    const invitation = JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", inviteId: "invite-1", token: "invite-token", expiresAt: 100 });
+    const first = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
+    await first.join({ invitation, memberId: "member-bob", displayName: "Bob" });
+    expect(persisted).toEqual({ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" });
+    first.dispose();
+
+    const second = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
+    await expect(second.restoreParticipant()).resolves.toBe(true);
+    expect(second.getSnapshot()).toMatchObject({ roomId: "room-2", role: "participant", connection: "online" });
+    expect(urls.filter((url) => url.endsWith("/join"))).toHaveLength(1);
+    expect(urls.filter((url) => url.endsWith("/resume"))).toHaveLength(1);
+  });
+
+  it("clears a rejected resume credential but retains it on a network failure", async () => {
+    let persisted: ParticipantResumeState | undefined = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "rejected" };
+    const persistence = { load: () => persisted, save: async (state: ParticipantResumeState) => { persisted = state; }, clear: async () => { persisted = undefined; } };
+    const rejected = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
+      fetch: async () => ({ ok: false, status: 401, json: async () => ({ ok: false, error: { message: "invalid" } }) }),
+      WebSocket: class {} as never,
+    });
+    await expect(rejected.restoreParticipant()).rejects.toThrow();
+    expect(persisted).toBeUndefined();
+
+    persisted = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "offline" };
+    const offline = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
+      fetch: async () => { throw new Error("network offline"); }, WebSocket: class {} as never,
+    });
+    await expect(offline.restoreParticipant()).rejects.toThrow("network offline");
+    expect(persisted?.credential).toBe("offline");
   });
 });

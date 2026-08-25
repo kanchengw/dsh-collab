@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultCollabSettings, renderCollabSettings, validateCollabSettings, validateDshCollabPersistedSettings, type CollabSettings } from "../../src/settings.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_SCHEMA, renderCollabSettings, validateDshCollabParticipantSettings, validateCollabSettings, validateDshCollabPersistedSettings, type CollabSettings } from "../../src/settings.js";
 
 describe("collab settings", () => {
   it("provides safe defaults and separates host and participant settings", () => {
@@ -41,5 +41,12 @@ describe("collab settings", () => {
       expect(() => validateDshCollabPersistedSettings({ gateway: { ...gateway, advertisedEndpoint } })).toThrow("gatewayEndpoint");
       expect(() => validateCollabSettings({ ...defaultCollabSettings, advertisedEndpoint })).toThrow("gatewayEndpoint");
     }
+  });
+
+  it("validates hidden Participant resume state at the DSH persistence boundary", () => {
+    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).not.toThrow();
+    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "ws://public.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).toThrow("gatewayEndpoint");
+    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "", memberId: "member-bob", credential: "resume-secret" } })).toThrow("roomId");
+    expect(JSON.stringify(DSH_COLLAB_PARTICIPANT_SCHEMA.toJSON())).toContain('"hidden":true');
   });
 });

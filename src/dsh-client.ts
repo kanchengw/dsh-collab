@@ -1,8 +1,8 @@
 import { createElement, useEffect, useMemo, useState, type ChangeEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
-import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput } from "./dsh-browser-client.js";
-import { normalizeAdvertisedGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
+import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
+import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -61,6 +61,14 @@ interface PersistedCollabSettings {
   security?: DshCollabSecuritySettings;
 }
 
+function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if ([candidate.gatewayEndpoint, candidate.roomId, candidate.memberId, candidate.credential].some((field) => typeof field !== "string" || field.trim() === "")) return undefined;
+  try { normalizeGatewayEndpoint(candidate.gatewayEndpoint as string); } catch { return undefined; }
+  return candidate as unknown as ParticipantResumeState;
+}
+
 function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const gateway = (value as { gateway?: unknown }).gateway;
@@ -82,6 +90,28 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
   };
   return { gateway: { ...candidate as Omit<PersistedCollabSettings["gateway"], "advertisedEndpoint">, advertisedEndpoint }, security: normalized };
+}
+
+function decodeParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const resume = decodeParticipant((value as { resume?: unknown }).resume);
+  return resume ? { resume } : {};
+}
+
+export function createDshParticipantPersistence(scope: DshSettingsScope<DshCollabParticipantSettings>): ParticipantPersistence {
+  return {
+    load: () => scope.getSnapshot().value?.resume,
+    save: async (state) => {
+      const current = scope.getSnapshot();
+      if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
+      await scope.set("resume", state);
+      const saved = scope.getSnapshot().value?.resume;
+      if (!saved || saved.credential !== state.credential || saved.roomId !== state.roomId || saved.memberId !== state.memberId || saved.gatewayEndpoint !== state.gatewayEndpoint) {
+        throw new Error("Participant resume credential was not persisted by DSH");
+      }
+    },
+    clear: async () => { await scope.unset("resume"); },
+  };
 }
 
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
@@ -387,13 +417,26 @@ function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | 
 /** Register additive conversation and settings contributions through real DSH slots. */
 export function applyDshCollabClient(context: DshCollabClientContext): void {
   const existing = optionalService<DshCollabClientPort>(context, "collabClient");
-  const browserClient = existing ? undefined : createDshBrowserCollabClient(browserConfig());
+  const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
+  const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeParticipantSettings });
+  const browserClient = existing ? undefined : createDshBrowserCollabClient({ ...browserConfig(), ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}) });
   const client = existing ?? browserClient;
   const browserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
-  const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
+  if (browserClient && participantScope) {
+    let attempted = false;
+    let unsubscribe = (): void => {};
+    const restore = (): void => {
+      if (attempted || participantScope.getSnapshot().status !== "ready") return;
+      attempted = true;
+      unsubscribe();
+      void browserClient.restoreParticipant().catch(() => undefined);
+    };
+    unsubscribe = participantScope.subscribe(restore);
+    restore();
+  }
   context.slots.inject("conversation.input.dock", () => context.slots.register({ name: "conversation.input.dock", id: "collab", order: 5 }, () => createElement(DshCollabDock, { port: client })));
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab", order: 10 }, () => createElement(DshCollabParticipantOverlay, { port: client })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab" }, () => createElement(DshCollabSettingsCard, { port: settings })));

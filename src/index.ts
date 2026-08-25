@@ -21,7 +21,7 @@ export * from "./settings.js";
 export * from "./ui.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
-import { defaultCollabSettings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -59,6 +59,9 @@ export function registerDshCollabSettings(
       },
       applies: "restart",
       validate: validateDshCollabPersistedSettings,
+    });
+    settingsContext.settings.register(DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
+      validate: validateDshCollabParticipantSettings,
     });
     onResolved?.(scope.get());
   });

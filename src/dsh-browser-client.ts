@@ -38,6 +38,20 @@ export interface DshBrowserCollabOptions {
   fetch?: BrowserFetch;
   WebSocket?: new (url: string) => BrowserSocket;
   connectionIdFactory?: () => string;
+  participantPersistence?: ParticipantPersistence;
+}
+
+export interface ParticipantResumeState {
+  gatewayEndpoint: string;
+  roomId: string;
+  memberId: string;
+  credential: string;
+}
+
+export interface ParticipantPersistence {
+  load(): ParticipantResumeState | undefined;
+  save(state: ParticipantResumeState): Promise<void>;
+  clear(): Promise<void>;
 }
 
 export interface DshBrowserJoinInput {
@@ -63,6 +77,7 @@ type RoomData = {
   room: { roomId: string; title: string; hostDisplayName?: string };
   member: { memberId: string; role: string };
   roomToken: string;
+  resumeCredential?: string;
 };
 
 type SnapshotData = {
@@ -172,6 +187,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.base = this.hostBase;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
+    await this.options.participantPersistence?.clear();
     this.applyRoom(data);
     await this.connect();
   }
@@ -186,8 +202,35 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       memberId: input.memberId?.trim() || randomId("member"),
       displayName: input.displayName,
     }, false)));
+    if (this.options.participantPersistence) {
+      if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
+      await this.options.participantPersistence.save({
+        gatewayEndpoint: invitation.gatewayEndpoint,
+        roomId: invitation.roomId,
+        memberId: data.member.memberId,
+        credential: data.resumeCredential,
+      });
+    }
     this.applyRoom(data);
     await this.connect();
+  }
+
+  async restoreParticipant(): Promise<boolean> {
+    const state = this.options.participantPersistence?.load();
+    if (!state) return false;
+    this.base = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
+    this.roomId = state.roomId;
+    try {
+      const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/resume`, { credential: state.credential }, false)));
+      this.applyRoom(data);
+      await this.connect();
+      return true;
+    } catch (error) {
+      if (error instanceof GatewayRequestError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+        await this.options.participantPersistence?.clear();
+      }
+      throw error;
+    }
   }
 
   async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> {
@@ -264,7 +307,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
     const response = await this.fetcher(this.base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const envelope = await response.json();
-    if (!response.ok) throw new Error(`Gateway request failed (${String(response.status)})`);
+    if (!response.ok) throw new GatewayRequestError(response.status);
     return envelope;
   }
 
@@ -318,6 +361,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private emit(): void { for (const listener of this.listeners) listener(); }
+}
+
+class GatewayRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Gateway request failed (${String(status)})`);
+  }
 }
 
 class DshBrowserCollabSettings implements DshBrowserSettingsPort {

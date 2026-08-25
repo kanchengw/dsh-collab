@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
-import { apply, DSH_COLLAB_SETTINGS_NAMESPACE, type DshCollabPersistedSettings } from "../../src/index.js";
+import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, type DshCollabPersistedSettings } from "../../src/index.js";
 
 async function freeTcpPort(): Promise<number> {
   const server = createTcpServer();
@@ -78,6 +78,11 @@ describe("Cordis Host mount", () => {
         }),
         validate: expect.any(Function),
       }),
+    );
+    expect(register).toHaveBeenCalledWith(
+      DSH_COLLAB_PARTICIPANT_NAMESPACE,
+      expect.objectContaining({ toJSON: expect.any(Function) }),
+      expect.objectContaining({ validate: expect.any(Function) }),
     );
     const options = register.mock.calls[0]?.[2];
     if (!options) throw new Error("settings registration options were not captured");

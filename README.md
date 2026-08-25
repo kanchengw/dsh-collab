@@ -10,6 +10,7 @@
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
 - Namespaced settings UI (`src/settings.ts`) controls the dedicated Host Gateway bind mode, port, invitation address and room safety, with loopback defaults and a trusted-network warning. Participants get their remote endpoint from the invitation instead of persistent configuration.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
+- After the first invite is accepted, the Participant's own DSH stores one hidden resume record and automatically exchanges it for a fresh room token after either DSH restarts. Opening a local Host room clears that remote Participant role.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
 
 ## Important deployment decision
@@ -77,7 +78,9 @@ The bundle patch contains one row:
 
 The package's `dsh.client` declaration supplies the browser face. A DSH profile can install the package with its normal plugin command after `pnpm build`; the Host runtime is created through the public adapter seam (`createDshCollabHostRuntime`) and can be mounted by a profile-specific Host integration that supplies the trusted session service and room/session facts. No separate participant-only package is used.
 
-The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; invite tokens and member join fields remain ephemeral UI state and are never persisted as plugin configuration. These Gateway settings apply after a DSH restart.
+The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; one-time invite tokens and short-lived room tokens remain ephemeral. These Gateway settings apply after a DSH restart.
+
+Participant recovery uses a separate `dsh-collab-participant` settings namespace whose `resume` object is marked hidden in the DSH schema and is never rendered by the Collab settings card. The Participant's own DSH stores the remote endpoint, room/member binding and raw high-entropy resume credential in its local settings file. This is local private state, not Host configuration and not browser `localStorage`. A rejected credential is cleared; a temporary network failure keeps it for the next start. The room owner stores only the credential digest.
 
 ## LAN Participant deployment
 

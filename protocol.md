@@ -80,8 +80,10 @@ only its SHA-256 digest. A later resume request uses this body:
 ```
 
 The Gateway validates the durable room/member binding and returns a fresh
-short-lived `roomToken`. Suspending or removing the member invalidates all of
-that member's resume credentials.
+short-lived `roomToken`. The Participant stores the raw credential in its own
+DSH's hidden `dsh-collab-participant` settings namespace, not browser storage
+or the Host configuration namespace. Suspending or removing the member
+invalidates all of that member's resume credentials.
 
 The current implementation exposes the following explicit v1 actions:
 

@@ -1,6 +1,6 @@
 import z from "@deepseek-ai/schemastery";
-import { normalizeAdvertisedGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, type CollabSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
+import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
+import { defaultCollabSettings, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
 export * from "./settings-shared.js";
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
@@ -25,6 +25,15 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
   }),
 });
 
+export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.object({
+  resume: z.object({
+    gatewayEndpoint: z.string().min(1).required(),
+    roomId: z.string().min(1).required(),
+    memberId: z.string().min(1).required(),
+    credential: z.string().min(1).required(),
+  }).hidden(),
+});
+
 function validateAdvertisedEndpoint(gateway: DshCollabPersistedSettings["gateway"]): void {
   if (gateway.advertisedEndpoint === "") {
     if (gateway.exposeMode === "network") throw new Error("advertisedEndpoint is required in network mode");
@@ -42,6 +51,14 @@ export function validateDshCollabPersistedSettings(settings: DshCollabPersistedS
   if (settings.security) {
     const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...gateway };
     validateCollabSettings(security);
+  }
+}
+
+export function validateDshCollabParticipantSettings(settings: DshCollabParticipantSettings): void {
+  if (!settings.resume) return;
+  normalizeGatewayEndpoint(settings.resume.gatewayEndpoint);
+  for (const field of ["roomId", "memberId", "credential"] as const) {
+    if (settings.resume[field].trim() === "") throw new Error(field + " must not be blank");
   }
 }
 

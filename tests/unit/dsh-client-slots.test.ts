@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", memberCount: 3, canSteer: true };
 
@@ -146,5 +146,68 @@ describe("real DSH client slot adapter", () => {
       exposeMode: "loopback",
       advertisedEndpoint: "wss://host.example/collab",
     })).rejects.toThrow(/not persisted/i);
+  });
+
+  it("stores Participant resume state in the local DSH settings scope without exposing it in the settings card", async () => {
+    let resume: { gatewayEndpoint: string; roomId: string; memberId: string; credential: string } | undefined;
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value: { resume }, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async (_field: string, value: unknown) => { resume = value as typeof resume; }),
+      unset: vi.fn(async () => { resume = undefined; }),
+    };
+    const persistence = createDshParticipantPersistence(scope);
+    await persistence.save({ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" });
+    expect(persistence.load()).toMatchObject({ roomId: "room-2", credential: "resume-secret" });
+    expect(scope.set).toHaveBeenCalledWith("resume", expect.objectContaining({ memberId: "member-bob" }));
+    await persistence.clear();
+    expect(scope.unset).toHaveBeenCalledWith("resume");
+
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsCard, { port: { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() } }));
+    expect(html).not.toContain("resume-secret");
+    expect(html).not.toContain('name="participant"');
+  });
+
+  it("automatically resumes the saved Participant room when local DSH settings are ready", async () => {
+    const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+    const socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const requests: string[] = [];
+    let client: { getSnapshot(): DshCollabClientSnapshot } | undefined;
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string) => {
+      requests.push(url);
+      const data = url.endsWith("/resume")
+        ? { room: { roomId: "room-2", title: "Remote" }, member: { memberId: "member-bob", role: "participant" }, roomToken: "fresh-token" }
+        : url.endsWith("/snapshot")
+          ? { room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 }
+          : { events: [], nextSeq: 0 };
+      return { ok: true, status: 200, json: async () => ({ ok: true, data }) };
+    } });
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: class {
+      readyState = 1;
+      onopen?: () => void;
+      onclose?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      close(): void { this.readyState = 3; }
+      send(): void {}
+    } });
+    try {
+      const binder = { bind: vi.fn((spec: { namespace: string }) => spec.namespace === "dsh-collab-participant" ? {
+        getSnapshot: () => ({ status: "ready", value: { resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } }, writable: true }),
+        subscribe: () => () => {}, set: vi.fn(), unset: vi.fn(),
+      } : {
+        getSnapshot: () => ({ status: "ready", value: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" } }, writable: true }),
+        subscribe: () => () => {}, set: vi.fn(), unset: vi.fn(),
+      }) };
+      applyDshCollabClient({
+        slots: { inject: (_name, register) => register(), register: () => () => {} },
+        get: (name) => name === "settingsScope" ? binder : undefined,
+        provide: (name, value) => { if (name === "collabClient") client = value as typeof client; },
+      } as DshCollabClientContext);
+      await vi.waitFor(() => expect(client?.getSnapshot()).toMatchObject({ roomId: "room-2", role: "participant", connection: "online" }));
+      expect(requests.filter((url) => url.endsWith("/resume"))).toHaveLength(1);
+    } finally {
+      if (fetchDescriptor) Object.defineProperty(globalThis, "fetch", fetchDescriptor); else Reflect.deleteProperty(globalThis, "fetch");
+      if (socketDescriptor) Object.defineProperty(globalThis, "WebSocket", socketDescriptor); else Reflect.deleteProperty(globalThis, "WebSocket");
+    }
   });
 });
