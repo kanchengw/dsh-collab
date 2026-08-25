@@ -2,6 +2,7 @@ import type { ComposerTarget } from "./ui.js";
 import { projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js";
+import { COLLAB_PROTOCOL, encodeClientStreamFrame } from "./protocol.js";
 import type { RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 
@@ -91,6 +92,9 @@ type EventsData = { events: RoomEvent[]; nextSeq?: number };
 type Envelope = { ok: boolean; data?: unknown; error?: { message?: string } };
 
 const OPEN = 1;
+const HEARTBEAT_INTERVAL_MS = 5_000;
+const INITIAL_RECONNECT_DELAY_MS = 1_000;
+const MAX_RECONNECT_DELAY_MS = 5_000;
 
 function randomId(prefix: string): string {
   const crypto = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -142,6 +146,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private lastEventSeq = 0;
   private readonly events = new Map<string, RoomEvent>();
   private snapshot: DshCollabClientSnapshot;
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private heartbeatAcknowledged = true;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+  private disposed = false;
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -263,8 +272,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   dispose(): void {
-    this.socket?.close(1000, "client_closed");
+    this.disposed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.clearHeartbeat();
+    const socket = this.socket;
     this.socket = undefined;
+    socket?.close(1000, "client_closed");
     this.setConnection("offline");
     this.listeners.clear();
   }
@@ -283,7 +297,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
-    this.socket?.close(1000, "reconnect");
+    const previousSocket = this.socket;
+    this.socket = undefined;
+    this.clearHeartbeat();
+    previousSocket?.close(1000, "reconnect");
     this.setConnection("connecting");
     const url = new URL(this.base.replace(/^http/, "ws") + "/v1/stream");
     url.searchParams.set("roomId", this.roomId);
@@ -294,11 +311,59 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       const socket = new this.socketFactory(url.toString());
       this.socket = socket;
       let settled = false;
-      socket.onopen = () => { this.setConnection("online"); settled = true; resolve(); };
-      socket.onmessage = (event) => { this.applyFrame(event.data); };
-      socket.onclose = () => { this.socket = undefined; this.setConnection("offline"); if (!settled) reject(new Error("collaboration stream closed")); };
-      socket.onerror = () => { if (!settled) { settled = true; reject(new Error("collaboration stream failed")); } this.setConnection("offline"); };
+      socket.onopen = () => { this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS; this.startHeartbeat(socket); this.setConnection("online"); settled = true; resolve(); };
+      socket.onmessage = (event) => { if (this.socket !== socket) return; this.heartbeatAcknowledged = true; this.applyFrame(event.data); };
+      socket.onclose = () => {
+        if (this.socket !== socket) return;
+        this.socket = undefined;
+        this.clearHeartbeat();
+        this.setConnection("offline");
+        if (!settled) reject(new Error("collaboration stream closed"));
+        else this.scheduleParticipantReconnect();
+      };
+      socket.onerror = () => {
+        if (this.socket !== socket) return;
+        if (!settled) { settled = true; reject(new Error("collaboration stream failed")); }
+        this.setConnection("offline");
+      };
     });
+  }
+
+  private startHeartbeat(socket: BrowserSocket): void {
+    this.clearHeartbeat();
+    this.heartbeatAcknowledged = true;
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== OPEN) return;
+      if (!this.heartbeatAcknowledged) {
+        this.socket = undefined;
+        this.clearHeartbeat();
+        this.setConnection("offline");
+        this.scheduleParticipantReconnect();
+        socket.close(4000, "heartbeat_timeout");
+        return;
+      }
+      this.heartbeatAcknowledged = false;
+      socket.send(JSON.stringify(encodeClientStreamFrame({ protocol: COLLAB_PROTOCOL, type: "heartbeat" })));
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+    this.heartbeatAcknowledged = true;
+  }
+
+  private scheduleParticipantReconnect(): void {
+    if (this.disposed || this.reconnectTimer || !this.options.participantPersistence?.load()) return;
+    const delay = this.reconnectDelayMs;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.disposed) return;
+      void this.restoreParticipant().catch(() => {
+        this.reconnectDelayMs = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
+        this.scheduleParticipantReconnect();
+      });
+    }, delay);
   }
 
   private async request(method: string, path: string, body: unknown, withToken: boolean): Promise<unknown> {

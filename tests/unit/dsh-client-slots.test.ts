@@ -33,9 +33,12 @@ describe("real DSH client slot adapter", () => {
     };
     const html = renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: participant }));
     expect(html).toContain('data-collab-surface="participant-overlay"');
+    expect(html).toContain('data-collab-room-ui="true"');
     expect(html).toContain("hello");
     expect(html).toContain("done");
     expect(html).toContain('name="collab-text"');
+    expect(html).not.toContain('style="');
+    expect(html).not.toContain("dsh-collab-dock__");
     expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 

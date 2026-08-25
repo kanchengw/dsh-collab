@@ -8,5 +8,8 @@ describe("browser client bundle", () => {
     expect(bundle).not.toContain("@deepseek-ai/schemastery");
     expect(bundle).not.toMatch(/^import ['"]\.\/style\.css['"];?/m);
     expect(bundle).toContain("data-dsh-collab-css");
+    expect(bundle).toContain('"collab-settings-card"');
+    expect(bundle).toContain('"collab-room"');
+    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(2);
   });
 });

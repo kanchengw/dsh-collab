@@ -34,4 +34,12 @@ describe("collab timeline projection", () => {
     ]);
     expect(output).toEqual([expect.objectContaining({ kind: "agent", state: "output", text: "done", requestId: "req-1" })]);
   });
+
+  it("projects a safe Host Agent failure into the room timeline", () => {
+    const failed = projectTimeline([
+      event({ eventId: "failed-1", seq: 1, type: "agent.request.failed", payload: { requestId: "req-1", error: "Host Agent failed: MISSING_CREDENTIAL" } }),
+    ]);
+
+    expect(failed).toEqual([expect.objectContaining({ status: "failed", text: "Host Agent failed: MISSING_CREDENTIAL" })]);
+  });
 });

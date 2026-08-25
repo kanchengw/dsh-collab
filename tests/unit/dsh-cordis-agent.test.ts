@@ -50,4 +50,41 @@ describe("real DSH Cordis Agent bridge", () => {
     await service.followup({ requestId: "request-output", sessionId: "session-1", text: "reply once" });
     await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-output" })).resolves.toEqual({ text: "COLLAB_AGENT_OUTPUT" });
   });
+
+  it("returns a safe failure when the matching Host turn ends in error", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { get events() { return events; } },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "turn/start", data: { turn: 1 } },
+          { seq: 1, type: "user/message", data: message },
+          { seq: 2, type: "turn/end", data: { turn: 1, reason: { kind: "error", error: { message: "credential path C:/secret", code: "MISSING_CREDENTIAL" } } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-failed", sessionId: "session-1", text: "reply once" });
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-failed" })).resolves.toEqual({ error: "Host Agent failed: MISSING_CREDENTIAL" });
+  });
+
+  it("does not expose an unstructured Host error code", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { get events() { return events; } },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "user/message", data: message },
+          { seq: 1, type: "turn/end", data: { turn: 1, reason: { kind: "error", error: { code: "C:/private/credential.txt" } } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-failed", sessionId: "session-1", text: "reply once" });
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-failed" })).resolves.toEqual({ error: "Host Agent request failed" });
+  });
 });

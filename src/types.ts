@@ -191,6 +191,7 @@ export interface AgentDelivery {
 
 export interface AgentDeliveryResult {
   text?: string;
+  error?: string;
 }
 
 export interface HostAgentPort {

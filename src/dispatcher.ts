@@ -319,16 +319,15 @@ export class AgentDispatcher {
           hostSessionId: record.hostSessionId,
         });
       } catch (error) {
-        const entry = this.records.get(record.requestId);
-        if (entry?.record.status === "running") {
-          entry.record.status = "failed";
-          entry.record.error = error instanceof Error ? error.message : String(error);
-          this.activeRequestId = undefined;
-        }
+        this.failRunning(record, error instanceof Error ? error.message : String(error));
         continue;
       }
       if (this.activeRequestId === record.requestId && this.records.get(record.requestId)?.record.status === "running") {
         try {
+          if (result?.error) {
+            this.failRunning(record, result.error);
+            continue;
+          }
           if (result?.text) this.appendAgentOutput(record, result.text);
           await this.complete(record.requestId);
         } catch {
@@ -336,6 +335,23 @@ export class AgentDispatcher {
         }
       }
     }
+  }
+
+  private failRunning(record: QueueRecord, error: string): void {
+    const entry = this.records.get(record.requestId);
+    if (!entry || entry.record.status !== "running" || this.activeRequestId !== record.requestId) return;
+    const member = this.options.rooms.listMembers(record.roomId).find((candidate) => candidate.memberId === record.authorMemberId);
+    if (!member) throw new CollabError("MEMBER_NOT_FOUND", "request author no longer exists", { requestId: record.requestId });
+    entry.record.status = "failed";
+    entry.record.error = error;
+    this.activeRequestId = undefined;
+    this.options.ledger.append({
+      eventId: record.requestId + ":failed",
+      roomId: record.roomId,
+      type: "agent.request.failed",
+      actor: { memberId: member.memberId, principalId: member.principalId },
+      payload: { requestId: record.requestId, error },
+    });
   }
 
   private appendAgentOutput(record: QueueRecord, text: string): void {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket, type ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import { decodeCollabInvitation } from "../../src/invitation.js";
 
@@ -201,6 +201,116 @@ describe("browser Gateway client", () => {
     expect(second.getSnapshot()).toMatchObject({ roomId: "room-2", role: "participant", connection: "online" });
     expect(urls.filter((url) => url.endsWith("/join"))).toHaveLength(1);
     expect(urls.filter((url) => url.endsWith("/resume"))).toHaveLength(1);
+  });
+
+  it("resumes a live Participant after the Host Gateway restarts", async () => {
+    vi.useFakeTimers();
+    try {
+      const persisted: ParticipantResumeState = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+      const sockets: BrowserSocket[] = [];
+      let resumeRequests = 0;
+      const fetch: BrowserFetch = async (url) => {
+        if (url.endsWith("/resume")) {
+          resumeRequests += 1;
+          if (resumeRequests === 2) throw new Error("Host Gateway is offline");
+          return response({
+            room: { roomId: "room-2", title: "Remote" },
+            member: { memberId: "member-bob", role: "participant" },
+            roomToken: `room-token-${String(resumeRequests)}`,
+          });
+        }
+        if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 });
+        return response({ events: [], nextSeq: 0 });
+      };
+      const WebSocket = class implements BrowserSocket {
+        readyState = 1;
+        onopen?: () => void;
+        onmessage?: (event: { data: string }) => void;
+        onclose?: () => void;
+        onerror?: () => void;
+        constructor() { sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+        send(): void {}
+        close(): void { this.readyState = 3; }
+      };
+      const client = createDshBrowserCollabClient({
+        gatewayUrl: "http://127.0.0.1:4310/collab",
+        roomId: "dsh-room",
+        fetch,
+        WebSocket,
+        participantPersistence: { load: () => persisted, save: async () => {}, clear: async () => {} },
+      });
+
+      await expect(client.restoreParticipant()).resolves.toBe(true);
+      expect(client.getSnapshot().connection).toBe("online");
+      sockets[0]?.onclose?.();
+      expect(client.getSnapshot().connection).toBe("offline");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(resumeRequests).toBe(2);
+      expect(sockets).toHaveLength(1);
+      expect(client.getSnapshot().connection).toBe("offline");
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(resumeRequests).toBe(3);
+      expect(sockets).toHaveLength(2);
+      expect(client.getSnapshot().connection).toBe("online");
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces a silent Participant stream when heartbeat responses stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const persisted: ParticipantResumeState = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+      const sockets: BrowserSocket[] = [];
+      const sent: string[] = [];
+      let resumeRequests = 0;
+      const fetch: BrowserFetch = async (url) => {
+        if (url.endsWith("/resume")) {
+          resumeRequests += 1;
+          return response({
+            room: { roomId: "room-2", title: "Remote" },
+            member: { memberId: "member-bob", role: "participant" },
+            roomToken: `room-token-${String(resumeRequests)}`,
+          });
+        }
+        if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 });
+        return response({ events: [], nextSeq: 0 });
+      };
+      const WebSocket = class implements BrowserSocket {
+        readyState = 1;
+        onopen?: () => void;
+        onmessage?: (event: { data: string }) => void;
+        onclose?: () => void;
+        onerror?: () => void;
+        constructor() { sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+        send(data: string): void { sent.push(data); }
+        close(): void { this.readyState = 2; }
+      };
+      const client = createDshBrowserCollabClient({
+        gatewayUrl: "http://127.0.0.1:4310/collab",
+        roomId: "dsh-room",
+        fetch,
+        WebSocket,
+        participantPersistence: { load: () => persisted, save: async () => {}, clear: async () => {} },
+      });
+
+      await expect(client.restoreParticipant()).resolves.toBe(true);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sent.map((frame) => JSON.parse(frame))).toContainEqual({ protocol: "dsh-collab.v1", type: "heartbeat" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(client.getSnapshot().connection).toBe("offline");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(resumeRequests).toBe(2);
+      expect(sockets).toHaveLength(2);
+      expect(client.getSnapshot().connection).toBe("online");
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears a rejected resume credential but retains it on a network failure", async () => {

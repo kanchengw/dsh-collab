@@ -165,6 +165,22 @@ describe("AgentDispatcher", () => {
     ]);
   });
 
+  it("publishes a failed request instead of completing a failed Host turn", async () => {
+    const { dispatcher, ledger } = createDispatcher({
+      followup() {}, steer() {}, cancel() {},
+      whenIdle: async () => ({ error: "Host Agent failed: MISSING_CREDENTIAL" }),
+    });
+    await dispatcher.submit({ principalId: "alice", message: request("message-failed", "Reply once") });
+
+    await dispatcher.processQueue();
+
+    expect(dispatcher.get("message-failed")).toMatchObject({ status: "failed", error: "Host Agent failed: MISSING_CREDENTIAL" });
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
+      type: "agent.request.failed",
+      payload: { requestId: "message-failed", error: "Host Agent failed: MISSING_CREDENTIAL" },
+    });
+  });
+
   it("rechecks membership before delivering a queued request", async () => {
     const calls: string[] = [];
     const { dispatcher, rooms } = createDispatcher({

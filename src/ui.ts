@@ -179,6 +179,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
     };
     item.seq = event.seq;
     item.status = status;
+    if (status === "failed" && typeof payload.error === "string") item.text = payload.error;
     if (!requests.has(requestId)) {
       requests.set(requestId, item);
       items.push(item);

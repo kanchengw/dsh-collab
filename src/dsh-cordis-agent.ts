@@ -52,6 +52,11 @@ function assistantOutput(events: readonly DshCordisSessionEvent[], baseline: num
   if (userIndex < 0) return undefined;
   const relativeEnd = events.slice(userIndex + 1).findIndex((event) => event.type === "turn/end");
   const endIndex = relativeEnd < 0 ? events.length : userIndex + 1 + relativeEnd;
+  const reason = relativeEnd < 0 ? undefined : record(record(events[endIndex]?.data)?.reason);
+  if (reason?.kind === "error") {
+    const code = record(reason.error)?.code;
+    return { error: typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? `Host Agent failed: ${code}` : "Host Agent request failed" };
+  }
   const parts: string[] = [];
   for (const event of events.slice(userIndex + 1, endIndex)) {
     if (event.type !== "assistant/message") continue;

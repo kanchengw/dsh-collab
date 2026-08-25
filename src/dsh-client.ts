@@ -1,9 +1,10 @@
-import { createElement, useEffect, useState, type ChangeEvent, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { createElement, useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
+import roomCss from "./collab-room.module.css";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -231,17 +232,18 @@ function timelineLabel(item: TimelineItem): string {
 }
 
 function DshCollabTimeline(props: { items: readonly TimelineItem[] }): ReactNode {
-  if (props.items.length === 0) return createElement("p", { className: "dsh-collab-timeline__empty" }, "No room messages yet");
-  return createElement("div", { className: "dsh-collab-timeline", "data-collab-timeline": true, "aria-live": "polite" },
+  if (props.items.length === 0) return createElement("p", { className: roomCss.empty }, "No room messages yet");
+  return createElement("div", { className: roomCss.timeline, "data-collab-timeline": true, "aria-live": "polite" },
     props.items.map((item) => createElement("article", {
       key: item.eventId,
-      className: "dsh-collab-timeline__item",
+      className: roomCss.message,
       "data-kind": item.kind,
       "data-status": item.status,
       "data-state": item.state,
     },
-    createElement("small", null, item.kind === "human" ? item.authorMemberId : "Host Agent"),
-    createElement("p", null, timelineLabel(item)))),
+    createElement("small", { className: roomCss.author }, item.kind === "human" ? item.authorMemberId : "Host Agent"),
+    createElement("p", { className: roomCss.text }, timelineLabel(item)),
+    item.kind === "agent" ? createElement("span", { className: roomCss.status }, item.status ?? item.state ?? "") : null)),
   );
 }
 
@@ -265,39 +267,22 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       setError(cause instanceof Error ? cause.message : "Unable to send collaboration message");
     }
   };
-  return createElement("section", { className: "dsh-collab-dock", "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": "dsh-collab room" },
-    createElement("div", { className: "dsh-collab-dock__identity" },
-      createElement("strong", null, snapshot.roomTitle),
-      createElement("span", { className: "dsh-collab-dock__badge" }, snapshot.role === "host" ? "Host" : "Participant"),
-      snapshot.hostDisplayName ? createElement("span", null, `Hosted by ${snapshot.hostDisplayName}`) : null,
-      createElement("span", { className: "dsh-collab-dock__connection", role: "status" }, `${snapshot.connection} · ${String(snapshot.memberCount)} members`),
+  return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": "dsh-collab room" },
+    createElement("div", { className: roomCss.header },
+      createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
+      createElement("span", { className: roomCss.badge }, snapshot.role === "host" ? "Host" : "Participant"),
+      snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, `Hosted by ${snapshot.hostDisplayName}`) : null,
+      createElement("span", { className: roomCss.connection, role: "status" }, `${snapshot.connection} · ${String(snapshot.memberCount)} members`),
     ),
     createElement(DshCollabTimeline, { items: snapshot.timeline ?? [] }),
-    createElement("form", { onSubmit: submit },
-      createElement("label", null, "Send to ", createElement("select", { value: selectedTarget, onChange: (event: ChangeEvent<HTMLSelectElement>) => setTarget(event.target.value as ComposerTarget), name: "collab-target" }, [option("room", selectedTarget), option("dsh", selectedTarget), canSteer ? option("dsh-steer", selectedTarget) : null])),
-      createElement("textarea", { value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", placeholder: "Message the room or ask the Host Agent", rows: 2 }),
-      createElement("button", { type: "submit", disabled: !props.port || draft.trim() === "" }, "Send"),
+    createElement("form", { className: roomCss.composer, onSubmit: submit },
+      createElement("label", { className: roomCss.targetLabel }, "Send to", createElement("select", { className: roomCss.select, value: selectedTarget, onChange: (event: ChangeEvent<HTMLSelectElement>) => setTarget(event.target.value as ComposerTarget), name: "collab-target" }, [option("room", selectedTarget), option("dsh", selectedTarget), canSteer ? option("dsh-steer", selectedTarget) : null])),
+      createElement("textarea", { className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", "aria-label": "Collaboration message", placeholder: "Message people or ask the Host Agent", rows: 1 }),
+      createElement("button", { className: roomCss.send, type: "submit", disabled: !props.port || draft.trim() === "" }, "Send"),
     ),
-    error ? createElement("p", { role: "alert" }, error) : null,
+    error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,
   );
 }
-
-const participantOverlayStyle: CSSProperties = {
-  position: "fixed",
-  right: "1.25rem",
-  bottom: "1.25rem",
-  zIndex: 40,
-  width: "min(26rem, calc(100vw - 2rem))",
-  maxHeight: "min(42rem, calc(100vh - 2rem))",
-  overflow: "auto",
-  pointerEvents: "auto",
-  border: "1px solid rgba(27, 35, 30, 0.16)",
-  borderRadius: "1rem",
-  background: "linear-gradient(145deg, #fffdf7 0%, #f2f7ef 100%)",
-  boxShadow: "0 1.25rem 4rem rgba(20, 31, 24, 0.22)",
-  padding: "0.85rem",
-  color: "#17211b",
-};
 
 /** Root-scoped Participant room surface; it does not require a local DSH session. */
 export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot }): ReactNode {
@@ -308,15 +293,13 @@ export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort;
     type: "button",
     onClick: () => setCollapsed(false),
     "aria-label": "Open collaboration room",
-    style: { ...participantOverlayStyle, width: "auto", borderRadius: "999px", padding: "0.65rem 0.9rem" },
+    className: roomCss.collapsed,
   }, `Collab · ${snapshot.connection}`);
-  return createElement("aside", { style: participantOverlayStyle, "data-collab-surface": "participant-overlay", "aria-label": "Participant collaboration room" },
-    createElement("button", {
-      type: "button",
-      onClick: () => setCollapsed(true),
-      "aria-label": "Minimize collaboration room",
-      style: { float: "right" },
-    }, "Minimize"),
+  return createElement("aside", { className: roomCss.overlay, "data-collab-room-ui": true, "data-collab-surface": "participant-overlay", "aria-label": "Participant collaboration room" },
+    createElement("div", { className: roomCss.overlayBar },
+      createElement("span", null, "Remote room · one Host Agent"),
+      createElement("button", { type: "button", onClick: () => setCollapsed(true), "aria-label": "Minimize collaboration room", className: roomCss.minimize }, "Minimize"),
+    ),
     createElement(DshCollabDock, { port: props.port, fallback: snapshot }),
   );
 }

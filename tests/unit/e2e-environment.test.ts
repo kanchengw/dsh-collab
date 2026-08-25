@@ -32,6 +32,9 @@ describe("isolated two-DSH browser environment", () => {
 
     expect(hostPatch).toContain("allowLoopbackPrincipal: true");
     expect(hostPatch).toContain("port: 4312");
+    expect(hostPatch).toContain("id: directory-picker\n  disabled: true");
+    expect(hostPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
+    expect(hostPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
     expect(participantPatch).toContain("allowLoopbackPrincipal: true");
     expect(participantPatch).toContain("port: 4313");
 

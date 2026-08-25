@@ -1,6 +1,6 @@
 import { defineConfig } from "tsdown";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { transform } from "lightningcss";
 
 const CSS_PREFIX = "\0dsh-collab-css:";
@@ -26,13 +26,15 @@ export default defineConfig({
     load(id) {
       if (!id.startsWith(CSS_PREFIX) || !id.endsWith(CSS_SUFFIX)) return null;
       const path = id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length);
+      const styleId = basename(path, ".module.css");
       const compiled = transform({ filename: path, code: readFileSync(path), cssModules: { pattern: "dshCollab_[local]_[hash]" }, minify: true });
       const classes = Object.fromEntries(Object.entries(compiled.exports ?? {}).map(([name, value]) => [name, value.name]));
       return [
         `const cssText = ${JSON.stringify(compiled.code.toString())};`,
-        'if (typeof document !== "undefined" && !document.querySelector("style[data-dsh-collab-css]")) {',
+        `const styleId = ${JSON.stringify(styleId)};`,
+        'if (typeof document !== "undefined" && !document.querySelector(`style[data-dsh-collab-css="${styleId}"]`)) {',
         '  const tag = document.createElement("style");',
-        '  tag.setAttribute("data-dsh-collab-css", "settings");',
+        '  tag.setAttribute("data-dsh-collab-css", styleId);',
         '  tag.textContent = cssText;',
         '  document.head.appendChild(tag);',
         '}',
