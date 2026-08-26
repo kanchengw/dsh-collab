@@ -13,55 +13,55 @@ describe("isolated two-DSH browser environment", () => {
     expect(existsSync(resolve(root, "e2e/nginx"))).toBe(false);
 
     const assets = [
-      read("e2e/dsh-host.patch.yml"),
-      read("e2e/dsh-participant.patch.yml"),
+      read("e2e/dsh-client.patch.yml"),
       read("e2e/prepare.ps1"),
-      read("e2e/start-host.ps1"),
-      read("e2e/start-participant.ps1"),
+      read("e2e/start.ps1"),
     ].join("\n");
 
     expect(assets).not.toMatch(/nginx|127\.0\.0\.2|3182|3183|participantGatewayUrl|trustedProxy|localProxy/i);
   });
 
-  it("gives each complete plugin installation its own DSH home and Gateway", () => {
-    const hostPatch = read("e2e/dsh-host.patch.yml");
-    const participantPatch = read("e2e/dsh-participant.patch.yml");
+  it("prepares two role-neutral clients from one symmetric patch", () => {
+    const clientPatch = read("e2e/dsh-client.patch.yml");
     const prepare = read("e2e/prepare.ps1");
-    const startHost = read("e2e/start-host.ps1");
-    const startParticipant = read("e2e/start-participant.ps1");
+    const start = read("e2e/start.ps1");
 
-    expect(hostPatch).toContain("allowLoopbackPrincipal: true");
-    expect(hostPatch).toContain("port: 4312");
-    expect(hostPatch).toContain("id: directory-picker\n  disabled: true");
-    expect(hostPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
-    expect(hostPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
-    expect(participantPatch).toContain("allowLoopbackPrincipal: true");
-    expect(participantPatch).toContain("port: 4313");
+    expect(existsSync(resolve(root, "e2e/dsh-host.patch.yml"))).toBe(false);
+    expect(existsSync(resolve(root, "e2e/dsh-participant.patch.yml"))).toBe(false);
+    expect(clientPatch).toContain("hostId: __CLIENT_ID__");
+    expect(clientPatch).toContain("port: __GATEWAY_PORT__");
+    expect(clientPatch).toContain("hostDisplayName: __CLIENT_DISPLAY_NAME__");
+    expect(clientPatch).toContain("allowLoopbackPrincipal: true");
+    expect(clientPatch).toContain("id: directory-picker\n  disabled: true");
+    expect(clientPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
+    expect(clientPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
 
+    expect(prepare).toContain('Id = "client-a"');
+    expect(prepare).toContain('Id = "client-b"');
+    expect(prepare).toContain("GatewayPort = 4312");
+    expect(prepare).toContain("GatewayPort = 4313");
     expect(prepare).toContain("plugin --profile web add");
-    expect(prepare).toContain("e2e/.state/host");
-    expect(prepare).toContain("e2e/.state/participant");
-    expect(startHost).toContain("--port 3082 --no-open");
-    expect(startParticipant).toContain("--port 3083 --no-open");
+    expect(start).toContain('[ValidateSet("A", "B")]');
+    expect(start).toContain('A = @{ Home = "client-a"; UiPort = 3082 }');
+    expect(start).toContain('B = @{ Home = "client-b"; UiPort = 3083 }');
   });
 
-  it("layers same-machine connectivity over the unchanged release package", () => {
-    const hostPatch = read("e2e/dsh-host.patch.yml");
-    const settingsPatch = read("e2e/dsh-host.settings.patch.yml");
+  it("gives both clients the released private-network invitation path", () => {
+    const settingsPatch = read("e2e/dsh-client.settings.patch.yml");
     const prepare = read("e2e/prepare.ps1");
     const releasePatch = read("cordis.patch.yml");
     const packageJson = JSON.parse(read("package.json")) as { files?: string[] };
 
     expect(settingsPatch).toContain("gatewayHost: 0.0.0.0");
-    expect(settingsPatch).toContain("gatewayPort: 4312");
+    expect(settingsPatch).toContain("gatewayPort: __GATEWAY_PORT__");
     expect(settingsPatch).toContain("exposeMode: network");
-    expect(settingsPatch).toContain("ws://__HOST_ADDRESS__:4312/collab");
-    expect(prepare).toContain("dsh-host.settings.patch.yml");
+    expect(settingsPatch).toContain("ws://__PRIVATE_ADDRESS__:__GATEWAY_PORT__/collab");
+    expect(prepare).toContain("dsh-client.settings.patch.yml");
+    expect(prepare).toContain("foreach ($client in $clients)");
     expect(prepare).toContain("plugin --profile web add $projectRoot");
     expect(prepare).toContain("lib/index.js");
     expect(prepare).toContain("lib/client.js");
-    expect(hostPatch).not.toMatch(/^\s*name:\s*dsh-collab\s*$/m);
-    expect(releasePatch).not.toMatch(/4312|4313|__HOST_ADDRESS__/);
+    expect(releasePatch).not.toMatch(/4312|4313|__PRIVATE_ADDRESS__/);
     expect(packageJson.files?.some((entry) => entry === "e2e" || entry.startsWith("e2e/"))).toBe(false);
   });
 });

@@ -1,14 +1,14 @@
-# Host DSH runtime overlay used by the real two-profile browser acceptance run.
+# Symmetric runtime overlay rendered once for each isolated DSH client.
 - id: collab-host
   config:
     enabled: true
     roomId: dsh-room
-    hostId: host
+    hostId: __CLIENT_ID__
     allowLoopbackPrincipal: true
     host: 127.0.0.1
-    port: 4312
+    port: __GATEWAY_PORT__
     title: DSH Collaboration
-    hostDisplayName: Host DSH
+    hostDisplayName: __CLIENT_DISPLAY_NAME__
 - id: directory-picker
   disabled: true
 - insert:

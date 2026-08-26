@@ -59,13 +59,13 @@ pnpm audit --audit-level=high
 This is the repeatable protocol endpoint for development on one machine; two physical hosts are not required. The test uses the same Gateway, token store, stream upgrade and Host adapter used by DSH composition.
 
 For complete browser testing, run `e2e/prepare.ps1`, then start
-`e2e/start-host.ps1` and `e2e/start-participant.ps1` in separate terminals.
+`e2e/start.ps1 -Client A` and `e2e/start.ps1 -Client B` in separate terminals.
 They install the same complete plugin through DSH's official profile command,
 use isolated `DSH_HOME` directories, and expose the two DSH UIs at `3082` and
-`3083` while their independent Collab Gateways use `4312` and `4313`. The Host
-test settings overlay advertises a detected private IPv4 address, so this
-same-machine run exercises the released `Private network` path rather than a
-local-only product mode. See
+`3083` while their independent Collab Gateways use `4312` and `4313`. Both
+clients advertise a detected private IPv4 address, so either can own a room and
+invite the other through the released `Private network` path. Ports identify
+processes only; room creation determines Owner/Participant roles. See
 [`e2e/README.md`](./e2e/README.md).
 
 ## DSH package shape
