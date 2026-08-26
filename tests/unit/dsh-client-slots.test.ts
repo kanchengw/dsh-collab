@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSessionDock, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSessionDock, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", memberCount: 3, canSteer: true };
@@ -9,7 +9,26 @@ const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Releas
 describe("real DSH client slot adapter", () => {
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
-    expect(inject).toEqual(["slots", "settingsScope"]);
+    expect(inject).toEqual(["slots", "settingsScope", "connection"]);
+  });
+
+  it("starts and stops the Host Gateway only through the official Connection RPC", async () => {
+    const calls: string[] = [];
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+    const port = createDshGatewayControlPort(base, {
+      call: vi.fn(async (_channel: string, endpoint: string) => {
+        calls.push(endpoint);
+        return { ok: true, value: endpoint.endsWith("start") ? { status: "running", port: 4310 } : { status: "stopped" } };
+      }),
+    });
+
+    expect(port.getGatewaySnapshot?.()).toEqual({ status: "stopped" });
+    expect(calls).toEqual([]);
+    await port.startGateway?.();
+    expect(port.getGatewaySnapshot?.()).toEqual({ status: "running", port: 4310 });
+    await port.stopGateway?.();
+    expect(port.getGatewaySnapshot?.()).toEqual({ status: "stopped" });
+    expect(calls).toEqual(["gateway/start", "gateway/stop"]);
   });
 
   it("renders the native conversation dock with role, connection and target controls", () => {

@@ -30,6 +30,11 @@ export interface DshCollabGatewaySnapshot {
   advertisedEndpoint: string;
 }
 
+export type DshCollabGatewayRuntimeSnapshot =
+  | { status: "stopped" }
+  | { status: "starting" }
+  | { status: "running"; port: number };
+
 export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
   appliedGateway?: DshCollabGatewaySnapshot;
   writable?: boolean;
@@ -46,6 +51,15 @@ export interface DshCollabSettingsPort {
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string }, roomId?: string): Promise<{ invitation: string }>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
+  getGatewaySnapshot?(): DshCollabGatewayRuntimeSnapshot;
+  subscribeGateway?(listener: () => void): () => void;
+  refreshGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
+  startGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
+  stopGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
+}
+
+interface DshClientConnectionRpc {
+  call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface DshClientSlots {
@@ -60,7 +74,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope"];
+export const inject = ["slots", "settingsScope", "connection"];
 
 interface DshSettingsScope<T> {
   getSnapshot(): { status: "loading" | "ready" | "unavailable"; value?: T; writable: boolean };
@@ -135,6 +149,40 @@ export function createDshParticipantPersistence(scope: DshSettingsScope<DshColla
       }
     },
     clear: async () => { await scope.unset("resume"); },
+  };
+}
+
+function decodeGatewayRuntimeResult(result: unknown): DshCollabGatewayRuntimeSnapshot {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid Host Gateway response");
+  const envelope = result as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Host Gateway control failed");
+  if (!envelope.value || typeof envelope.value !== "object" || Array.isArray(envelope.value)) throw new Error("Invalid Host Gateway state");
+  const value = envelope.value as { status?: unknown; port?: unknown };
+  if (value.status === "stopped" || value.status === "starting") return { status: value.status };
+  if (value.status === "running" && Number.isSafeInteger(value.port) && (value.port as number) >= 1 && (value.port as number) <= 65535) {
+    return { status: "running", port: value.port as number };
+  }
+  throw new Error("Invalid Host Gateway state");
+}
+
+export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
+  let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
+  const listeners = new Set<() => void>();
+  const publish = (next: DshCollabGatewayRuntimeSnapshot): DshCollabGatewayRuntimeSnapshot => {
+    gateway = next;
+    for (const listener of listeners) listener();
+    return next;
+  };
+  const call = async (endpoint: string): Promise<DshCollabGatewayRuntimeSnapshot> => {
+    return publish(decodeGatewayRuntimeResult(await rpc.call("/dsh-collab", endpoint, {})));
+  };
+  return {
+    ...base,
+    getGatewaySnapshot: () => gateway,
+    subscribeGateway: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    refreshGateway: () => call("gateway/status"),
+    startGateway: async () => { publish({ status: "starting" }); return await call("gateway/start"); },
+    stopGateway: () => call("gateway/stop"),
   };
 }
 
@@ -215,6 +263,11 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     configureGateway: actions.configureGateway?.bind(actions),
     getRoomSnapshot: actions.getRoomSnapshot?.bind(actions),
     subscribeRoom: actions.subscribeRoom?.bind(actions),
+    getGatewaySnapshot: actions.getGatewaySnapshot?.bind(actions),
+    subscribeGateway: actions.subscribeGateway?.bind(actions),
+    refreshGateway: actions.refreshGateway?.bind(actions),
+    startGateway: actions.startGateway?.bind(actions),
+    stopGateway: actions.stopGateway?.bind(actions),
   };
 }
 
@@ -440,7 +493,9 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeParticipantSettings });
   const browserClient = existing ? undefined : createDshBrowserCollabClient({ ...browserConfig(), ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}) });
   const client = existing ?? browserClient;
-  const browserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
+  const rawBrowserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
+  const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
+  const browserSettings = rawBrowserSettings && connection ? createDshGatewayControlPort(rawBrowserSettings, connection.rpc) : rawBrowserSettings;
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);

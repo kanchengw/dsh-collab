@@ -1,12 +1,11 @@
-# dsh-collab is one installable bundle. Its host row owns the gateway and its
+# dsh-collab is one installable bundle. Its host row can start the gateway and its
 # browser row owns the participant/host room surface; the room role is resolved
 # from trusted session/token evidence at runtime.
 - insert:
     - id: collab-host
       name: dsh-collab
-      inject: [agents, settings]
+      inject: [agents, settings, connection]
       config:
-        enabled: true
         roomId: dsh-room
         hostId: local-host
         allowLoopbackPrincipal: true

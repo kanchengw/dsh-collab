@@ -97,11 +97,13 @@ describe("Cordis Host mount", () => {
       security: { tokenTtlMs: 25, approvalPolicy: "disabled" as const, maxMembers: 2, maxMessageBytes: 4, maxQueue: 1 },
     };
     let resolved: DshCollabPersistedSettings = persisted;
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     const update = vi.fn(async (patch: object) => { resolved = { ...resolved, ...patch as Partial<DshCollabPersistedSettings> }; });
     const context = {
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => resolved, update }) } }),
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: typeof control) => { control = handler; return async () => {}; }) } },
     };
 
     apply(context, {
@@ -109,6 +111,7 @@ describe("Cordis Host mount", () => {
       allowLoopbackPrincipal: true, tokenTtlMs: 1000, maxMessageBytes: 1000, now: () => 10, tokenFactory: () => "room-token",
       ...noPersistence,
     });
+    await control!("gateway/start", {}, new AbortController().signal);
     await waitUntilListening(gatewayPort);
     await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ gateway: persisted.gateway, appliedGateway: persisted.gateway }));
 
@@ -186,17 +189,29 @@ describe("Cordis Host mount", () => {
     expect(mounted).toBeUndefined();
   });
 
-  it("wires the package default apply to a dedicated Gateway", async () => {
+  it("keeps the Gateway stopped until the loopback control RPC starts it", async () => {
     const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    let persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
     const context = {
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; } }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>, options: unknown) => { control = handler; expect(options).toEqual({ authority: "loopback" }); return async () => {}; }) } },
     };
     apply(context, { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
-    await waitUntilListening(gatewayPort);
-    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(await canConnect(gatewayPort)).toBe(false);
+    expect(control).toBeDefined();
+    expect(await control!("gateway/status", {}, new AbortController().signal)).toMatchObject({ ok: true, value: { status: "stopped" } });
+    await control!("gateway/start", {}, new AbortController().signal);
+    await waitUntilListening(gatewayPort);
+    expect(await control!("gateway/status", {}, new AbortController().signal)).toMatchObject({ ok: true, value: { status: "running", port: gatewayPort } });
+    await control!("gateway/stop", {}, new AbortController().signal);
+    expect(await canConnect(gatewayPort)).toBe(false);
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
   });
 
   it("does not start the removed local proxy when stale config is present", async () => {
@@ -224,11 +239,19 @@ describe("Cordis Host mount", () => {
   it("starts the Gateway without binding a room to the first DSH Agent", async () => {
     const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    let persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
     const context = {
       agents: { get: () => undefined },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; } }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
     };
     apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
+    expect(await canConnect(gatewayPort)).toBe(false);
+    await control!("gateway/start", {}, new AbortController().signal);
     await waitUntilListening(gatewayPort);
     expect((await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/bootstrap`)).status).toBe(404);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));

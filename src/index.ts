@@ -31,7 +31,16 @@ interface DshSettingsRegistrationContext {
   };
 }
 
+interface DshConnectionRpc {
+  handle(
+    channel: string,
+    handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
+    options: { authority: "loopback" | "trusted-host" },
+  ): () => Promise<void>;
+}
+
 export interface DshCollabCordisContext extends DshCordisHostContext {
+  connection?: { rpc: DshConnectionRpc };
   effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
 }
@@ -89,19 +98,69 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
   };
 }
 
-function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>, onReady?: (port: number) => void): void {
-  if (typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
-  const mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
-  const reportReady = (): void => {
-    if (mounted && onReady) void mounted.ready.then(onReady).catch(() => undefined);
+function registerGatewayControl(
+  context: DshCollabCordisContext,
+  config: Partial<DshCordisHostConfig>,
+  scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>,
+): void {
+  if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
+  let mounted: ReturnType<typeof mountDshCollabCordisHost>;
+  let starting: Promise<{ status: "running"; port: number }> | undefined;
+
+  const stop = async (): Promise<{ status: "stopped" }> => {
+    await starting?.catch(() => undefined);
+    const current = mounted;
+    mounted = undefined;
+    if (current) await current.dispose();
+    return { status: "stopped" };
   };
-  reportReady();
-  if (!mounted) return;
-  if (context.effect) {
-    context.effect(() => async () => {
-      await mounted.dispose();
-    }, "dsh-collab: Host Gateway");
-  }
+  const start = async (): Promise<{ status: "running"; port: number }> => {
+    if (mounted && !starting) return { status: "running", port: await mounted.ready };
+    if (starting) return await starting;
+    starting = (async () => {
+      const settings = scope.get();
+      const next = mountDshCollabCordisHost(context, applyPersistedSettings(config, settings) as DshCordisHostConfig);
+      if (!next) throw new Error("Host Gateway is disabled");
+      mounted = next;
+      try {
+        const gatewayPort = await next.ready;
+        const advertisedEndpoint = settings.gateway.exposeMode === "network"
+          ? privateGatewayEndpoint(privateAddressFromGatewayEndpoint(settings.gateway.advertisedEndpoint), gatewayPort)
+          : settings.gateway.advertisedEndpoint;
+        const appliedGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint };
+        await scope.update({ gateway: appliedGateway, appliedGateway });
+        return { status: "running", port: gatewayPort };
+      } catch (error) {
+        if (mounted === next) mounted = undefined;
+        await next.dispose().catch(() => undefined);
+        throw error;
+      }
+    })();
+    try {
+      return await starting;
+    } finally {
+      starting = undefined;
+    }
+  };
+
+  const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint) => {
+    try {
+      if (endpoint === "gateway/status") {
+        if (starting) return { ok: true, value: { status: "starting" } };
+        if (mounted) return { ok: true, value: { status: "running", port: await mounted.ready } };
+        return { ok: true, value: { status: "stopped" } };
+      }
+      if (endpoint === "gateway/start") return { ok: true, value: await start() };
+      if (endpoint === "gateway/stop") return { ok: true, value: await stop() };
+      return { ok: false, error: { code: "bad-request", message: `Unknown dsh-collab control endpoint: ${endpoint}`, details: { issues: [] } } };
+    } catch (error) {
+      return { ok: false, error: { code: "internal", message: error instanceof Error ? error.message : String(error), details: {} } };
+    }
+  }, { authority: "loopback" });
+  context.effect?.(() => async () => {
+    await removeControl();
+    await stop();
+  }, "dsh-collab: Gateway control");
 }
 
 /**
@@ -115,16 +174,9 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     registerDshCollabSettings(context, config);
     return;
   }
-  if (context.inject) registerDshCollabSettings(context, config, (settings, scope) => {
-    mountConfiguredHost(context, applyPersistedSettings(config, settings), (gatewayPort) => {
-      const advertisedEndpoint = settings.gateway.exposeMode === "network"
-        ? privateGatewayEndpoint(privateAddressFromGatewayEndpoint(settings.gateway.advertisedEndpoint), gatewayPort)
-        : settings.gateway.advertisedEndpoint;
-      const appliedGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint };
-      void scope.update({ gateway: appliedGateway, appliedGateway }).catch((error: unknown) => console.warn("dsh-collab applied Gateway state save failed", error));
-    });
+  if (context.inject) registerDshCollabSettings(context, config, (_settings, scope) => {
+    registerGatewayControl(context, config, scope);
   });
-  else mountConfiguredHost(context, config);
 }
 
 export default apply;
