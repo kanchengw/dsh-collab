@@ -303,6 +303,56 @@ describe("browser Gateway client", () => {
     }
   });
 
+  it("rebootstraps a Host stream after it disconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      let persisted: ParticipantResumeState | undefined = { gatewayEndpoint: "wss://old.example/collab", roomId: "room-old", memberId: "member-old", credential: "old-secret" };
+      const sockets: BrowserSocket[] = [];
+      let bootstrapRequests = 0;
+      const fetch: BrowserFetch = async (url) => {
+        if (url.endsWith("/bootstrap")) {
+          bootstrapRequests += 1;
+          return response({
+            room: { roomId: "room-1", title: "Local" },
+            member: { memberId: "member-host", role: "host" },
+            roomToken: `host-token-${String(bootstrapRequests)}`,
+          });
+        }
+        if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Local" }, members: [], lastEventSeq: 0 });
+        return response({ events: [], nextSeq: 0 });
+      };
+      const WebSocket = class implements BrowserSocket {
+        readyState = 1;
+        onopen?: () => void;
+        onmessage?: (event: { data: string }) => void;
+        onclose?: () => void;
+        onerror?: () => void;
+        constructor() { sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+        send(): void {}
+        close(): void { this.readyState = 3; }
+      };
+      const client = createDshBrowserCollabClient({
+        gatewayUrl: "http://127.0.0.1:4310/collab",
+        roomId: "room-1",
+        fetch,
+        WebSocket,
+        participantPersistence: { load: () => persisted, save: async () => {}, clear: async () => { persisted = undefined; } },
+      });
+
+      await client.bootstrap();
+      sockets[0]?.onclose?.();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(persisted).toBeUndefined();
+      expect(bootstrapRequests).toBe(2);
+      expect(sockets).toHaveLength(2);
+      expect(client.getSnapshot()).toMatchObject({ role: "host", connection: "online" });
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("replaces a silent Participant stream when heartbeat responses stop", async () => {
     vi.useFakeTimers();
     try {

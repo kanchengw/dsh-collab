@@ -319,7 +319,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         this.clearHeartbeat();
         this.setConnection("offline");
         if (!settled) reject(new Error("collaboration stream closed"));
-        else this.scheduleParticipantReconnect();
+        else this.scheduleReconnect();
       };
       socket.onerror = () => {
         if (this.socket !== socket) return;
@@ -338,7 +338,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         this.socket = undefined;
         this.clearHeartbeat();
         this.setConnection("offline");
-        this.scheduleParticipantReconnect();
+        this.scheduleReconnect();
         socket.close(4000, "heartbeat_timeout");
         return;
       }
@@ -353,15 +353,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.heartbeatAcknowledged = true;
   }
 
-  private scheduleParticipantReconnect(): void {
-    if (this.disposed || this.reconnectTimer || !this.options.participantPersistence?.load()) return;
+  private scheduleReconnect(): void {
+    if (this.disposed || this.reconnectTimer) return;
+    if (this.snapshot.role === "participant" && !this.options.participantPersistence?.load()) return;
     const delay = this.reconnectDelayMs;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (this.disposed) return;
-      void this.restoreParticipant().catch(() => {
+      const reconnect = this.snapshot.role === "host" ? this.bootstrap() : this.restoreParticipant();
+      void reconnect.catch(() => {
         this.reconnectDelayMs = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
-        this.scheduleParticipantReconnect();
+        this.scheduleReconnect();
       });
     }, delay);
   }
