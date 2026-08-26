@@ -317,6 +317,33 @@ describe("CollabGateway route contract", () => {
 
   });
 
+  it("reports the authoritative latest event sequence beyond one replay page", async () => {
+    const { gateway, ledger } = setup();
+    for (let index = 1; index <= 501; index += 1) {
+      ledger.append({
+        eventId: `history-${String(index)}`,
+        roomId: "room-1",
+        type: "human.message",
+        actor: { memberId: "host", principalId: "host" },
+        createdAt: index,
+        payload: { text: String(index) },
+      });
+    }
+
+    const bootstrapped = await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "host" },
+    });
+    const snapshot = await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/snapshot",
+      headers: bearer((bootstrapped.body as { roomToken: string }).roomToken),
+    });
+
+    expect(snapshot.body).toMatchObject({ lastEventSeq: 501 });
+  });
+
   it("revokes a Participant resume credential when the Host suspends that member", async () => {
     const { gateway } = setup();
     const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });

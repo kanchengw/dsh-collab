@@ -210,13 +210,12 @@ export class CollabGateway {
 
   private snapshot(roomId: string, request: GatewayRequest): GatewayResponse {
     this.claims(roomId, request);
-    const events = this.options.ledger.readAfter(roomId, 0, 500);
     return {
       status: 200,
       body: {
         room: this.options.rooms.getRoom(roomId),
         members: this.options.rooms.listMembers(roomId),
-        lastEventSeq: events.at(-1)?.seq ?? 0,
+        lastEventSeq: this.options.ledger.latestSeq(roomId),
       },
     };
   }

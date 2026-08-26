@@ -95,6 +95,11 @@ export class EventLedger {
     return copy((this.rooms.get(normalizedRoomId) ?? []).slice(afterSeq, afterSeq + boundedLimit));
   }
 
+  latestSeq(roomId: string): number {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    return this.rooms.get(normalizedRoomId)?.length ?? 0;
+  }
+
   snapshot(): LedgerSnapshot {
     return {
       version: 1,

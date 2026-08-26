@@ -89,6 +89,8 @@ describe("EventLedger", () => {
     }
 
     expect(ledger.readAfter("room-1", 0, 999)).toHaveLength(500);
+    expect(ledger.latestSeq("room-1")).toBe(510);
+    expect(ledger.latestSeq("room-empty")).toBe(0);
     const restored = EventLedger.fromSnapshot(ledger.snapshot());
     expect(restored.readAfter("room-1", 500)).toHaveLength(10);
     expect(restored.readAfter("room-1", 509)[0]?.seq).toBe(510);

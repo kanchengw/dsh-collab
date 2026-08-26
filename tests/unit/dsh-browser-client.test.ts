@@ -156,6 +156,49 @@ describe("browser Gateway client", () => {
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
   });
 
+  it("paginates recovery through the authoritative event sequence", async () => {
+    const eventCursors: number[] = [];
+    let socketUrl = "";
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-room-token",
+      });
+      if (url.endsWith("/snapshot")) return response({
+        room: { roomId: "room-1", title: "Release" },
+        members: [{ memberId: "member-host", role: "host" }],
+        lastEventSeq: 1_001,
+      });
+      const after = Number(new URL(url).searchParams.get("after"));
+      eventCursors.push(after);
+      const end = Math.min(after + 500, 1_001);
+      const events = Array.from({ length: end - after }, (_, offset) => {
+        const seq = after + offset + 1;
+        return { eventId: `event-${String(seq)}`, roomId: "room-1", seq, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: seq, payload: { text: String(seq) } };
+      });
+      return response({ events, nextSeq: end });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor(url: string) { socketUrl = url; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+
+    await client.bootstrap();
+
+    expect(eventCursors).toEqual([0, 500, 1_000]);
+    expect(client.getSnapshot().timeline).toHaveLength(1_001);
+    expect(new URL(socketUrl).searchParams.get("after")).toBe("1001");
+    client.dispose();
+  });
+
   it("persists join credentials in the Participant DSH and resumes without reusing the invite", async () => {
     let persisted: ParticipantResumeState | undefined;
     const urls: string[] = [];
