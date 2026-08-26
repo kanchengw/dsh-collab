@@ -1,6 +1,6 @@
 import { createElement, useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import type { ComposerTarget, TimelineItem } from "./ui.js";
-import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
+import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
@@ -51,6 +51,11 @@ export interface DshCollabSettingsPort {
   stopSharing?(roomId: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string }, roomId?: string): Promise<{ invitation: string }>;
+  listJoinedRooms?(): readonly ParticipantResumeState[];
+  subscribeJoinedRooms?(listener: () => void): () => void;
+  connectJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
+  disconnectJoinedRoom?(): void;
+  forgetJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
   getGatewaySnapshot?(): DshCollabGatewayRuntimeSnapshot;
   subscribeGateway?(listener: () => void): () => void;
@@ -109,7 +114,14 @@ function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
   const candidate = value as Record<string, unknown>;
   if ([candidate.gatewayEndpoint, candidate.roomId, candidate.memberId, candidate.credential].some((field) => typeof field !== "string" || field.trim() === "")) return undefined;
   try { normalizeGatewayEndpoint(candidate.gatewayEndpoint as string); } catch { return undefined; }
-  return candidate as unknown as ParticipantResumeState;
+  return {
+    gatewayEndpoint: candidate.gatewayEndpoint as string,
+    roomId: candidate.roomId as string,
+    memberId: candidate.memberId as string,
+    credential: candidate.credential as string,
+    ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
+    ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
+  };
 }
 
 function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
@@ -131,25 +143,43 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
   return { gateway, ...(appliedGateway ? { appliedGateway } : {}), security: normalized };
 }
 
-function decodeParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
+export function decodeDshParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const joinedRooms = Array.isArray((value as { joinedRooms?: unknown }).joinedRooms)
+    ? (value as { joinedRooms: unknown[] }).joinedRooms.map(decodeParticipant).filter((room): room is ParticipantResumeState => room !== undefined)
+    : [];
   const resume = decodeParticipant((value as { resume?: unknown }).resume);
-  return resume ? { resume } : {};
+  if (resume && !joinedRooms.some((room) => room.gatewayEndpoint === resume.gatewayEndpoint && room.roomId === resume.roomId)) joinedRooms.push(resume);
+  return joinedRooms.length > 0 ? { joinedRooms } : {};
 }
 
 export function createDshParticipantPersistence(scope: DshSettingsScope<DshCollabParticipantSettings>): ParticipantPersistence {
+  const list = (): ParticipantResumeState[] => [...(scope.getSnapshot().value?.joinedRooms ?? [])];
+  const sameRoom = (room: JoinedRoomRef, other: JoinedRoomRef): boolean => room.gatewayEndpoint === other.gatewayEndpoint && room.roomId === other.roomId;
   return {
-    load: () => scope.getSnapshot().value?.resume,
+    load: (ref) => ref ? list().find((room) => sameRoom(room, ref)) : list()[0],
+    list,
+    subscribe: (listener) => scope.subscribe(listener),
     save: async (state) => {
       const current = scope.getSnapshot();
       if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      await scope.set("resume", state);
-      const saved = scope.getSnapshot().value?.resume;
-      if (!saved || saved.credential !== state.credential || saved.roomId !== state.roomId || saved.memberId !== state.memberId || saved.gatewayEndpoint !== state.gatewayEndpoint) {
+      const rooms = list();
+      const index = rooms.findIndex((room) => sameRoom(room, state));
+      if (index === -1) rooms.push(state); else rooms[index] = state;
+      if (current.value?.resume) await scope.unset("resume");
+      await scope.set("joinedRooms", rooms);
+      const saved = list().find((room) => sameRoom(room, state));
+      if (!saved || saved.credential !== state.credential || saved.memberId !== state.memberId) {
         throw new Error("Participant resume credential was not persisted by DSH");
       }
     },
-    clear: async () => { await scope.unset("resume"); },
+    remove: async (ref) => {
+      const current = scope.getSnapshot();
+      if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
+      const rooms = list().filter((room) => !sameRoom(room, ref));
+      if (current.value?.resume) await scope.unset("resume");
+      if (rooms.length > 0) await scope.set("joinedRooms", rooms); else await scope.unset("joinedRooms");
+    },
   };
 }
 
@@ -262,6 +292,11 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     stopSharing: actions.stopSharing?.bind(actions),
     join: actions.join?.bind(actions),
     createInvite: actions.createInvite?.bind(actions),
+    listJoinedRooms: actions.listJoinedRooms?.bind(actions),
+    subscribeJoinedRooms: actions.subscribeJoinedRooms?.bind(actions),
+    connectJoinedRoom: actions.connectJoinedRoom?.bind(actions),
+    disconnectJoinedRoom: actions.disconnectJoinedRoom?.bind(actions),
+    forgetJoinedRoom: actions.forgetJoinedRoom?.bind(actions),
     configureGateway: actions.configureGateway?.bind(actions),
     getRoomSnapshot: actions.getRoomSnapshot?.bind(actions),
     subscribeRoom: actions.subscribeRoom?.bind(actions),
@@ -507,7 +542,7 @@ function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | 
 export function applyDshCollabClient(context: DshCollabClientContext): void {
   const existing = optionalService<DshCollabClientPort>(context, "collabClient");
   const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
-  const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeParticipantSettings });
+  const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings });
   const browserClient = existing ? undefined : createDshBrowserCollabClient({ ...browserConfig(), ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}) });
   const client = existing ?? browserClient;
   const rawBrowserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
@@ -516,18 +551,6 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
-  if (browserClient && participantScope) {
-    let attempted = false;
-    let unsubscribe = (): void => {};
-    const restore = (): void => {
-      if (attempted || participantScope.getSnapshot().status !== "ready") return;
-      attempted = true;
-      unsubscribe();
-      void browserClient.restoreParticipant().catch(() => undefined);
-    };
-    unsubscribe = participantScope.subscribe(restore);
-    restore();
-  }
   context.slots.inject("conversation.input.dock", () => context.slots.register({
     name: "conversation.input.dock",
     id: "collab",

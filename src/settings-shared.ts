@@ -51,11 +51,17 @@ export interface DshCollabPersistedSettings {
   security?: DshCollabSecuritySettings;
 }
 
+export interface DshCollabJoinedRoom {
+  gatewayEndpoint: string;
+  roomId: string;
+  memberId: string;
+  credential: string;
+  roomTitle?: string;
+  hostDisplayName?: string;
+}
+
 export interface DshCollabParticipantSettings {
-  resume?: {
-    gatewayEndpoint: string;
-    roomId: string;
-    memberId: string;
-    credential: string;
-  };
+  joinedRooms?: DshCollabJoinedRoom[];
+  /** Pre-release migration source; new writes use joinedRooms. */
+  resume?: DshCollabJoinedRoom;
 }

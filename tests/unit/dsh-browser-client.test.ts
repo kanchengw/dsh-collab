@@ -7,6 +7,45 @@ function response(data: unknown, status = 200): { ok: boolean; status: number; j
 }
 
 describe("browser Gateway client", () => {
+  it("connects, disconnects and forgets a saved Joined room only on explicit actions", async () => {
+    const saved: ParticipantResumeState[] = [
+      { gatewayEndpoint: "wss://one.example/collab", roomId: "room-1", memberId: "member-1", credential: "secret-1", roomTitle: "Design" },
+      { gatewayEndpoint: "wss://two.example/collab", roomId: "room-2", memberId: "member-2", credential: "secret-2", roomTitle: "Release" },
+    ];
+    const requests: string[] = [];
+    const fetch: BrowserFetch = async (url) => {
+      requests.push(url);
+      if (url.endsWith("/resume")) return response({ room: { roomId: "room-2", title: "Release" }, member: { memberId: "member-2", role: "participant" }, roomToken: "token-2" });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-2", title: "Release" }, members: [], lastEventSeq: 0 });
+      return response({ events: [], nextSeq: 0 });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onclose?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const persistence = {
+      load: (ref?: { gatewayEndpoint: string; roomId: string }) => ref ? saved.find((room) => room.gatewayEndpoint === ref.gatewayEndpoint && room.roomId === ref.roomId) : saved[0],
+      list: () => saved,
+      save: async () => {},
+      remove: async (ref: { gatewayEndpoint: string; roomId: string }) => { const index = saved.findIndex((room) => room.gatewayEndpoint === ref.gatewayEndpoint && room.roomId === ref.roomId); if (index >= 0) saved.splice(index, 1); },
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
+    expect(client.listJoinedRooms()).toHaveLength(2);
+    expect(requests).toEqual([]);
+
+    const selected = { gatewayEndpoint: "wss://two.example/collab", roomId: "room-2" };
+    await client.connectJoinedRoom(selected);
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-2", role: "participant", connection: "online" });
+    client.disconnectJoinedRoom();
+    expect(client.getSnapshot().connection).toBe("offline");
+    await client.forgetJoinedRoom(selected);
+    expect(client.listJoinedRooms()).toEqual([expect.objectContaining({ roomId: "room-1" })]);
+  });
+
   it("stops sharing without deleting the saved Host room", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const fetch: BrowserFetch = async (url, init) => {
@@ -138,7 +177,7 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
-  it("clears a saved remote Participant role after opening the local Host room", async () => {
+  it("retains saved Joined rooms after opening the local Host room", async () => {
     let persisted: ParticipantResumeState | undefined = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
     const fetch: BrowserFetch = async (url) => url.endsWith("/bootstrap") ? response({
       room: { roomId: "room-1", title: "Local" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token",
@@ -159,7 +198,7 @@ describe("browser Gateway client", () => {
     });
     await client.bootstrap();
     expect(client.getSnapshot().role).toBe("host");
-    expect(persisted).toBeUndefined();
+    expect(persisted).toMatchObject({ roomId: "room-2", credential: "resume-secret" });
   });
 
   it("joins as a Participant with its own principal and never enables steer", async () => {
@@ -326,7 +365,7 @@ describe("browser Gateway client", () => {
     const invitation = JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", inviteId: "invite-1", token: "invite-token", expiresAt: 100 });
     const first = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
     await first.join({ invitation, memberId: "member-bob", displayName: "Bob" });
-    expect(persisted).toEqual({ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" });
+    expect(persisted).toEqual({ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret", roomTitle: "Remote" });
     first.dispose();
 
     const second = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
@@ -433,7 +472,7 @@ describe("browser Gateway client", () => {
       sockets[0]?.onclose?.();
       await vi.advanceTimersByTimeAsync(1_000);
 
-      expect(persisted).toBeUndefined();
+      expect(persisted).toMatchObject({ roomId: "room-old", credential: "old-secret" });
       expect(bootstrapRequests).toBe(2);
       expect(sockets).toHaveLength(2);
       expect(client.getSnapshot()).toMatchObject({ role: "host", connection: "online" });

@@ -47,12 +47,19 @@ export interface ParticipantResumeState {
   roomId: string;
   memberId: string;
   credential: string;
+  roomTitle?: string;
+  hostDisplayName?: string;
 }
 
+export interface JoinedRoomRef { gatewayEndpoint: string; roomId: string }
+
 export interface ParticipantPersistence {
-  load(): ParticipantResumeState | undefined;
+  load(ref?: JoinedRoomRef): ParticipantResumeState | undefined;
+  list?(): readonly ParticipantResumeState[];
+  subscribe?(listener: () => void): () => void;
   save(state: ParticipantResumeState): Promise<void>;
-  clear(): Promise<void>;
+  remove?(ref: JoinedRoomRef): Promise<void>;
+  clear?(): Promise<void>;
 }
 
 export interface DshBrowserJoinInput {
@@ -73,6 +80,11 @@ export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   stopSharing(roomId: string): Promise<void>;
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }>;
+  listJoinedRooms(): readonly ParticipantResumeState[];
+  subscribeJoinedRooms(listener: () => void): () => void;
+  connectJoinedRoom(ref: JoinedRoomRef): Promise<void>;
+  disconnectJoinedRoom(): void;
+  forgetJoinedRoom(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
 }
 
@@ -199,7 +211,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.base = this.hostBase;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
-    await this.options.participantPersistence?.clear();
     this.applyRoom(data);
     await this.connect();
   }
@@ -213,7 +224,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)));
     this.base = this.hostBase;
     this.roomId = sessionId;
-    await this.options.participantPersistence?.clear();
     this.applyRoom(data);
     await this.connect();
   }
@@ -254,14 +264,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         roomId: invitation.roomId,
         memberId: data.member.memberId,
         credential: data.resumeCredential,
+        roomTitle: data.room.title,
+        ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
       });
     }
     this.applyRoom(data);
     await this.connect();
   }
 
-  async restoreParticipant(): Promise<boolean> {
-    const state = this.options.participantPersistence?.load();
+  async restoreParticipant(ref?: JoinedRoomRef): Promise<boolean> {
+    const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
     this.base = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
     this.roomId = state.roomId;
@@ -272,10 +284,33 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       return true;
     } catch (error) {
       if (error instanceof GatewayRequestError && (error.status === 401 || error.status === 403 || error.status === 404)) {
-        await this.options.participantPersistence?.clear();
+        if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(state);
+        else await this.options.participantPersistence?.clear?.();
       }
       throw error;
     }
+  }
+
+  listJoinedRooms(): readonly ParticipantResumeState[] {
+    return this.options.participantPersistence?.list?.() ?? [];
+  }
+
+  subscribeJoinedRooms(listener: () => void): () => void {
+    return this.options.participantPersistence?.subscribe?.(listener) ?? (() => {});
+  }
+
+  async connectJoinedRoom(ref: JoinedRoomRef): Promise<void> {
+    if (!(await this.restoreParticipant(ref))) throw new Error("Joined room is not saved");
+  }
+
+  disconnectJoinedRoom(): void { this.disconnect(); }
+
+  async forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> {
+    const saved = this.options.participantPersistence?.load(ref);
+    if (!saved) return;
+    if (this.snapshot.role === "participant" && this.roomId === ref.roomId && this.base === normalizeBase(gatewayHttpUrl(ref.gatewayEndpoint))) this.disconnect();
+    if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
+    else await this.options.participantPersistence?.clear?.();
   }
 
   async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> {
@@ -486,6 +521,11 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   stopSharing(roomId: string): Promise<void> { return this.client.stopSharing(roomId); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> { return this.client.createInvite(input, roomId); }
+  listJoinedRooms(): readonly ParticipantResumeState[] { return this.client.listJoinedRooms(); }
+  subscribeJoinedRooms(listener: () => void): () => void { return this.client.subscribeJoinedRooms(listener); }
+  connectJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.connectJoinedRoom(ref); }
+  disconnectJoinedRoom(): void { this.client.disconnectJoinedRoom(); }
+  forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.forgetJoinedRoom(ref); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
 }
 

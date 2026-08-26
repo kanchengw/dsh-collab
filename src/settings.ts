@@ -32,6 +32,14 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
 });
 
 export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.object({
+  joinedRooms: z.array(z.object({
+    gatewayEndpoint: z.string().min(1).required(),
+    roomId: z.string().min(1).required(),
+    memberId: z.string().min(1).required(),
+    credential: z.string().min(1).required(),
+    roomTitle: z.string().default(""),
+    hostDisplayName: z.string().default(""),
+  })).default([]).hidden(),
   resume: z.object({
     gatewayEndpoint: z.string().min(1).required(),
     roomId: z.string().min(1).required(),
@@ -65,10 +73,22 @@ export function validateDshCollabPersistedSettings(settings: DshCollabPersistedS
 }
 
 export function validateDshCollabParticipantSettings(settings: DshCollabParticipantSettings): void {
-  if (!settings.resume) return;
-  normalizeGatewayEndpoint(settings.resume.gatewayEndpoint);
-  for (const field of ["roomId", "memberId", "credential"] as const) {
-    if (settings.resume[field].trim() === "") throw new Error(field + " must not be blank");
+  const rooms = settings.joinedRooms ?? [];
+  const keys = new Set<string>();
+  for (const room of rooms) {
+    normalizeGatewayEndpoint(room.gatewayEndpoint);
+    for (const field of ["roomId", "memberId", "credential"] as const) {
+      if (room[field].trim() === "") throw new Error(field + " must not be blank");
+    }
+    const key = `${room.gatewayEndpoint}\n${room.roomId}`;
+    if (keys.has(key)) throw new Error("joined room must be unique");
+    keys.add(key);
+  }
+  if (settings.resume) {
+    normalizeGatewayEndpoint(settings.resume.gatewayEndpoint);
+    for (const field of ["roomId", "memberId", "credential"] as const) {
+      if (settings.resume[field].trim() === "") throw new Error(field + " must not be blank");
+    }
   }
 }
 
