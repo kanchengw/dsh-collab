@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { defaultCollabSettings } from "./settings-shared.js";
-import type { DshCollabSettingsPort } from "./dsh-client.js";
+import type { DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
@@ -48,7 +48,7 @@ function RoleStatus({ port }: { port?: DshCollabSettingsPort }): ReactNode {
 
 /** The task-oriented contents of the Collab settings card. */
 export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort }): ReactNode {
-  const initial = useMemo(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
+  const initial = useMemo<DshCollabSettingsSnapshot>(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
   const [saved, setSaved] = useState(initial);
   const [exposeMode, setExposeMode] = useState(initial.exposeMode);
   const [gatewayPort, setGatewayPort] = useState(String(initial.gatewayPort));
@@ -91,6 +91,11 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
     || maxMembers !== String(saved.maxMembers ?? defaultCollabSettings.maxMembers)
     || maxMessageBytes !== String(saved.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes)
     || maxQueue !== String(saved.maxQueue ?? defaultCollabSettings.maxQueue);
+  const appliedGateway = saved.appliedGateway ?? saved;
+  const gatewayPendingRestart = appliedGateway.gatewayHost !== saved.gatewayHost
+    || appliedGateway.gatewayPort !== saved.gatewayPort
+    || appliedGateway.exposeMode !== saved.exposeMode
+    || appliedGateway.advertisedEndpoint !== saved.advertisedEndpoint;
 
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -136,11 +141,11 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   };
 
   const createInvitation = async (): Promise<void> => {
-    if (!port?.createInvite) return;
+    if (!port?.createInvite || dirty || gatewayPendingRestart) return;
     setBusy("invite");
     setNotice(undefined);
     try {
-      const endpoint = advertisedEndpoint.trim() || `ws://127.0.0.1:${gatewayPort}/collab`;
+      const endpoint = appliedGateway.advertisedEndpoint || `ws://127.0.0.1:${String(appliedGateway.gatewayPort)}/collab`;
       const result = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint: endpoint });
       setHostInvitation(result.invitation);
       setNotice({ tone: "success", message: "Invitation created. It can be used once during the next hour." });
@@ -219,9 +224,10 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
 
       <section className={css.section} aria-labelledby="collab-invite-heading">
         <div className={css.sectionHead}><div><h3 id="collab-invite-heading">Invite people</h3><p>Create a one-use invitation for this Host room.</p></div></div>
+        {gatewayPendingRestart ? <p className={css.warning} role="status">Restart DSH before creating an invitation with the saved Gateway settings.</p> : null}
         <div className={css.actionRow}>
           <button type="button" className={css.secondaryButton} onClick={() => { void openHostRoom(); }} disabled={!port?.bootstrap || busy !== undefined}>{busy === "host" ? "Opening…" : "Open Host room"}</button>
-          <button type="button" className={css.primaryButton} onClick={() => { void createInvitation(); }} disabled={!port?.createInvite || busy !== undefined || (exposeMode === "network" && advertisedEndpoint.trim() === "")}>{busy === "invite" ? "Creating…" : "Create invitation"}</button>
+          <button type="button" className={css.primaryButton} onClick={() => { void createInvitation(); }} disabled={!port?.createInvite || dirty || gatewayPendingRestart || busy !== undefined || (exposeMode === "network" && advertisedEndpoint.trim() === "")}>{busy === "invite" ? "Creating…" : "Create invitation"}</button>
         </div>
         <div className={css.invitationOutput}>
           <label className={css.label} htmlFor="collab-host-invitation">Invitation to share</label>

@@ -64,4 +64,24 @@ describe("DSH-native collaboration settings", () => {
     expect(html).not.toContain("resumeCredential");
     expect(html).not.toContain("credential");
   });
+
+  it("blocks invitations while saved Gateway changes await restart", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, {
+      port: {
+        ...port,
+        createInvite: vi.fn(),
+        getSnapshot: () => ({
+          gatewayHost: "0.0.0.0",
+          gatewayPort: 4311,
+          exposeMode: "network" as const,
+          advertisedEndpoint: "ws://192.168.1.20:4311/collab",
+          appliedGateway: port.getSnapshot(),
+        }),
+      },
+    }));
+
+    expect(html).toContain("Restart DSH before creating an invitation");
+    expect(html).toMatch(/>Create invitation<\/button>/);
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>Create invitation<\/button>/);
+  });
 });

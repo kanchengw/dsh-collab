@@ -23,8 +23,20 @@ export interface DshCollabClientPort {
   send(input: { text: string; target: ComposerTarget }): Promise<void>;
 }
 
+export interface DshCollabGatewaySnapshot {
+  gatewayHost: string;
+  gatewayPort: number;
+  exposeMode: "loopback" | "network";
+  advertisedEndpoint: string;
+}
+
+export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
+  appliedGateway?: DshCollabGatewaySnapshot;
+  writable?: boolean;
+};
+
 export interface DshCollabSettingsPort {
-  getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string; writable?: boolean } & Partial<DshCollabSecuritySettings>;
+  getSnapshot(): DshCollabSettingsSnapshot;
   getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   subscribeRoom?(listener: () => void): () => void;
   subscribe?(listener: () => void): () => void;
@@ -61,8 +73,8 @@ interface DshSettingsScopeBinder {
 }
 
 interface PersistedCollabSettings {
-  gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string };
-  appliedGateway?: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string };
+  gateway: DshCollabGatewaySnapshot;
+  appliedGateway?: DshCollabGatewaySnapshot;
   security?: DshCollabSecuritySettings;
 }
 
@@ -139,6 +151,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       const persisted = scopeSnapshot.value;
       if (persisted) return {
         ...persisted.gateway,
+        ...(persisted.appliedGateway ? { appliedGateway: persisted.appliedGateway } : {}),
         writable: scopeSnapshot.writable,
         tokenTtlMs: persisted.security?.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
         approvalPolicy: persisted.security?.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
