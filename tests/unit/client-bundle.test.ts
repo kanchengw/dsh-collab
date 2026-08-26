@@ -10,6 +10,7 @@ describe("browser client bundle", () => {
     expect(bundle).toContain("data-dsh-collab-css");
     expect(bundle).toContain('"collab-settings-card"');
     expect(bundle).toContain('"collab-room"');
-    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(2);
+    expect(bundle).toContain('"collab-rooms"');
+    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(3);
   });
 });

@@ -27,15 +27,15 @@ describe("DSH-native collaboration settings", () => {
     expect(html).toMatch(/^<li/);
     expect(html).toContain('data-collab-settings-card="true"');
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain("Share one Host Agent with other people");
+    expect(html).toContain("Configure Gateway connectivity and room limits");
     expect(html).not.toContain("dsh-collab-settings-card");
   });
 
-  it("keeps Host connectivity in Settings and moves room sharing out of Settings", () => {
+  it("keeps only persistent Gateway configuration in Settings", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port }));
 
-    expect(html).toContain("Host a room");
-    expect(html).toContain("Join someone else");
+    expect(html).toContain("Collab Gateway");
+    expect(html).not.toContain("Join someone else");
     expect(html).toContain("Connection method");
     expect(html).toContain("Private network");
     expect(html).toContain("Custom WSS endpoint");
@@ -47,11 +47,11 @@ describe("DSH-native collaboration settings", () => {
     expect(html).not.toContain("Open Host room");
     expect(html).not.toContain("Create invitation");
     expect(html).not.toContain('name="hostInvitationOutput"');
-    expect(html).toContain('name="participantInvitation"');
-    expect(html).toContain('name="displayName"');
-    expect(html).toContain("Restart DSH to apply Gateway and room safety changes");
+    expect(html).not.toContain('name="participantInvitation"');
+    expect(html).not.toContain('name="displayName"');
+    expect(html).toContain("Used the next time the Gateway starts");
     expect(html).not.toContain("trusted LAN/VPN");
-    expect(html.match(/<h3/g)).toHaveLength(2);
+    expect(html.match(/<h3/g)).toHaveLength(1);
   });
 
   it("keeps a fresh install unconfigured without exposing a local-only invitation mode", () => {
@@ -84,12 +84,12 @@ describe("DSH-native collaboration settings", () => {
     expect(html).toMatch(/type="submit"[^>]*disabled/);
   });
 
-  it("shows a recovered remote Participant role without exposing its credential", () => {
+  it("does not render an active room role or credential in Settings", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port }));
 
-    expect(html).toContain("Participant");
-    expect(html).toContain("Release room");
-    expect(html).toContain("Alice");
+    expect(html).not.toContain("data-room-role");
+    expect(html).not.toContain("Release room");
+    expect(html).not.toContain("Alice");
     expect(html).not.toContain("resumeCredential");
     expect(html).not.toContain("credential");
   });

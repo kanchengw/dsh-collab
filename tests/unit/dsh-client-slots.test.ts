@@ -9,7 +9,7 @@ const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Releas
 describe("real DSH client slot adapter", () => {
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
-    expect(inject).toEqual(["slots", "settingsScope", "connection"]);
+    expect(inject).toEqual(["slots", "settingsScope", "connection", "sessions"]);
   });
 
   it("starts and stops the Host Gateway only through the official Connection RPC", async () => {
@@ -18,6 +18,7 @@ describe("real DSH client slot adapter", () => {
     const port = createDshGatewayControlPort(base, {
       call: vi.fn(async (_channel: string, endpoint: string) => {
         calls.push(endpoint);
+        if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
         return { ok: true, value: endpoint.endsWith("start") ? { status: "running", port: 4310 } : { status: "stopped" } };
       }),
     });
@@ -28,13 +29,14 @@ describe("real DSH client slot adapter", () => {
     expect(port.getGatewaySnapshot?.()).toEqual({ status: "running", port: 4310 });
     await port.stopGateway?.();
     expect(port.getGatewaySnapshot?.()).toEqual({ status: "stopped" });
-    expect(calls).toEqual(["gateway/start", "gateway/stop"]);
+    expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
   });
 
   it("renders the native conversation dock with role, connection and target controls", () => {
     const html = renderToStaticMarkup(createElement(DshCollabDock, { fallback: snapshot }));
     expect(html).toContain('data-collab-mode="host"');
     expect(html).toContain("Release");
+    expect(html).toContain("Owner");
     expect(html).toContain("Hosted by Host");
     expect(html).toContain("Steer Agent");
     expect(html).toContain('name="collab-target"');
@@ -72,7 +74,7 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain('name="roomName"');
     expect(html).toContain('value="Release planning"');
     expect(html).toContain('maxLength="80"');
-    expect(html).toContain("Share this session");
+    expect(html).toContain("Start Gateway and share this session");
     expect(html).not.toContain("Create invitation");
   });
 
@@ -90,15 +92,15 @@ describe("real DSH client slot adapter", () => {
 
     expect(html).toContain("Create invitation");
     expect(html).toContain("Stop sharing");
-    expect(other).toContain("Share this session");
+    expect(other).toContain("Start Gateway and share this session");
     expect(other).not.toContain("Create invitation");
   });
 
-  it("renders Host connectivity and Participant join without session actions in Settings", () => {
+  it("keeps Settings configuration-only", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() } }));
     expect(html).toContain('data-settings-namespace="dsh-collab"');
     expect(html).toContain("Private network exposure");
-    expect(html).toContain("dedicated Collab Gateway");
+    expect(html).toContain("Collab Gateway");
     expect(html).not.toContain('name="gatewayHost"');
     expect(html).not.toContain('name="gatewayPort"');
     expect(html).toContain('name="connectionMethod"');
@@ -108,7 +110,10 @@ describe("real DSH client slot adapter", () => {
     expect(html).not.toContain('name="hostInvitationOutput"');
     expect(html).not.toContain("Open Host room");
     expect(html).not.toContain("Create invitation");
-    expect(html).toContain('name="participantInvitation"');
+    expect(html).not.toContain('name="participantInvitation"');
+    expect(html).not.toContain("Join someone else");
+    expect(html).not.toContain("data-room-role");
+    expect(html).not.toContain("Host your own room");
     expect(html).not.toContain('name="participantGatewayUrl"');
     expect(html).not.toContain('name="inviteToken"');
   });
@@ -130,10 +135,13 @@ describe("real DSH client slot adapter", () => {
     expect((sessionRegistration?.inject as (sessionId: string) => unknown)("session-current")).toEqual({ collabSessionId: "session-current" });
     expect(registrations).toEqual([
       { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5 }) },
-      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab", order: 10 }) },
+      { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20 }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10 }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-participant", order: 20 }) },
       { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab" }) },
     ]);
     expect(context.slots.inject).toHaveBeenCalledWith("conversation.input.dock", expect.any(Function));
+    expect(context.slots.inject).toHaveBeenCalledWith("sidebar.footer.action", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("shell.overlay", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("settings.plugin.item", expect.any(Function));
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));

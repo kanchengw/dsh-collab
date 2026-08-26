@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings } from "./settings-shared.js";
-import type { DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
+import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
@@ -26,31 +26,14 @@ function Field(props: { id: string; label: string; hint: string; children: React
   );
 }
 
-function useRoom(port: DshCollabSettingsPort | undefined): ReturnType<NonNullable<DshCollabSettingsPort["getRoomSnapshot"]>> | undefined {
-  const [room, setRoom] = useState(() => port?.getRoomSnapshot?.());
+function useGateway(port: DshCollabSettingsPort | undefined): DshCollabGatewayRuntimeSnapshot {
+  const [gateway, setGateway] = useState<DshCollabGatewayRuntimeSnapshot>(() => port?.getGatewaySnapshot?.() ?? { status: "stopped" });
   useEffect(() => {
-    setRoom(port?.getRoomSnapshot?.());
-    return port?.subscribeRoom?.(() => { setRoom(port.getRoomSnapshot?.()); });
+    const update = (): void => { setGateway(port?.getGatewaySnapshot?.() ?? { status: "stopped" }); };
+    update();
+    return port?.subscribeGateway?.(update);
   }, [port]);
-  return room;
-}
-
-function RoleStatus({ port }: { port?: DshCollabSettingsPort }): ReactNode {
-  const room = useRoom(port);
-  const remote = room?.role === "participant" && room.connection !== "offline";
-  const label = remote ? "Participant" : room?.role === "host" && room.connection !== "offline" ? "Host" : "Ready";
-  return (
-    <div className={css.roleStatus} data-room-role={room?.role ?? "none"}>
-      <span className={css.roleBadge}>{label}</span>
-      <span className={css.roleCopy}>
-        {remote
-          ? `${room.roomTitle} · Hosted by ${room.hostDisplayName}`
-          : room?.role === "host" && room.connection !== "offline"
-            ? `${room.roomTitle} · ${room.connection}`
-            : "Host your own room or join an invitation from another Host."}
-      </span>
-    </div>
-  );
+  return gateway;
 }
 
 /** The task-oriented contents of the Collab settings card. */
@@ -65,10 +48,9 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
   const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
   const [maxQueue, setMaxQueue] = useState(String(initial.maxQueue ?? defaultCollabSettings.maxQueue));
-  const [participantInvitation, setParticipantInvitation] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [busy, setBusy] = useState<"save" | "join">();
+  const [busy, setBusy] = useState<"save">();
   const [notice, setNotice] = useState<Notice>();
+  const gateway = useGateway(port);
   const writable = port !== undefined && saved.writable !== false;
   const configurationDisabled = !writable || busy !== undefined;
 
@@ -124,25 +106,9 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
       const committed = port.getSnapshot();
       setSaved(committed);
       resetDraft(committed);
-      setNotice({ tone: "success", message: "Settings saved. Restart DSH to apply them." });
+      setNotice({ tone: "success", message: gateway.status === "running" ? "Settings saved. Stop and restart the Gateway to apply them." : "Settings saved. They will be used the next time the Gateway starts." });
     } catch (cause) {
       setNotice({ tone: "error", message: errorMessage(cause, "Unable to save collaboration settings") });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-
-  const join = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!port?.join) return;
-    setBusy("join");
-    setNotice(undefined);
-    try {
-      await port.join({ invitation: participantInvitation, displayName: displayName.trim() });
-      setParticipantInvitation("");
-      setNotice({ tone: "success", message: "Joined as Participant. This DSH will reconnect after restart." });
-    } catch (cause) {
-      setNotice({ tone: "error", message: errorMessage(cause, "Unable to join the room") });
     } finally {
       setBusy(undefined);
     }
@@ -151,12 +117,11 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   const inputClass = css.input;
   return (
     <div className={css.body} data-settings-namespace="dsh-collab">
-      <RoleStatus port={port} />
       {!writable && port ? <p className={css.readOnly} role="status">Collaboration settings are read-only in this DSH profile.</p> : null}
 
       <form className={css.section} onSubmit={(event) => { void save(event); }}>
         <div className={css.sectionHead}>
-          <div><h3>Host a room</h3><p>Run the only Agent and a dedicated Collab Gateway on this DSH.</p></div>
+          <div><h3>Collab Gateway</h3><p>Configure how invited people can reach the Gateway when you explicitly start it.</p></div>
           {dirty ? <span className={css.pending}>Unsaved</span> : null}
         </div>
         <Field id="collab-connection-method" label="Connection method" hint="Use a private network directly, or provide a secure WSS address that forwards to this Host.">
@@ -193,17 +158,10 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
           </div>
         </details>
         <div className={css.formFooter}>
-          <span>Restart DSH to apply Gateway and room safety changes.</span>
+          <span>{gateway.status === "running" ? "Stop and restart the Gateway to apply changes." : "Used the next time the Gateway starts."}</span>
           <button type="button" className={css.secondaryButton} onClick={() => { resetDraft(); }} disabled={!dirty || busy !== undefined}>Discard</button>
           <button type="submit" className={css.primaryButton} disabled={!writable || !dirty || busy !== undefined}>{busy === "save" ? "Saving…" : "Save"}</button>
         </div>
-      </form>
-
-      <form className={css.section} onSubmit={(event) => { void join(event); }}>
-        <div className={css.sectionHead}><div><h3>Join someone else</h3><p>This DSH becomes the Participant UI for that remote room; its local Agent is not used.</p></div></div>
-        <Field id="collab-display-name" label="Your display name" hint="Shown to everyone in the room."><input id="collab-display-name" name="displayName" className={inputClass} value={displayName} onChange={(event) => { setDisplayName(event.target.value); }} autoComplete="name" disabled={!port?.join || busy !== undefined} /></Field>
-        <Field id="collab-participant-invitation" label="Invitation" hint="Paste the complete JSON invitation exactly as the Host shared it."><textarea id="collab-participant-invitation" name="participantInvitation" className={css.textarea} value={participantInvitation} onChange={(event) => { setParticipantInvitation(event.target.value); }} rows={5} spellCheck={false} disabled={!port?.join || busy !== undefined} /></Field>
-        <div className={css.formFooter}><span>A successful join is saved locally for automatic recovery.</span><button type="submit" className={css.primaryButton} disabled={!port?.join || busy !== undefined || displayName.trim() === "" || participantInvitation.trim() === ""}>{busy === "join" ? "Joining…" : "Join room"}</button></div>
       </form>
 
       {notice ? <p className={notice.tone === "error" ? css.errorNotice : css.successNotice} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}
@@ -214,13 +172,10 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
 /** Collapsible list item matching DSH's official plugin-settings card chrome. */
 export function DshCollabSettingsCard({ port }: { port?: DshCollabSettingsPort }): ReactNode {
   const [open, setOpen] = useState(false);
-  const room = useRoom(port);
-  const active = room?.connection !== undefined && room.connection !== "offline";
   return (
     <li className={open ? `${css.card} ${css.cardOpen}` : css.card} data-collab-settings-card="true" data-settings-namespace="dsh-collab">
       <button type="button" className={css.cardHeader} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"}: dsh-collab`} onClick={() => { setOpen(!open); }}>
-        <span className={css.cardTitle}><strong>dsh-collab</strong><span>Share one Host Agent with other people</span></span>
-        {active ? <span className={css.activeBadge}>{room.role === "host" ? "Hosting" : "Joined"}</span> : null}
+        <span className={css.cardTitle}><strong>dsh-collab</strong><span>Configure Gateway connectivity and room limits</span></span>
         <span className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron} aria-hidden="true">⌄</span>
       </button>
       {open ? <DshCollabSettingsPanel port={port} /> : null}

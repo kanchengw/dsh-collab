@@ -22,6 +22,7 @@ export * from "./ui.js";
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
+import { HostSnapshotFile, resolveDefaultCollabStateFile } from "./persistence.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -143,6 +144,16 @@ function registerGatewayControl(
       starting = undefined;
     }
   };
+  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean }> => {
+    const rooms = mounted?.runtime.rooms.snapshot()
+      ?? (config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile()).loadSync()?.rooms);
+    return (rooms?.rooms ?? []).map(({ room }) => ({
+      roomId: room.roomId,
+      hostSessionId: room.hostSessionId,
+      title: room.title,
+      sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
+    }));
+  };
 
   const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint) => {
     try {
@@ -153,6 +164,7 @@ function registerGatewayControl(
       }
       if (endpoint === "gateway/start") return { ok: true, value: await start() };
       if (endpoint === "gateway/stop") return { ok: true, value: await stop() };
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
       return { ok: false, error: { code: "bad-request", message: `Unknown dsh-collab control endpoint: ${endpoint}`, details: { issues: [] } } };
     } catch (error) {
       return { ok: false, error: { code: "internal", message: error instanceof Error ? error.message : String(error), details: {} } };

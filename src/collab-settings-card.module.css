@@ -62,9 +62,7 @@
   line-height: 1.5;
 }
 
-.activeBadge,
-.pending,
-.roleBadge {
+.pending {
   border-radius: 999px;
   padding: 1px 8px;
   background: var(--dsw-alias-bg-module-platform);
@@ -93,20 +91,6 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.roleStatus {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.roleCopy {
-  min-width: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .readOnly {
@@ -167,8 +151,7 @@
   line-height: 1.5;
 }
 
-.input,
-.textarea {
+.input {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -185,20 +168,12 @@
   padding: 0 12px;
 }
 
-.textarea {
-  min-height: 88px;
-  padding: 9px 12px;
-  resize: vertical;
-}
-
-.input:focus-visible,
-.textarea:focus-visible {
+.input:focus-visible {
   outline: none;
   border-color: var(--dsw-alias-brand-primary);
 }
 
-.input:disabled,
-.textarea:disabled {
+.input:disabled {
   color: var(--dsw-alias-label-tertiary);
   cursor: default;
 }

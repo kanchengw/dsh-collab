@@ -2,6 +2,7 @@ import { createElement, useEffect, useState, type ChangeEvent, type FormEvent, t
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
+import { DshCollabRoomsLauncher, DshCollabRoomsPanel } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import roomCss from "./collab-room.module.css";
@@ -35,6 +36,13 @@ export type DshCollabGatewayRuntimeSnapshot =
   | { status: "starting" }
   | { status: "running"; port: number };
 
+export interface DshCollabOwnedRoom {
+  roomId: string;
+  hostSessionId: string;
+  title: string;
+  sharing: boolean;
+}
+
 export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
   appliedGateway?: DshCollabGatewaySnapshot;
   writable?: boolean;
@@ -62,6 +70,9 @@ export interface DshCollabSettingsPort {
   refreshGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
   startGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
   stopGateway?(): Promise<DshCollabGatewayRuntimeSnapshot>;
+  getOwnedRooms?(): readonly DshCollabOwnedRoom[];
+  subscribeOwnedRooms?(listener: () => void): () => void;
+  refreshOwnedRooms?(): Promise<readonly DshCollabOwnedRoom[]>;
 }
 
 interface DshClientConnectionRpc {
@@ -80,7 +91,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope", "connection"];
+export const inject = ["slots", "settingsScope", "connection", "sessions"];
 
 interface DshSettingsScope<T> {
   getSnapshot(): { status: "loading" | "ready" | "unavailable"; value?: T; writable: boolean };
@@ -196,9 +207,24 @@ function decodeGatewayRuntimeResult(result: unknown): DshCollabGatewayRuntimeSna
   throw new Error("Invalid Host Gateway state");
 }
 
+function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid Owned rooms response");
+  const envelope = result as { ok?: unknown; value?: { rooms?: unknown }; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Unable to list Owned rooms");
+  if (!Array.isArray(envelope.value?.rooms)) throw new Error("Invalid Owned rooms response");
+  return envelope.value.rooms.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Owned room");
+    const room = value as Record<string, unknown>;
+    if ([room.roomId, room.hostSessionId, room.title].some((field) => typeof field !== "string" || field.trim() === "") || typeof room.sharing !== "boolean") throw new Error("Invalid Owned room");
+    return { roomId: room.roomId as string, hostSessionId: room.hostSessionId as string, title: room.title as string, sharing: room.sharing };
+  });
+}
+
 export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
   let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
+  let ownedRooms: DshCollabOwnedRoom[] = [];
   const listeners = new Set<() => void>();
+  const roomListeners = new Set<() => void>();
   const publish = (next: DshCollabGatewayRuntimeSnapshot): DshCollabGatewayRuntimeSnapshot => {
     gateway = next;
     for (const listener of listeners) listener();
@@ -207,13 +233,21 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
   const call = async (endpoint: string): Promise<DshCollabGatewayRuntimeSnapshot> => {
     return publish(decodeGatewayRuntimeResult(await rpc.call("/dsh-collab", endpoint, {})));
   };
+  const refreshOwnedRooms = async (): Promise<readonly DshCollabOwnedRoom[]> => {
+    ownedRooms = decodeOwnedRoomsResult(await rpc.call("/dsh-collab", "rooms/list", {}));
+    for (const listener of roomListeners) listener();
+    return ownedRooms;
+  };
   return {
     ...base,
     getGatewaySnapshot: () => gateway,
     subscribeGateway: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     refreshGateway: () => call("gateway/status"),
-    startGateway: async () => { publish({ status: "starting" }); return await call("gateway/start"); },
-    stopGateway: () => call("gateway/stop"),
+    startGateway: async () => { publish({ status: "starting" }); const result = await call("gateway/start"); await refreshOwnedRooms(); return result; },
+    stopGateway: async () => { const result = await call("gateway/stop"); await refreshOwnedRooms(); return result; },
+    getOwnedRooms: () => ownedRooms,
+    subscribeOwnedRooms: (listener) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
+    refreshOwnedRooms,
   };
 }
 
@@ -288,8 +322,8 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       syncGateway();
     },
     bootstrap: actions.bootstrap?.bind(actions),
-    shareHostRoom: actions.shareHostRoom?.bind(actions),
-    stopSharing: actions.stopSharing?.bind(actions),
+    shareHostRoom: actions.shareHostRoom ? async (input) => { await actions.shareHostRoom?.(input); await actions.refreshOwnedRooms?.(); } : undefined,
+    stopSharing: actions.stopSharing ? async (roomId) => { await actions.stopSharing?.(roomId); await actions.refreshOwnedRooms?.(); } : undefined,
     join: actions.join?.bind(actions),
     createInvite: actions.createInvite?.bind(actions),
     listJoinedRooms: actions.listJoinedRooms?.bind(actions),
@@ -305,6 +339,9 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     refreshGateway: actions.refreshGateway?.bind(actions),
     startGateway: actions.startGateway?.bind(actions),
     stopGateway: actions.stopGateway?.bind(actions),
+    getOwnedRooms: actions.getOwnedRooms?.bind(actions),
+    subscribeOwnedRooms: actions.subscribeOwnedRooms?.bind(actions),
+    refreshOwnedRooms: actions.refreshOwnedRooms?.bind(actions),
   };
 }
 
@@ -383,7 +420,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
   return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": "dsh-collab room" },
     createElement("div", { className: roomCss.header },
       createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
-      createElement("span", { className: roomCss.badge }, snapshot.role === "host" ? "Host" : "Participant"),
+      createElement("span", { className: roomCss.badge }, snapshot.role === "host" ? "Owner" : "Participant"),
       snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, `Hosted by ${snapshot.hostDisplayName}`) : null,
       createElement("span", { className: roomCss.connection, role: "status" }, `${snapshot.connection} · ${String(snapshot.memberCount)} members`),
     ),
@@ -406,6 +443,16 @@ function useSettingsSnapshot(port: DshCollabSettingsPort | undefined): DshCollab
   return snapshot;
 }
 
+function useGatewaySnapshot(port: DshCollabSettingsPort | undefined): DshCollabGatewayRuntimeSnapshot {
+  const [snapshot, setSnapshot] = useState<DshCollabGatewayRuntimeSnapshot>(() => port?.getGatewaySnapshot?.() ?? { status: "stopped" });
+  useEffect(() => {
+    const update = (): void => { setSnapshot(port?.getGatewaySnapshot?.() ?? { status: "stopped" }); };
+    update();
+    return port?.subscribeGateway?.(update);
+  }, [port]);
+  return snapshot;
+}
+
 /** Session-scoped Host controls; the room identity is always the current DSH session. */
 export function DshCollabSessionDock(props: {
   sessionId: string;
@@ -416,6 +463,7 @@ export function DshCollabSessionDock(props: {
 }): ReactNode {
   const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
   const settings = useSettingsSnapshot(props.settingsPort);
+  const gateway = useGatewaySnapshot(props.settingsPort);
   const [roomName, setRoomName] = useState(props.defaultRoomName);
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<"share" | "stop" | "invite" | "copy">();
@@ -436,6 +484,7 @@ export function DshCollabSessionDock(props: {
     setBusy("share");
     setNotice(undefined);
     try {
+      if (gateway.status !== "running") await props.settingsPort.startGateway?.();
       await props.settingsPort.shareHostRoom({ sessionId: props.sessionId, title: roomName.trim() });
       setRoomName(roomName.trim());
       setNotice({ tone: "success", text: hosted ? "Room name updated." : "This session is now shared." });
@@ -493,7 +542,7 @@ export function DshCollabSessionDock(props: {
           createElement("span", null, "Room name"),
           createElement("input", { id: `collab-room-name-${props.sessionId}`, name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) }),
         ),
-        createElement("button", { className: roomCss.shareButton, type: "submit", disabled: !props.settingsPort?.shareHostRoom || busy !== undefined || roomName.trim() === "" }, busy === "share" ? "Sharing…" : hosted ? "Update room" : "Share this session"),
+        createElement("button", { className: roomCss.shareButton, type: "submit", disabled: !props.settingsPort?.shareHostRoom || busy !== undefined || roomName.trim() === "" }, busy === "share" ? "Sharing…" : hosted ? "Update room" : gateway.status === "running" ? "Share this session" : "Start Gateway and share this session"),
       ),
       hosted ? createElement("div", { className: roomCss.inviteControls },
         createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void createInvitation(); }, disabled: !props.settingsPort?.createInvite || gatewayEndpoint === "" || busy !== undefined }, busy === "invite" ? "Creating…" : "Create invitation"),
@@ -549,6 +598,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
   const browserSettings = rawBrowserSettings && connection ? createDshGatewayControlPort(rawBrowserSettings, connection.rpc) : rawBrowserSettings;
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
+  const sessions = optionalService<{ open(sessionId: string): void }>(context, "sessions");
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
   context.slots.inject("conversation.input.dock", () => context.slots.register({
@@ -562,10 +612,13 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     const defaultRoomName = useSessions ? useSessions((state) => state.byId[sessionId]?.displayTitle ?? sessionId) : sessionId;
     return createElement(DshCollabSessionDock, { key: sessionId, sessionId, defaultRoomName, port: client, settingsPort: settings });
   }));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab", order: 10 }, () => createElement(DshCollabParticipantOverlay, { port: client })));
+  context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20 }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true })));
+  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10 }, () => createElement(DshCollabRoomsPanel, { port: settings, openSession: sessions?.open.bind(sessions) })));
+  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-participant", order: 20 }, () => createElement(DshCollabParticipantOverlay, { port: client })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab" }, () => createElement(DshCollabSettingsCard, { port: settings })));
 }
 
 /** DSH client runner entry expected by every `dsh.client` bundle. */
 export { applyDshCollabClient as apply };
 export { DshCollabSettingsCard } from "./collab-settings-card.js";
+export { DshCollabRoomsLauncher, DshCollabRoomsPanel, setDshCollabRoomsOpen } from "./collab-rooms.js";

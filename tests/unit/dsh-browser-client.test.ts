@@ -432,6 +432,61 @@ describe("browser Gateway client", () => {
     }
   });
 
+  it("reconnects the explicitly selected Joined room instead of the first saved room", async () => {
+    vi.useFakeTimers();
+    try {
+      const first: ParticipantResumeState = { gatewayEndpoint: "wss://first.example/collab", roomId: "room-first", memberId: "member-bob", credential: "first-secret" };
+      const second: ParticipantResumeState = { gatewayEndpoint: "wss://second.example/collab", roomId: "room-second", memberId: "member-bob", credential: "second-secret" };
+      const loaded: Array<{ gatewayEndpoint: string; roomId: string } | undefined> = [];
+      const sockets: BrowserSocket[] = [];
+      const fetch: BrowserFetch = async (url) => {
+        const roomId = url.includes("second.example") ? "room-second" : "room-first";
+        if (url.endsWith("/resume")) return response({ room: { roomId, title: roomId }, member: { memberId: "member-bob", role: "participant" }, roomToken: `${roomId}-token` });
+        if (url.endsWith("/snapshot")) return response({ room: { roomId, title: roomId }, members: [], lastEventSeq: 0 });
+        return response({ events: [], nextSeq: 0 });
+      };
+      const WebSocket = class implements BrowserSocket {
+        readyState = 1;
+        onopen?: () => void;
+        onmessage?: (event: { data: string }) => void;
+        onclose?: () => void;
+        onerror?: () => void;
+        constructor() { sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+        send(): void {}
+        close(): void { this.readyState = 3; }
+      };
+      const client = createDshBrowserCollabClient({
+        gatewayUrl: "http://127.0.0.1:4310/collab",
+        roomId: "dsh-room",
+        fetch,
+        WebSocket,
+        participantPersistence: {
+          load: (ref) => {
+            loaded.push(ref);
+            if (!ref) return first;
+            return [first, second].find((room) => room.gatewayEndpoint === ref.gatewayEndpoint && room.roomId === ref.roomId);
+          },
+          save: async () => {},
+          clear: async () => {},
+        },
+      });
+
+      await client.connectJoinedRoom({ gatewayEndpoint: second.gatewayEndpoint, roomId: second.roomId });
+      sockets[0]?.onclose?.();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(client.getSnapshot()).toMatchObject({ roomId: "room-second", connection: "online" });
+      expect(loaded).toEqual([
+        { gatewayEndpoint: second.gatewayEndpoint, roomId: second.roomId },
+        { gatewayEndpoint: second.gatewayEndpoint, roomId: second.roomId },
+        { gatewayEndpoint: second.gatewayEndpoint, roomId: second.roomId },
+      ]);
+      client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rebootstraps a Host stream after it disconnects", async () => {
     vi.useFakeTimers();
     try {

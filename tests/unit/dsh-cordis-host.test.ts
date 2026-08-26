@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
-import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, type DshCollabPersistedSettings } from "../../src/index.js";
+import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, HostSnapshotFile, type DshCollabPersistedSettings } from "../../src/index.js";
+import { RoomStore } from "../../src/room.js";
 
 async function freeTcpPort(): Promise<number> {
   const server = createTcpServer();
@@ -212,6 +213,39 @@ describe("Cordis Host mount", () => {
     await control!("gateway/stop", {}, new AbortController().signal);
     expect(await canConnect(gatewayPort)).toBe(false);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+  });
+
+  it("lists persisted Owned rooms as inactive while the Gateway is stopped", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-owned-rooms-"));
+    const stateFile = join(dir, "state.json");
+    const rooms = new RoomStore();
+    rooms.createRoom({ roomId: "room-owned", hostId: "host", hostSessionId: "session-owned", title: "Release planning", hostDisplayName: "Host", now: 1 });
+    await new HostSnapshotFile(stateFile).save({
+      version: 1,
+      rooms: rooms.snapshot(),
+      ledger: { version: 1, rooms: [] },
+      dispatcher: { version: 1, records: [], queue: [], nextQueueSeq: 1 },
+    });
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const context = {
+      agents: { get: () => undefined },
+      effect: () => () => {},
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({
+        get: () => ({ gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" } }),
+        update: async () => {},
+      }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+
+    try {
+      apply(context, { hostId: "host", hostDisplayName: "Host", stateFile });
+      expect(await control!("rooms/list", {}, new AbortController().signal)).toEqual({
+        ok: true,
+        value: { rooms: [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: false }] },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not start the removed local proxy when stale config is present", async () => {

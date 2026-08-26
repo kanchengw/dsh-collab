@@ -166,6 +166,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
   private disposed = false;
   private manuallyDisconnected = false;
+  private participantRef: JoinedRoomRef | undefined;
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -209,6 +210,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async bootstrap(roomId?: string): Promise<void> {
     this.base = this.hostBase;
+    this.participantRef = undefined;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
     this.applyRoom(data);
@@ -223,6 +225,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (title.length > 80) throw new Error("Room name must be at most 80 characters");
     const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)));
     this.base = this.hostBase;
+    this.participantRef = undefined;
     this.roomId = sessionId;
     this.applyRoom(data);
     await this.connect();
@@ -237,6 +240,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   disconnect(): void {
     this.manuallyDisconnected = true;
+    this.participantRef = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.clearHeartbeat();
@@ -268,6 +272,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
       });
     }
+    this.participantRef = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
     this.applyRoom(data);
     await this.connect();
   }
@@ -275,6 +280,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   async restoreParticipant(ref?: JoinedRoomRef): Promise<boolean> {
     const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
+    this.participantRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
     this.base = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
     this.roomId = state.roomId;
     try {
@@ -427,12 +433,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   private scheduleReconnect(): void {
     if (this.disposed || this.manuallyDisconnected || this.reconnectTimer) return;
-    if (this.snapshot.role === "participant" && !this.options.participantPersistence?.load()) return;
+    if (this.snapshot.role === "participant" && (!this.participantRef || !this.options.participantPersistence?.load(this.participantRef))) return;
     const delay = this.reconnectDelayMs;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (this.disposed) return;
-      const reconnect = this.snapshot.role === "host" ? this.bootstrap() : this.restoreParticipant();
+      const reconnect = this.snapshot.role === "host" ? this.bootstrap() : this.restoreParticipant(this.participantRef);
       void reconnect.catch(() => {
         this.reconnectDelayMs = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
         this.scheduleReconnect();
