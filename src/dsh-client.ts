@@ -62,7 +62,18 @@ interface DshSettingsScopeBinder {
 
 interface PersistedCollabSettings {
   gateway: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string };
+  appliedGateway?: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string };
   security?: DshCollabSecuritySettings;
+}
+
+function decodeGateway(value: unknown): PersistedCollabSettings["gateway"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if ((candidate.gatewayHost !== "127.0.0.1" && candidate.gatewayHost !== "0.0.0.0")
+    || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 1 || (candidate.gatewayPort as number) > 65535
+    || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
+  const advertisedEndpoint = typeof candidate.advertisedEndpoint === "string" ? candidate.advertisedEndpoint : "";
+  return { ...candidate as Omit<PersistedCollabSettings["gateway"], "advertisedEndpoint">, advertisedEndpoint };
 }
 
 function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
@@ -75,13 +86,9 @@ function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
 
 function decodePersistedSettings(value: unknown): PersistedCollabSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const gateway = (value as { gateway?: unknown }).gateway;
-  if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) return undefined;
-  const candidate = gateway as Record<string, unknown>;
-  if ((candidate.gatewayHost !== "127.0.0.1" && candidate.gatewayHost !== "0.0.0.0")
-    || !Number.isSafeInteger(candidate.gatewayPort) || (candidate.gatewayPort as number) < 1 || (candidate.gatewayPort as number) > 65535
-    || (candidate.exposeMode !== "loopback" && candidate.exposeMode !== "network")) return undefined;
-  const advertisedEndpoint = typeof candidate.advertisedEndpoint === "string" ? candidate.advertisedEndpoint : "";
+  const gateway = decodeGateway((value as { gateway?: unknown }).gateway);
+  if (!gateway) return undefined;
+  const appliedGateway = decodeGateway((value as { appliedGateway?: unknown }).appliedGateway);
   const securityValue = (value as { security?: unknown }).security;
   const security = securityValue && typeof securityValue === "object" && !Array.isArray(securityValue)
     ? securityValue as Partial<DshCollabSecuritySettings>
@@ -93,7 +100,7 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
     maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
   };
-  return { gateway: { ...candidate as Omit<PersistedCollabSettings["gateway"], "advertisedEndpoint">, advertisedEndpoint }, security: normalized };
+  return { gateway, ...(appliedGateway ? { appliedGateway } : {}), security: normalized };
 }
 
 function decodeParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
@@ -120,7 +127,8 @@ export function createDshParticipantPersistence(scope: DshSettingsScope<DshColla
 
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
   const syncGateway = (): void => {
-    const gateway = scope.getSnapshot().value?.gateway;
+    const persisted = scope.getSnapshot().value;
+    const gateway = persisted?.appliedGateway ?? persisted?.gateway;
     if (gateway) actions.configureGateway?.(gateway);
   };
   syncGateway();

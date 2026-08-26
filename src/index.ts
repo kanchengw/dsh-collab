@@ -23,7 +23,10 @@ import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PAR
 
 interface DshSettingsRegistrationContext {
   settings: {
-    register(namespace: string, schema: unknown, options: Record<string, unknown>): { get(): DshCollabPersistedSettings };
+    register(namespace: string, schema: unknown, options: Record<string, unknown>): {
+      get(): DshCollabPersistedSettings;
+      update(patch: object): Promise<void>;
+    };
   };
 }
 
@@ -35,13 +38,19 @@ export interface DshCollabCordisContext extends DshCordisHostContext {
 export function registerDshCollabSettings(
   context: DshCollabCordisContext,
   config: Partial<DshCordisHostConfig>,
-  onResolved?: (settings: DshCollabPersistedSettings) => void,
+  onResolved?: (settings: DshCollabPersistedSettings, scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>) => void,
 ): void {
   const gatewayHost = config.host ?? "127.0.0.1";
   context.inject?.(["settings"], (settingsContext) => {
     const scope = settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
       base: {
         gateway: {
+          gatewayHost,
+          gatewayPort: config.port ?? defaultCollabSettings.gatewayPort,
+          exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
+          advertisedEndpoint: "",
+        },
+        appliedGateway: {
           gatewayHost,
           gatewayPort: config.port ?? defaultCollabSettings.gatewayPort,
           exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
@@ -61,7 +70,7 @@ export function registerDshCollabSettings(
     settingsContext.settings.register(DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
       validate: validateDshCollabParticipantSettings,
     });
-    onResolved?.(scope.get());
+    onResolved?.(scope.get(), scope);
   });
 }
 
@@ -79,14 +88,19 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
   };
 }
 
-function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>): void {
+function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>, onReady?: (port: number) => void): void {
   if (typeof config.roomId !== "string" || typeof config.hostId !== "string" || typeof config.title !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
+  const reportReady = (): void => {
+    if (mounted && onReady) void mounted.ready.then(onReady).catch(() => undefined);
+  };
+  reportReady();
   let disposeCreated: (() => void) | undefined;
   if (!mounted && context.on && config.hostSessionId === undefined) {
     disposeCreated = context.on("agent/created", (payload) => {
       if (mounted) return;
       mounted = mountDshCollabCordisHost(context, { ...config, hostSessionId: payload.agent.id } as DshCordisHostConfig);
+      reportReady();
     });
   }
   if (!mounted && !disposeCreated) return;
@@ -109,7 +123,11 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     registerDshCollabSettings(context, config);
     return;
   }
-  if (context.inject) registerDshCollabSettings(context, config, (settings) => mountConfiguredHost(context, applyPersistedSettings(config, settings)));
+  if (context.inject) registerDshCollabSettings(context, config, (settings, scope) => {
+    mountConfiguredHost(context, applyPersistedSettings(config, settings), (gatewayPort) => {
+      void scope.update({ appliedGateway: { ...settings.gateway, gatewayPort } }).catch((error: unknown) => console.warn("dsh-collab applied Gateway state save failed", error));
+    });
+  });
   else mountConfiguredHost(context, config);
 }
 

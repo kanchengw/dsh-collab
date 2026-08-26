@@ -57,7 +57,7 @@ describe("Cordis Host mount", () => {
   });
 
   it("registers the formal dsh-collab settings namespace with safe composition defaults", () => {
-    const register = vi.fn((_namespace: string, _schema: unknown, options: { base: DshCollabPersistedSettings; validate(value: unknown): void }) => ({ get: () => options.base }));
+    const register = vi.fn((_namespace: string, _schema: unknown, options: { base: DshCollabPersistedSettings; validate(value: unknown): void }) => ({ get: () => options.base, update: vi.fn(async () => {}) }));
     const context = {
       agents: { get: () => undefined },
       inject: vi.fn((_services: string[], callback: (ctx: { settings: { register: typeof register } }) => void) => callback({ settings: { register } })),
@@ -96,9 +96,11 @@ describe("Cordis Host mount", () => {
       gateway: { gatewayHost: "127.0.0.1" as const, gatewayPort, exposeMode: "loopback" as const, advertisedEndpoint: "" },
       security: { tokenTtlMs: 25, approvalPolicy: "disabled" as const, maxMembers: 2, maxMessageBytes: 4, maxQueue: 1 },
     };
+    let resolved: DshCollabPersistedSettings = persisted;
+    const update = vi.fn(async (patch: object) => { resolved = { ...resolved, ...patch as Partial<DshCollabPersistedSettings> }; });
     const context = {
       agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
-      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): typeof persisted } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted }) } }),
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => resolved, update }) } }),
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
 
@@ -108,6 +110,7 @@ describe("Cordis Host mount", () => {
       ...noPersistence,
     });
     await waitUntilListening(gatewayPort);
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ appliedGateway: persisted.gateway }));
 
     try {
       const bootstrap = await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/bootstrap`);

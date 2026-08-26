@@ -102,7 +102,10 @@ describe("real DSH client slot adapter", () => {
   });
 
   it("reads and persists namespaced settings through the DSH settings scope", async () => {
-    let value = { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" } };
+    let value = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" },
+      appliedGateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" },
+    };
     const set = vi.fn(async (field: string, next: unknown) => { value = { ...value, [field]: next }; });
     const scope = {
       getSnapshot: () => ({ status: "ready" as const, value, writable: true }),
@@ -116,8 +119,11 @@ describe("real DSH client slot adapter", () => {
     expect(port.getSnapshot()).toMatchObject({ ...value.gateway, writable: true, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
     await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
     expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
-    expect(createDshSettingsPort(scope, actions).getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
-    expect(configureGateway).toHaveBeenCalledWith({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
+    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(configureGateway).toHaveBeenLastCalledWith(value.appliedGateway);
+    value = { ...value, appliedGateway: value.gateway };
+    port.getSnapshot();
+    expect(configureGateway).toHaveBeenLastCalledWith(value.gateway);
     await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "loopback", advertisedEndpoint: "wss://new.example/collab" })).rejects.toThrow("loopback");
     expect(set).toHaveBeenCalledWith("security", { tokenTtlMs: 28_800_000, approvalPolicy: "host-only", maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
     expect(set).toHaveBeenCalledTimes(2);

@@ -10,6 +10,12 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
     exposeMode: z.union([z.const("loopback"), z.const("network")]).required(),
     advertisedEndpoint: z.string().default(""),
   }).required(),
+  appliedGateway: z.object({
+    gatewayHost: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]).required(),
+    gatewayPort: z.number().step(1).min(1).max(65535).required(),
+    exposeMode: z.union([z.const("loopback"), z.const("network")]).required(),
+    advertisedEndpoint: z.string().default(""),
+  }).default(undefined as unknown as NonNullable<DshCollabPersistedSettings["appliedGateway"]>).hidden(),
   security: z.object({
     tokenTtlMs: z.number().step(1).min(1).required(),
     approvalPolicy: z.union([z.const("host-only"), z.const("disabled")]).required(),
@@ -42,14 +48,18 @@ function validateAdvertisedEndpoint(gateway: DshCollabPersistedSettings["gateway
   normalizeAdvertisedGatewayEndpoint(gateway.advertisedEndpoint, gateway.exposeMode);
 }
 
-export function validateDshCollabPersistedSettings(settings: DshCollabPersistedSettings): void {
-  const gateway = settings.gateway;
+function validateGateway(gateway: DshCollabPersistedSettings["gateway"]): void {
   if (!Number.isSafeInteger(gateway.gatewayPort) || gateway.gatewayPort < 1 || gateway.gatewayPort > 65535) throw new Error("gatewayPort must be between 1 and 65535");
   if (gateway.exposeMode === "loopback" && gateway.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
   if (gateway.exposeMode === "network" && gateway.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
   validateAdvertisedEndpoint(gateway);
+}
+
+export function validateDshCollabPersistedSettings(settings: DshCollabPersistedSettings): void {
+  validateGateway(settings.gateway);
+  if (settings.appliedGateway) validateGateway(settings.appliedGateway);
   if (settings.security) {
-    const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...gateway };
+    const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...settings.gateway };
     validateCollabSettings(security);
   }
 }

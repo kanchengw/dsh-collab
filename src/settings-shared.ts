@@ -47,6 +47,7 @@ export interface DshCollabSecuritySettings {
 
 export interface DshCollabPersistedSettings {
   gateway: DshCollabGatewaySettings;
+  appliedGateway?: DshCollabGatewaySettings;
   security?: DshCollabSecuritySettings;
 }
 
