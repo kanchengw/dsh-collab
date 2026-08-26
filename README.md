@@ -62,7 +62,10 @@ For complete browser testing, run `e2e/prepare.ps1`, then start
 `e2e/start-host.ps1` and `e2e/start-participant.ps1` in separate terminals.
 They install the same complete plugin through DSH's official profile command,
 use isolated `DSH_HOME` directories, and expose the two DSH UIs at `3082` and
-`3083` while their independent Collab Gateways use `4312` and `4313`. See
+`3083` while their independent Collab Gateways use `4312` and `4313`. The Host
+test settings overlay advertises a detected private IPv4 address, so this
+same-machine run exercises the released `Private network` path rather than a
+local-only product mode. See
 [`e2e/README.md`](./e2e/README.md).
 
 ## DSH package shape

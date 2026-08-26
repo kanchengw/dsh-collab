@@ -44,4 +44,24 @@ describe("isolated two-DSH browser environment", () => {
     expect(startHost).toContain("--port 3082 --no-open");
     expect(startParticipant).toContain("--port 3083 --no-open");
   });
+
+  it("layers same-machine connectivity over the unchanged release package", () => {
+    const hostPatch = read("e2e/dsh-host.patch.yml");
+    const settingsPatch = read("e2e/dsh-host.settings.patch.yml");
+    const prepare = read("e2e/prepare.ps1");
+    const releasePatch = read("cordis.patch.yml");
+    const packageJson = JSON.parse(read("package.json")) as { files?: string[] };
+
+    expect(settingsPatch).toContain("gatewayHost: 0.0.0.0");
+    expect(settingsPatch).toContain("gatewayPort: 4312");
+    expect(settingsPatch).toContain("exposeMode: network");
+    expect(settingsPatch).toContain("ws://__HOST_ADDRESS__:4312/collab");
+    expect(prepare).toContain("dsh-host.settings.patch.yml");
+    expect(prepare).toContain("plugin --profile web add $projectRoot");
+    expect(prepare).toContain("lib/index.js");
+    expect(prepare).toContain("lib/client.js");
+    expect(hostPatch).not.toMatch(/^\s*name:\s*dsh-collab\s*$/m);
+    expect(releasePatch).not.toMatch(/4312|4313|__HOST_ADDRESS__/);
+    expect(packageJson.files?.some((entry) => entry === "e2e" || entry.startsWith("e2e/"))).toBe(false);
+  });
 });
