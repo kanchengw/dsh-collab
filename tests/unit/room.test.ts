@@ -103,4 +103,19 @@ describe("RoomStore", () => {
       displayName: "Alice again",
     })).toThrow(/member|principal|already/i);
   });
+
+  it("creates or resumes one Host room for the same DSH session", () => {
+    const rooms = new RoomStore();
+
+    expect(rooms.ensureHostRoom({
+      roomId: "session-1", hostId: "host", hostSessionId: "session-1", title: "Release", hostDisplayName: "Host",
+    })).toMatchObject({ title: "Release", revision: 1 });
+    expect(rooms.ensureHostRoom({
+      roomId: "session-1", hostId: "host", hostSessionId: "session-1", title: "Release plan", hostDisplayName: "Host",
+    })).toMatchObject({ title: "Release plan", revision: 2 });
+    expect(rooms.listMembers("session-1")).toHaveLength(1);
+    expect(() => rooms.ensureHostRoom({
+      roomId: "session-1", hostId: "other", hostSessionId: "session-2", title: "Hijack", hostDisplayName: "Other",
+    })).toThrow(/host|session|forbidden/i);
+  });
 });

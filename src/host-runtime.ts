@@ -12,10 +12,10 @@ import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServe
 import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./resume-credentials.js";
 
 export interface DshCollabHostRuntimeOptions {
-  roomId: string;
+  roomId?: string;
   hostId: string;
-  hostSessionId: string;
-  title: string;
+  hostSessionId?: string;
+  title?: string;
   hostDisplayName: string;
   sessions: DshSessionService;
   now?: () => number;
@@ -72,11 +72,13 @@ function rebindSnapshot(snapshot: DshCollabHostRuntimeSnapshot, roomId: string, 
   return rebound;
 }
 
-/** Build the one Host room runtime used by a DSH process or a local E2E harness. */
+/** Build the Host runtime used by a DSH process or a local E2E harness. */
 export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions): DshCollabHostRuntime {
-  const snapshot = options.snapshot ? rebindSnapshot(options.snapshot, options.roomId, options.hostSessionId) : undefined;
+  const snapshot = options.snapshot
+    ? options.roomId && options.hostSessionId ? rebindSnapshot(options.snapshot, options.roomId, options.hostSessionId) : options.snapshot
+    : undefined;
   const rooms = snapshot ? RoomStore.fromSnapshot(snapshot.rooms) : new RoomStore();
-  if (!snapshot) {
+  if (!snapshot && options.roomId && options.hostSessionId && options.title) {
     rooms.createRoom({ roomId: options.roomId, hostId: options.hostId, hostSessionId: options.hostSessionId, title: options.title, hostDisplayName: options.hostDisplayName, now: options.now?.() });
   }
   const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
@@ -104,6 +106,9 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     approvals,
     approvalPolicy: options.approvalPolicy,
     resumes,
+    hostPrincipalId: options.hostId,
+    hostDisplayName: options.hostDisplayName,
+    ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);

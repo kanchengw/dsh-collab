@@ -90,25 +90,16 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
 }
 
 function mountConfiguredHost(context: DshCollabCordisContext, config: Partial<DshCordisHostConfig>, onReady?: (port: number) => void): void {
-  if (typeof config.roomId !== "string" || typeof config.hostId !== "string" || typeof config.title !== "string" || typeof config.hostDisplayName !== "string") return;
-  let mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
+  if (typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
+  const mounted = mountDshCollabCordisHost(context, config as DshCordisHostConfig);
   const reportReady = (): void => {
     if (mounted && onReady) void mounted.ready.then(onReady).catch(() => undefined);
   };
   reportReady();
-  let disposeCreated: (() => void) | undefined;
-  if (!mounted && context.on && config.hostSessionId === undefined) {
-    disposeCreated = context.on("agent/created", (payload) => {
-      if (mounted) return;
-      mounted = mountDshCollabCordisHost(context, { ...config, hostSessionId: payload.agent.id } as DshCordisHostConfig);
-      reportReady();
-    });
-  }
-  if (!mounted && !disposeCreated) return;
+  if (!mounted) return;
   if (context.effect) {
     context.effect(() => async () => {
-      disposeCreated?.();
-      if (mounted) await mounted.dispose();
+      await mounted.dispose();
     }, "dsh-collab: Host Gateway");
   }
 }

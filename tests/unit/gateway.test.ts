@@ -41,7 +41,12 @@ function setup(agentOverride?: HostAgentPort, withApprovals = false) {
   };
   const invites = new InviteStore(rooms, { tokenFactory: () => "invite-token" });
   const approvals = withApprovals ? new ApprovalStore({ rooms, ledger, answerer: {} }) : undefined;
-  const gateway = new CollabGateway({ rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10, approvals });
+  const gateway = new CollabGateway({
+    rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10, approvals,
+    hostPrincipalId: "host",
+    hostDisplayName: "Host",
+    ownsHostSession: (sessionId) => sessionId !== "session-missing",
+  });
   return { gateway, calls, rooms, ledger };
 }
 
@@ -54,6 +59,50 @@ function bearer(token: string) {
 }
 
 describe("CollabGateway route contract", () => {
+  it("shares only an owned current session and updates its Room name idempotently", async () => {
+    const { gateway, rooms } = setup();
+
+    const created = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/session-new/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-new", title: "  Release room  " },
+    });
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({
+      room: { roomId: "session-new", hostSessionId: "session-new", title: "Release room" },
+      member: { role: "host", principalId: "host" },
+      roomToken: expect.any(String),
+    });
+
+    const resumed = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/session-new/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-new", title: "Planning room" },
+    });
+    expect(resumed.status).toBe(200);
+    expect(rooms.getRoom("session-new")).toMatchObject({ title: "Planning room", revision: 2 });
+    expect(rooms.listMembers("session-new")).toHaveLength(1);
+  });
+
+  it("rejects Participant, unowned, mismatched and invalid Host share requests", async () => {
+    const { gateway } = setup();
+    const send = (auth: string | undefined, roomId: string, hostSessionId: string, title: string) => request(gateway, {
+      method: "POST",
+      path: `/v1/rooms/${roomId}/host`,
+      ...(auth ? { auth: { principalId: auth } } : {}),
+      body: { hostSessionId, title },
+    });
+
+    await expect(send(undefined, "session-new", "session-new", "Room")).resolves.toMatchObject({ status: 401 });
+    await expect(send("alice", "session-new", "session-new", "Room")).resolves.toMatchObject({ status: 403 });
+    await expect(send("host", "session-missing", "session-missing", "Room")).resolves.toMatchObject({ status: 403 });
+    await expect(send("host", "session-new", "session-other", "Room")).resolves.toMatchObject({ status: 422 });
+    await expect(send("host", "session-new", "session-new", "   ")).resolves.toMatchObject({ status: 422 });
+    await expect(send("host", "session-new", "session-new", "x".repeat(81))).resolves.toMatchObject({ status: 422 });
+  });
+
   it("creates an invite for the Host and returns a structured forbidden error for a Participant", async () => {
     const { gateway } = setup();
 

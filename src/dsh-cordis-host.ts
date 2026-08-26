@@ -23,15 +23,15 @@ export interface MountedDshCollabHost {
 /** Mount one collab Gateway into the real Cordis WebServer and Agent registry. */
 export function mountDshCollabCordisHost(context: DshCordisHostContext, config: DshCordisHostConfig): MountedDshCollabHost | undefined {
   if (config.enabled === false) return undefined;
-  const hostSessionId = config.hostSessionId ?? ((context.agents as DshCordisAgentRegistry & { list?: () => Array<{ id: string }> }).list?.()[0]?.id);
-  if (!hostSessionId) return undefined;
   const sessions: DshSessionService = createDshCordisSessionService({ agents: context.agents });
   const persistence = config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile());
   const snapshot = persistence?.loadSync();
-  const runtime = createDshCollabHostRuntime({ ...config, hostSessionId, sessions, snapshot });
-  const unsubscribe = persistence ? runtime.ledger.subscribe(() => {
-    void persistence.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
-  }) : undefined;
+  const runtime = createDshCollabHostRuntime({ ...config, sessions, snapshot });
+  const save = (): void => {
+    void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
+  };
+  const unsubscribeLedger = persistence ? runtime.ledger.subscribe(save) : undefined;
+  const unsubscribeRooms = persistence ? runtime.rooms.subscribe(save) : undefined;
   const ready = runtime.http.listen();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
   void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
@@ -40,7 +40,8 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
     ready,
     async dispose(): Promise<void> {
       await ready.catch(() => undefined);
-      unsubscribe?.();
+      unsubscribeLedger?.();
+      unsubscribeRooms?.();
       await persistence?.save(runtime.snapshot());
       await runtime.dispose();
     },

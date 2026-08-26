@@ -38,7 +38,12 @@ interface GatewayOptions {
   approvals?: ApprovalStore;
   approvalPolicy?: "host-only" | "disabled";
   resumes?: ResumeCredentialStore;
+  hostPrincipalId?: string;
+  hostDisplayName?: string;
+  ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
 }
+
+const MAX_ROOM_TITLE_LENGTH = 80;
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -133,6 +138,7 @@ export class CollabGateway {
       }
       const roomId = requiredText(segments[2], "roomId");
       const resource = segments[3];
+      if (request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
@@ -199,6 +205,32 @@ export class CollabGateway {
       payload: { memberId: member.memberId, principalId: member.principalId, role: member.role },
     });
     return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, resumeCredential: resumeCredential.credential, event } };
+  }
+
+  private async shareHostRoom(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
+    const principalId = authPrincipal(request);
+    if (!this.options.hostPrincipalId || principalId !== this.options.hostPrincipalId) {
+      throw new CollabError("ACTION_FORBIDDEN", "only the configured Host can share a DSH session");
+    }
+    const body = objectBody(request.body);
+    const hostSessionId = requiredText(body.hostSessionId, "hostSessionId");
+    if (roomId !== hostSessionId) throw invalidInput("roomId must match hostSessionId", { roomId, hostSessionId });
+    const title = requiredText(body.title, "title");
+    if (title.length > MAX_ROOM_TITLE_LENGTH) throw invalidInput(`title must be at most ${String(MAX_ROOM_TITLE_LENGTH)} characters`, { field: "title" });
+    if (!this.options.ownsHostSession || !(await this.options.ownsHostSession(hostSessionId))) {
+      throw new CollabError("ACTION_FORBIDDEN", "host session is not owned by this DSH runtime", { hostSessionId });
+    }
+    const room = this.options.rooms.ensureHostRoom({
+      roomId,
+      hostId: principalId,
+      hostSessionId,
+      title,
+      hostDisplayName: this.options.hostDisplayName ?? "Host",
+      now: this.now(),
+    });
+    const member = this.options.rooms.authorize(roomId, principalId, "read");
+    const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+    return { status: 200, body: { room, member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
   }
 
   private resume(roomId: string, request: GatewayRequest): GatewayResponse {

@@ -69,6 +69,7 @@ export interface DshBrowserInviteInput {
 
 export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   bootstrap(roomId?: string): Promise<void>;
+  shareHostRoom(input: { sessionId: string; title: string }): Promise<void>;
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
@@ -196,6 +197,20 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.base = this.hostBase;
     if (roomId?.trim()) this.roomId = roomId.trim();
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
+    await this.options.participantPersistence?.clear();
+    this.applyRoom(data);
+    await this.connect();
+  }
+
+  async shareHostRoom(input: { sessionId: string; title: string }): Promise<void> {
+    const sessionId = input.sessionId.trim();
+    const title = input.title.trim();
+    if (sessionId === "") throw new Error("sessionId must not be blank");
+    if (title === "") throw new Error("Room name must not be blank");
+    if (title.length > 80) throw new Error("Room name must be at most 80 characters");
+    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)));
+    this.base = this.hostBase;
+    this.roomId = sessionId;
     await this.options.participantPersistence?.clear();
     this.applyRoom(data);
     await this.connect();
@@ -368,11 +383,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     }, delay);
   }
 
-  private async request(method: string, path: string, body: unknown, withToken: boolean): Promise<unknown> {
+  private async request(method: string, path: string, body: unknown, withToken: boolean, base = this.base): Promise<unknown> {
     const headers: Record<string, string> = { accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
-    const response = await this.fetcher(this.base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const response = await this.fetcher(base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const envelope = await response.json();
     if (!response.ok) throw new GatewayRequestError(response.status);
     return envelope;
@@ -445,6 +460,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   subscribeRoom(listener: () => void): () => void { return this.client.subscribe(listener); }
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
+  shareHostRoom(input: { sessionId: string; title: string }): Promise<void> { return this.client.shareHostRoom(input); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> { return this.client.createInvite(input, roomId); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }

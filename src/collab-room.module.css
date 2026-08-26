@@ -11,6 +11,136 @@
   font-family: var(--dsw-font-family);
 }
 
+.sharePanel {
+  box-sizing: border-box;
+  width: calc(100% - 32px);
+  max-width: 760px;
+  margin: 0 auto 8px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+}
+
+.shareForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 8px;
+}
+
+.shareField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.roomName,
+.invitationText {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.roomName {
+  height: 32px;
+  padding: 0 9px;
+}
+
+.invitationText {
+  min-height: 64px;
+  padding: 6px 9px;
+  resize: vertical;
+}
+
+.roomName:focus-visible,
+.invitationText:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.shareButton,
+.inviteButton {
+  box-sizing: border-box;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.shareButton {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-inverted);
+}
+
+.inviteButton {
+  border-color: var(--dsw-alias-border-l2);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.shareButton:disabled,
+.inviteButton:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
+.shareButton:focus-visible,
+.inviteButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.inviteControls {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.shareHint {
+  align-self: center;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.invitation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.success {
+  margin: 0;
+  padding: 7px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .header {
   display: flex;
   align-items: center;
@@ -302,7 +432,8 @@
 }
 
 @media (max-width: 640px) {
-  .dock {
+  .dock,
+  .sharePanel {
     width: calc(100% - 16px);
   }
 
@@ -320,6 +451,16 @@
 
   .composer {
     grid-template-columns: 1fr auto;
+  }
+
+  .shareForm,
+  .invitation {
+    grid-template-columns: 1fr;
+  }
+
+  .inviteControls {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .targetLabel {

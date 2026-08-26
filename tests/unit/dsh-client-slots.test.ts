@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshParticipantPersistence, createDshSettingsPort, DshCollabDock, DshCollabParticipantOverlay, DshCollabSessionDock, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", memberCount: 3, canSteer: true };
@@ -42,6 +42,38 @@ describe("real DSH client slot adapter", () => {
     expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 
+  it("renders session-scoped Room name and share actions before the room is online", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSessionDock, {
+      sessionId: "session-current",
+      defaultRoomName: "Release planning",
+      fallback: { ...snapshot, roomId: "", role: "participant", connection: "offline" },
+      settingsPort: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() },
+    }));
+
+    expect(html).toContain('name="roomName"');
+    expect(html).toContain('value="Release planning"');
+    expect(html).toContain('maxLength="80"');
+    expect(html).toContain("Share this session");
+    expect(html).not.toContain("Create invitation");
+  });
+
+  it("shows invitation controls only for the Host room bound to this session", () => {
+    const settingsPort = {
+      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }),
+      save: vi.fn(), createInvite: vi.fn(),
+    };
+    const html = renderToStaticMarkup(createElement(DshCollabSessionDock, {
+      sessionId: "room-1", defaultRoomName: "Release", fallback: snapshot, settingsPort,
+    }));
+    const other = renderToStaticMarkup(createElement(DshCollabSessionDock, {
+      sessionId: "room-2", defaultRoomName: "Other", fallback: snapshot, settingsPort,
+    }));
+
+    expect(html).toContain("Create invitation");
+    expect(other).toContain("Share this session");
+    expect(other).not.toContain("Create invitation");
+  });
+
   it("renders Host connectivity and Participant join without session actions in Settings", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() } }));
     expect(html).toContain('data-settings-namespace="dsh-collab"');
@@ -74,6 +106,8 @@ describe("real DSH client slot adapter", () => {
       })) } : undefined),
     };
     applyDshCollabClient(context as DshCollabClientContext);
+    const sessionRegistration = registrations.find((entry) => entry.name === "conversation.input.dock")?.options;
+    expect((sessionRegistration?.inject as (sessionId: string) => unknown)("session-current")).toEqual({ collabSessionId: "session-current" });
     expect(registrations).toEqual([
       { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5 }) },
       { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab", order: 10 }) },

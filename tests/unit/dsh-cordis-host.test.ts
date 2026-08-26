@@ -221,20 +221,43 @@ describe("Cordis Host mount", () => {
     }
   }, 10_000);
 
-  it("waits for the first real DSH Agent before starting the Gateway", async () => {
-    let created: ((payload: { agent: { id: string } }) => void) | undefined;
+  it("starts the Gateway without binding a room to the first DSH Agent", async () => {
     const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
     const context = {
-      agents: { get: (id: string) => id === "session-created" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined },
-      on: (_event: "agent/created", listener: (payload: { agent: { id: string } }) => void) => { created = listener; return () => { created = undefined; }; },
+      agents: { get: () => undefined },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
     };
     apply(context, { roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
-    expect(await canConnect(gatewayPort)).toBe(false);
-    created?.({ agent: { id: "session-created" } });
     await waitUntilListening(gatewayPort);
+    expect((await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/bootstrap`)).status).toBe(404);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(await canConnect(gatewayPort)).toBe(false);
+  });
+
+  it("persists a session room created after the Gateway starts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-session-room-"));
+    const stateFile = join(dir, "state.json");
+    const config = { hostId: "host", hostDisplayName: "Host", port: 0, stateFile, allowLoopbackPrincipal: true };
+    const context = { agents: { get: (sessionId: string) => sessionId === "session-current" ? { followup: () => {}, steer: () => {}, cancel: () => {} } : undefined } };
+    try {
+      const first = mountDshCollabCordisHost(context, config);
+      if (!first) throw new Error("first Gateway did not mount");
+      await first.ready;
+      const shared = await first.runtime.gateway.handle({
+        method: "POST", path: "/v1/rooms/session-current/host", auth: { principalId: "host" },
+        body: { hostSessionId: "session-current", title: "Release room" },
+      });
+      expect(shared.status).toBe(200);
+      await first.dispose();
+
+      const second = mountDshCollabCordisHost(context, config);
+      if (!second) throw new Error("second Gateway did not mount");
+      await second.ready;
+      expect(second.runtime.rooms.getRoom("session-current")).toMatchObject({ title: "Release room", hostSessionId: "session-current" });
+      await second.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

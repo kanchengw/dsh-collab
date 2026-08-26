@@ -30,6 +30,12 @@ type RoomRecord = {
 
 export class RoomStore {
   private readonly rooms = new Map<string, RoomRecord>();
+  private readonly listeners = new Set<() => void>();
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
 
   createRoom(input: CreateRoomInput): Room {
     const roomId = requiredText(input.roomId, "roomId");
@@ -56,7 +62,26 @@ export class RoomStore {
       joinedAt: room.createdAt,
     };
     this.rooms.set(roomId, { room, members: new Map([[host.memberId, host]]) });
+    this.emit();
     return copy(room);
+  }
+
+  ensureHostRoom(input: CreateRoomInput): Room {
+    const roomId = requiredText(input.roomId, "roomId");
+    const existing = this.rooms.get(roomId);
+    if (!existing) return this.createRoom(input);
+    const hostId = requiredText(input.hostId, "hostId");
+    const hostSessionId = requiredText(input.hostSessionId, "hostSessionId");
+    if (existing.room.hostId !== hostId || existing.room.hostSessionId !== hostSessionId) {
+      throw new CollabError("ACTION_FORBIDDEN", "room is bound to a different Host session", { roomId });
+    }
+    const title = requiredText(input.title, "title");
+    if (existing.room.title !== title) {
+      existing.room.title = title;
+      existing.room.revision += 1;
+      this.emit();
+    }
+    return copy(existing.room);
   }
 
   getRoom(roomId: string): Room {
@@ -123,6 +148,7 @@ export class RoomStore {
     if (member.role !== role) {
       member.role = role;
       record.room.revision += 1;
+      this.emit();
     }
     return copy(member);
   }
@@ -140,6 +166,7 @@ export class RoomStore {
       member.status = status;
       member.revokedAt = status === "removed" ? now : undefined;
       record.room.revision += 1;
+      this.emit();
     }
     return copy(member);
   }
@@ -150,6 +177,7 @@ export class RoomStore {
     if (record.room.state !== state) {
       record.room.state = state;
       record.room.revision += 1;
+      this.emit();
     }
     return copy(record.room);
   }
@@ -199,7 +227,12 @@ export class RoomStore {
     };
     record.members.set(memberId, member);
     record.room.revision += 1;
+    this.emit();
     return copy(member);
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) listener();
   }
 
   private record(roomId: string): RoomRecord {
