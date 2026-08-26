@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings } from "./settings-shared.js";
 import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
+import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
@@ -37,7 +38,7 @@ function useGateway(port: DshCollabSettingsPort | undefined): DshCollabGatewayRu
 }
 
 /** The task-oriented contents of the Collab settings card. */
-export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort }): ReactNode {
+export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
   const initial = useMemo<DshCollabSettingsSnapshot>(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
   const [saved, setSaved] = useState(initial);
   const [connectionMethod, setConnectionMethod] = useState<ConnectionMethod>(() => connectionMethodFor(initial));
@@ -106,9 +107,9 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
       const committed = port.getSnapshot();
       setSaved(committed);
       resetDraft(committed);
-      setNotice({ tone: "success", message: gateway.status === "running" ? "Settings saved. Stop and restart the Gateway to apply them." : "Settings saved. They will be used the next time the Gateway starts." });
+      setNotice({ tone: "success", message: t(gateway.status === "running" ? "settings.savedRestartNotice" : "settings.savedNextStartNotice") });
     } catch (cause) {
-      setNotice({ tone: "error", message: errorMessage(cause, "Unable to save collaboration settings") });
+      setNotice({ tone: "error", message: errorMessage(cause, t("settings.saveError")) });
     } finally {
       setBusy(undefined);
     }
@@ -117,50 +118,50 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   const inputClass = css.input;
   return (
     <div className={css.body} data-settings-namespace="dsh-collab">
-      {!writable && port ? <p className={css.readOnly} role="status">Collaboration settings are read-only in this DSH profile.</p> : null}
+      {!writable && port ? <p className={css.readOnly} role="status">{t("settings.readOnly")}</p> : null}
 
       <form className={css.section} onSubmit={(event) => { void save(event); }}>
         <div className={css.sectionHead}>
-          <div><h3>Collab Gateway</h3><p>Configure how invited people can reach the Gateway when you explicitly start it.</p></div>
-          {dirty ? <span className={css.pending}>Unsaved</span> : null}
+          <div><h3>{t("settings.gatewayTitle")}</h3><p>{t("settings.gatewayDescription")}</p></div>
+          {dirty ? <span className={css.pending}>{t("settings.unsaved")}</span> : null}
         </div>
-        <Field id="collab-connection-method" label="Connection method" hint="Use a private network directly, or provide a secure WSS address that forwards to this Host.">
+        <Field id="collab-connection-method" label={t("settings.connectionMethod")} hint={t("settings.connectionMethodHint")}>
           <select id="collab-connection-method" name="connectionMethod" className={inputClass} value={connectionMethod} onChange={(event) => {
             const next = event.target.value as ConnectionMethod;
             setConnectionMethod(next);
             if (next === "custom-wss" && !advertisedEndpoint.trim().startsWith("wss://")) setAdvertisedEndpoint("");
           }} disabled={configurationDisabled}>
-            <option value="unconfigured" disabled>Not configured</option>
-            <option value="private-network">Private network</option>
-            <option value="custom-wss">Custom WSS endpoint</option>
+            <option value="unconfigured" disabled>{t("settings.notConfigured")}</option>
+            <option value="private-network">{t("settings.privateNetwork")}</option>
+            <option value="custom-wss">{t("settings.customWss")}</option>
           </select>
         </Field>
         {connectionMethod === "private-network" ? <>
-          <Field id="collab-private-address" label="Private address" hint="Use the private IP that other devices can reach. Collab selects and remembers an available Gateway port automatically.">
+          <Field id="collab-private-address" label={t("settings.privateAddress")} hint={t("settings.privateAddressHint")}>
             <input id="collab-private-address" name="privateAddress" className={inputClass} type="text" value={privateAddress} onChange={(event) => { setPrivateAddress(event.target.value); }} placeholder="192.168.1.20" disabled={configurationDisabled} />
           </Field>
-          <Field id="collab-derived-endpoint" label="Invitation endpoint" hint="The /collab path is fixed for private-network rooms.">
+          <Field id="collab-derived-endpoint" label={t("settings.invitationEndpoint")} hint={t("settings.invitationEndpointHint")}>
             <input id="collab-derived-endpoint" name="derivedEndpoint" className={inputClass} type="text" value={privateEndpoint} readOnly aria-readonly="true" />
           </Field>
         </> : null}
-        {connectionMethod === "custom-wss" ? <Field id="collab-address" label="Custom WSS endpoint" hint="Enter the secure endpoint that forwards to this Host Gateway.">
+        {connectionMethod === "custom-wss" ? <Field id="collab-address" label={t("settings.customWss")} hint={t("settings.customWssHint")}>
           <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder="wss://collab.example.com/collab" disabled={configurationDisabled} />
         </Field> : null}
-        {exposeMode === "network" ? <p className={css.warning} role="status"><strong>Private network exposure</strong><span>Only share invitations with people you trust. Room tokens still gate access.</span></p> : null}
+        {exposeMode === "network" ? <p className={css.warning} role="status"><strong>{t("settings.privateExposure")}</strong><span>{t("settings.privateExposureHint")}</span></p> : null}
         <details className={css.details}>
-          <summary>Room safety and limits</summary>
-          <Field id="collab-token-ttl" label="Room token lifetime (ms)" hint="Short-lived authorization issued after joining."><input id="collab-token-ttl" name="tokenTtlMs" className={inputClass} type="text" inputMode="numeric" value={tokenTtlMs} onChange={(event) => { setTokenTtlMs(event.target.value); }} disabled={configurationDisabled} /></Field>
-          <Field id="collab-approval" label="Tool approvals" hint="Participants can never answer Host Agent approvals."><select id="collab-approval" name="approvalPolicy" className={inputClass} value={approvalPolicy} onChange={(event) => { setApprovalPolicy(event.target.value as "host-only" | "disabled"); }} disabled={configurationDisabled}><option value="host-only">Host only</option><option value="disabled">Disabled</option></select></Field>
+          <summary>{t("settings.safety")}</summary>
+          <Field id="collab-token-ttl" label={t("settings.tokenLifetime")} hint={t("settings.tokenLifetimeHint")}><input id="collab-token-ttl" name="tokenTtlMs" className={inputClass} type="text" inputMode="numeric" value={tokenTtlMs} onChange={(event) => { setTokenTtlMs(event.target.value); }} disabled={configurationDisabled} /></Field>
+          <Field id="collab-approval" label={t("settings.toolApprovals")} hint={t("settings.toolApprovalsHint")}><select id="collab-approval" name="approvalPolicy" className={inputClass} value={approvalPolicy} onChange={(event) => { setApprovalPolicy(event.target.value as "host-only" | "disabled"); }} disabled={configurationDisabled}><option value="host-only">{t("settings.hostOnly")}</option><option value="disabled">{t("settings.disabled")}</option></select></Field>
           <div className={css.limitGrid}>
-            <Field id="collab-members" label="Maximum members" hint="Active room members."><input id="collab-members" name="maxMembers" className={inputClass} type="text" inputMode="numeric" value={maxMembers} onChange={(event) => { setMaxMembers(event.target.value); }} disabled={configurationDisabled} /></Field>
-            <Field id="collab-message-bytes" label="Maximum message bytes" hint="Per submitted message."><input id="collab-message-bytes" name="maxMessageBytes" className={inputClass} type="text" inputMode="numeric" value={maxMessageBytes} onChange={(event) => { setMaxMessageBytes(event.target.value); }} disabled={configurationDisabled} /></Field>
-            <Field id="collab-queue" label="Maximum Agent queue" hint="Waiting DSH requests."><input id="collab-queue" name="maxQueue" className={inputClass} type="text" inputMode="numeric" value={maxQueue} onChange={(event) => { setMaxQueue(event.target.value); }} disabled={configurationDisabled} /></Field>
+            <Field id="collab-members" label={t("settings.maximumMembers")} hint={t("settings.maximumMembersHint")}><input id="collab-members" name="maxMembers" className={inputClass} type="text" inputMode="numeric" value={maxMembers} onChange={(event) => { setMaxMembers(event.target.value); }} disabled={configurationDisabled} /></Field>
+            <Field id="collab-message-bytes" label={t("settings.maximumMessageBytes")} hint={t("settings.maximumMessageBytesHint")}><input id="collab-message-bytes" name="maxMessageBytes" className={inputClass} type="text" inputMode="numeric" value={maxMessageBytes} onChange={(event) => { setMaxMessageBytes(event.target.value); }} disabled={configurationDisabled} /></Field>
+            <Field id="collab-queue" label={t("settings.maximumQueue")} hint={t("settings.maximumQueueHint")}><input id="collab-queue" name="maxQueue" className={inputClass} type="text" inputMode="numeric" value={maxQueue} onChange={(event) => { setMaxQueue(event.target.value); }} disabled={configurationDisabled} /></Field>
           </div>
         </details>
         <div className={css.formFooter}>
-          <span>{gateway.status === "running" ? "Stop and restart the Gateway to apply changes." : "Used the next time the Gateway starts."}</span>
-          <button type="button" className={css.secondaryButton} onClick={() => { resetDraft(); }} disabled={!dirty || busy !== undefined}>Discard</button>
-          <button type="submit" className={css.primaryButton} disabled={!writable || !dirty || busy !== undefined}>{busy === "save" ? "Saving…" : "Save"}</button>
+          <span>{t(gateway.status === "running" ? "settings.restartToApply" : "settings.nextStart")}</span>
+          <button type="button" className={css.secondaryButton} onClick={() => { resetDraft(); }} disabled={!dirty || busy !== undefined}>{t("settings.discard")}</button>
+          <button type="submit" className={css.primaryButton} disabled={!writable || !dirty || busy !== undefined}>{t(busy === "save" ? "settings.saving" : "settings.save")}</button>
         </div>
       </form>
 
@@ -170,15 +171,15 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
 }
 
 /** Collapsible list item matching DSH's official plugin-settings card chrome. */
-export function DshCollabSettingsCard({ port }: { port?: DshCollabSettingsPort }): ReactNode {
+export function DshCollabSettingsCard({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
   const [open, setOpen] = useState(false);
   return (
     <li className={open ? `${css.card} ${css.cardOpen}` : css.card} data-collab-settings-card="true" data-settings-namespace="dsh-collab">
-      <button type="button" className={css.cardHeader} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"}: dsh-collab`} onClick={() => { setOpen(!open); }}>
-        <span className={css.cardTitle}><strong>dsh-collab</strong><span>Configure Gateway connectivity and room limits</span></span>
+      <button type="button" className={css.cardHeader} aria-expanded={open} aria-label={`${t(open ? "settings.collapse" : "settings.expand")}: dsh-collab`} onClick={() => { setOpen(!open); }}>
+        <span className={css.cardTitle}><strong>dsh-collab</strong><span>{t("settings.cardDescription")}</span></span>
         <span className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron} aria-hidden="true">⌄</span>
       </button>
-      {open ? <DshCollabSettingsPanel port={port} /> : null}
+      {open ? <DshCollabSettingsPanel port={port} t={t} /> : null}
     </li>
   );
 }

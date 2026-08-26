@@ -9,7 +9,7 @@ const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Releas
 describe("real DSH client slot adapter", () => {
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
-    expect(inject).toEqual(["slots", "settingsScope", "connection", "sessions"]);
+    expect(inject).toEqual(["slots", "settingsScope", "connection", "sessions", "locale"]);
   });
 
   it("starts and stops the Host Gateway only through the official Connection RPC", async () => {
@@ -134,11 +134,11 @@ describe("real DSH client slot adapter", () => {
     const sessionRegistration = registrations.find((entry) => entry.name === "conversation.input.dock")?.options;
     expect((sessionRegistration?.inject as (sessionId: string) => unknown)("session-current")).toEqual({ collabSessionId: "session-current" });
     expect(registrations).toEqual([
-      { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5 }) },
-      { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20 }) },
-      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10 }) },
-      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-participant", order: 20 }) },
-      { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab" }) },
+      { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5, locale: "dsh-collab" }) },
+      { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20, locale: "dsh-collab" }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10, locale: "dsh-collab" }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-participant", order: 20, locale: "dsh-collab" }) },
+      { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab", locale: "dsh-collab" }) },
     ]);
     expect(context.slots.inject).toHaveBeenCalledWith("conversation.input.dock", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("sidebar.footer.action", expect.any(Function));

@@ -9,6 +9,7 @@ describe("dsh package manifest", () => {
     expect(manifest.name).toBe("dsh-collab");
     expect(manifest.exports["./client"]).toBeDefined();
     expect(manifest.dsh.client.platform).toBe("web");
+    expect(manifest.dsh.client.inject).toContain("@deepseek-ai/dsh-client-locale");
     expect(manifest.dsh.client.inject).not.toContain("@deepseek-ai/dsh-client-ui-slots");
     expect(manifest.dsh.bundle.patch).toBe("./cordis.patch.yml");
     expect(() => validateDshCollabManifest(manifest)).not.toThrow();
