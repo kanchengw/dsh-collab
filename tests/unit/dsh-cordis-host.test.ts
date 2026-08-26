@@ -110,7 +110,7 @@ describe("Cordis Host mount", () => {
       ...noPersistence,
     });
     await waitUntilListening(gatewayPort);
-    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ appliedGateway: persisted.gateway }));
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ gateway: persisted.gateway, appliedGateway: persisted.gateway }));
 
     try {
       const bootstrap = await fetch(`http://127.0.0.1:${String(gatewayPort)}/collab/v1/rooms/room-1/bootstrap`);

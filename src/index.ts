@@ -20,6 +20,7 @@ export * from "./ui.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
+import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -125,7 +126,11 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
   }
   if (context.inject) registerDshCollabSettings(context, config, (settings, scope) => {
     mountConfiguredHost(context, applyPersistedSettings(config, settings), (gatewayPort) => {
-      void scope.update({ appliedGateway: { ...settings.gateway, gatewayPort } }).catch((error: unknown) => console.warn("dsh-collab applied Gateway state save failed", error));
+      const advertisedEndpoint = settings.gateway.exposeMode === "network"
+        ? privateGatewayEndpoint(privateAddressFromGatewayEndpoint(settings.gateway.advertisedEndpoint), gatewayPort)
+        : settings.gateway.advertisedEndpoint;
+      const appliedGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint };
+      void scope.update({ gateway: appliedGateway, appliedGateway }).catch((error: unknown) => console.warn("dsh-collab applied Gateway state save failed", error));
     });
   });
   else mountConfiguredHost(context, config);

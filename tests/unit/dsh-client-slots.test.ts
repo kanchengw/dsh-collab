@@ -42,17 +42,20 @@ describe("real DSH client slot adapter", () => {
     expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
   });
 
-  it("renders separate Host configuration and Participant invitation flows", () => {
+  it("renders Host connectivity and Participant join without session actions in Settings", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() } }));
     expect(html).toContain('data-settings-namespace="dsh-collab"');
     expect(html).toContain("Private network exposure");
     expect(html).toContain("dedicated Collab Gateway");
     expect(html).not.toContain('name="gatewayHost"');
-    expect(html).toContain('name="gatewayPort"');
+    expect(html).not.toContain('name="gatewayPort"');
     expect(html).toContain('name="connectionMethod"');
     expect(html).not.toContain("This device only");
-    expect(html).toContain('name="advertisedEndpoint"');
-    expect(html).toContain('name="hostInvitationOutput"');
+    expect(html).toContain('name="privateAddress"');
+    expect(html).toContain('name="derivedEndpoint"');
+    expect(html).not.toContain('name="hostInvitationOutput"');
+    expect(html).not.toContain("Open Host room");
+    expect(html).not.toContain("Create invitation");
     expect(html).toContain('name="participantInvitation"');
     expect(html).not.toContain('name="participantGatewayUrl"');
     expect(html).not.toContain('name="inviteToken"');

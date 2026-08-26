@@ -116,6 +116,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     gateway,
     host: options.host,
     port: options.port,
+    ...(options.port === 0 ? {} : { portScan: { start: 4310, end: 4399 } }),
     authenticate: (input) => authenticateCollabRequest(input, {
       hostPrincipalId: options.hostId,
       allowLoopbackPrincipal: options.allowLoopbackPrincipal ?? (options.host ?? "127.0.0.1") === "127.0.0.1",

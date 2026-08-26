@@ -60,3 +60,18 @@ export function normalizeAdvertisedGatewayEndpoint(value: string, exposeMode: "l
   if (exposeMode === "loopback" && url.protocol === "ws:" && !loopback) throw new Error("advertisedEndpoint cannot use a LAN address in loopback mode");
   return normalized;
 }
+
+export function privateGatewayEndpoint(address: string, port: number): string {
+  const host = address.trim().replace(/^\[|\]$/g, "");
+  if (host === "") throw new Error("privateAddress must not be blank");
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("gatewayPort must be between 1 and 65535");
+  const authority = host.includes(":") ? `[${host}]` : host;
+  return normalizeAdvertisedGatewayEndpoint(`ws://${authority}:${String(port)}/collab`, "network");
+}
+
+export function privateAddressFromGatewayEndpoint(endpoint: string): string {
+  if (endpoint.trim() === "") return "";
+  const url = new URL(normalizeAdvertisedGatewayEndpoint(endpoint, "network"));
+  if (url.protocol !== "ws:") throw new Error("private network endpoint must use ws");
+  return url.hostname.replace(/^\[|\]$/g, "");
+}

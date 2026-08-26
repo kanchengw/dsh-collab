@@ -9,8 +9,8 @@ describe("collab settings", () => {
     expect(html).toContain('data-settings-namespace="collab"');
     expect(html).toContain("Host gateway");
     expect(html).toContain("Invitation address");
-    expect(html).toContain('name="gatewayPort"');
-    expect(html).toContain('name="advertisedEndpoint"');
+    expect(html).not.toContain('name="gatewayPort"');
+    expect(html).not.toContain('name="advertisedEndpoint"');
     expect(html).toContain("Not configured");
     expect(html).not.toContain(">Loopback<");
     expect(html).not.toContain("participantGatewayUrl");

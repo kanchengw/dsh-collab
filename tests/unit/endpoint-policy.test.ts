@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gatewayHttpUrl, normalizeGatewayEndpoint } from "../../src/endpoint-policy.js";
+import { gatewayHttpUrl, normalizeGatewayEndpoint, privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "../../src/endpoint-policy.js";
 
 describe("Collab Gateway endpoint policy", () => {
   it("allows insecure WebSocket only for explicit local and private addresses", () => {
@@ -39,5 +39,12 @@ describe("Collab Gateway endpoint policy", () => {
       "wss://collab.example/collab#fragment",
       "wss://collab.example/not-collab",
     ]) expect(() => normalizeGatewayEndpoint(endpoint)).toThrow("gatewayEndpoint");
+  });
+
+  it("derives a fixed private-network endpoint from address and selected port", () => {
+    expect(privateGatewayEndpoint("192.168.1.20", 4312)).toBe("ws://192.168.1.20:4312/collab");
+    expect(privateGatewayEndpoint("fd12:3456::8", 4313)).toBe("ws://[fd12:3456::8]:4313/collab");
+    expect(privateAddressFromGatewayEndpoint("ws://192.168.1.20:4312/collab")).toBe("192.168.1.20");
+    expect(() => privateGatewayEndpoint("8.8.8.8", 4312)).toThrow("wss");
   });
 });

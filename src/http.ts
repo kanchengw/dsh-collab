@@ -73,6 +73,7 @@ export interface CollabHttpOptions {
   gateway: CollabGateway;
   host?: "127.0.0.1" | "0.0.0.0";
   port?: number;
+  portScan?: { start: number; end: number };
   maxBodyBytes?: number;
   requestIdFactory?: () => string;
   authenticate?: CollabAuthenticator;
@@ -203,6 +204,10 @@ export function createCollabHttpServer(options: CollabHttpOptions): CollabHttpSe
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw invalidInput("port must be between 0 and 65535", { port });
+  const scan = options.portScan;
+  if (scan && (!Number.isSafeInteger(scan.start) || !Number.isSafeInteger(scan.end) || scan.start < 1 || scan.end > 65535 || scan.start > scan.end)) {
+    throw invalidInput("portScan must be a valid bounded port range");
+  }
   let listeningPort = 0;
   const handler = createCollabHttpHandler(options);
   const server = createServer((request, response) => { void handler(request, response); });
@@ -214,26 +219,35 @@ export function createCollabHttpServer(options: CollabHttpOptions): CollabHttpSe
     },
     async listen(): Promise<number> {
       if (server.listening) return listeningPort;
-      await new Promise<void>((resolve, reject) => {
-        const onError = (error: Error): void => {
-          server.off("listening", onListening);
-          reject(error);
-        };
-        const onListening = (): void => {
-          server.off("error", onError);
+      const candidates = port === 0 || !scan
+        ? [port]
+        : [port, ...Array.from({ length: scan.end - scan.start + 1 }, (_, index) => scan.start + index).filter((candidate) => candidate !== port)];
+      let lastError: Error | undefined;
+      for (const candidate of candidates) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const onError = (error: Error): void => {
+              server.off("listening", onListening);
+              reject(error);
+            };
+            const onListening = (): void => {
+              server.off("error", onError);
+              resolve();
+            };
+            server.once("error", onError);
+            server.once("listening", onListening);
+            server.listen(candidate, host);
+          });
           const address = server.address();
-          if (!address || typeof address === "string") {
-            reject(new Error("HTTP server did not expose a TCP address"));
-            return;
-          }
+          if (!address || typeof address === "string") throw new Error("HTTP server did not expose a TCP address");
           listeningPort = address.port;
-          resolve();
-        };
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(port, host);
-      });
-      return listeningPort;
+          return listeningPort;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error("Gateway failed to listen");
+          if ((error as NodeJS.ErrnoException)?.code !== "EADDRINUSE") throw error;
+        }
+      }
+      throw lastError ?? new Error("No Gateway port is available");
     },
     async close(): Promise<void> {
       if (!server.listening) return;

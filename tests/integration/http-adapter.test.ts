@@ -1,3 +1,4 @@
+import { createServer as createTcpServer, type Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
@@ -7,11 +8,30 @@ import { RoomStore } from "../../src/room.js";
 import type { HostAgentPort } from "../../src/types.js";
 
 let server: CollabHttpServer | undefined;
+let blocker: Server | undefined;
 
 afterEach(async () => {
   await server?.close();
   server = undefined;
+  await new Promise<void>((resolve, reject) => blocker?.listening ? blocker.close((error) => error ? reject(error) : resolve()) : resolve());
+  blocker = undefined;
 });
+
+async function consecutiveFreePorts(): Promise<[number, number]> {
+  for (let first = 50_000; first < 51_000; first += 2) {
+    const left = createTcpServer();
+    const right = createTcpServer();
+    try {
+      await new Promise<void>((resolve, reject) => { left.once("error", reject); left.listen(first, "127.0.0.1", resolve); });
+      await new Promise<void>((resolve, reject) => { right.once("error", reject); right.listen(first + 1, "127.0.0.1", resolve); });
+      await Promise.all([left, right].map((item) => new Promise<void>((resolve) => item.close(() => resolve()))));
+      return [first, first + 1];
+    } catch {
+      await Promise.all([left, right].map((item) => new Promise<void>((resolve) => item.listening ? item.close(() => resolve()) : resolve())));
+    }
+  }
+  throw new Error("No consecutive test ports are available");
+}
 
 function setup() {
   const rooms = new RoomStore();
@@ -35,6 +55,19 @@ async function json(response: Response): Promise<Record<string, any>> {
 }
 
 describe("localhost HTTP adapter", () => {
+  it("selects the first available port in the configured bounded range", async () => {
+    const [preferred, fallback] = await consecutiveFreePorts();
+    blocker = createTcpServer();
+    await new Promise<void>((resolve, reject) => { blocker!.once("error", reject); blocker!.listen(preferred, "127.0.0.1", resolve); });
+    server = createCollabHttpServer({
+      gateway: setup(),
+      port: preferred,
+      portScan: { start: preferred, end: fallback },
+    });
+
+    await expect(server.listen()).resolves.toBe(fallback);
+  });
+
   it("mounts the public route, preserves request ids, and forwards gateway responses", async () => {
     let remoteAddress: string | undefined;
     server = createCollabHttpServer({
