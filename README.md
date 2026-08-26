@@ -8,7 +8,7 @@
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
-- Namespaced settings UI (`src/settings.ts`) controls the dedicated Host Gateway bind mode, port, invitation address and room safety, with loopback defaults and a trusted-network warning. Participants get their remote endpoint from the invitation instead of persistent configuration.
+- Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers two released connection methods: direct `Private network` access or a user-supplied `Custom WSS endpoint`. Participants get their remote endpoint from the invitation instead of persistent configuration.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
 - After the first invite is accepted, the Participant's own DSH stores one hidden resume record and automatically exchanges it for a fresh room token after either DSH restarts. Opening a local Host room clears that remote Participant role.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
@@ -26,6 +26,8 @@ directly and keeps all same-machine isolation under `e2e/`.
 The in-process Collab Gateway is the application service owned by this package. It listens on its own configured host/port, serves only `/collab`, authenticates invite and room tokens, enforces room permissions, manages approvals, appends the event ledger and queues the one Host Agent. It never serves the DSH UI or general DSH APIs.
 
 A reverse proxy/tunnel is optional and user-supplied only when the Host wants an external `wss://` endpoint. It terminates TLS and forwards HTTP plus WebSocket upgrades to the dedicated Gateway. It is not needed for the LAN MVP, is not a replacement for the Collab Gateway, and is not provisioned by this package.
+
+Same-device local-only collaboration is not a released connection mode. A fresh install binds the Gateway to loopback as a safe internal state, but cannot create an invitation until the Owner chooses `Private network` or supplies a `Custom WSS endpoint`. Same-machine multi-DSH accommodations remain under `e2e/` only.
 
 Participant identity is first bound by possession of a valid one-time invite; subsequent requests use the issued room token. Optional trusted-proxy identity headers remain a deployment extension, but direct clients cannot self-assert them.
 

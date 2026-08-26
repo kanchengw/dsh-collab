@@ -49,7 +49,8 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain("dedicated Collab Gateway");
     expect(html).not.toContain('name="gatewayHost"');
     expect(html).toContain('name="gatewayPort"');
-    expect(html).toContain('name="exposeMode"');
+    expect(html).toContain('name="connectionMethod"');
+    expect(html).not.toContain("This device only");
     expect(html).toContain('name="advertisedEndpoint"');
     expect(html).toContain('name="hostInvitationOutput"');
     expect(html).toContain('name="participantInvitation"');

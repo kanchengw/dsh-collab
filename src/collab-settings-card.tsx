@@ -4,6 +4,12 @@ import type { DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-cli
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
+type ConnectionMethod = "unconfigured" | "private-network" | "custom-wss";
+
+function connectionMethodFor(settings: DshCollabSettingsSnapshot): ConnectionMethod {
+  if (settings.exposeMode === "network") return "private-network";
+  return settings.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
+}
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback;
@@ -50,7 +56,7 @@ function RoleStatus({ port }: { port?: DshCollabSettingsPort }): ReactNode {
 export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort }): ReactNode {
   const initial = useMemo<DshCollabSettingsSnapshot>(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
   const [saved, setSaved] = useState(initial);
-  const [exposeMode, setExposeMode] = useState(initial.exposeMode);
+  const [connectionMethod, setConnectionMethod] = useState<ConnectionMethod>(() => connectionMethodFor(initial));
   const [gatewayPort, setGatewayPort] = useState(String(initial.gatewayPort));
   const [advertisedEndpoint, setAdvertisedEndpoint] = useState(initial.advertisedEndpoint);
   const [tokenTtlMs, setTokenTtlMs] = useState(String(initial.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
@@ -67,7 +73,7 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   const configurationDisabled = !writable || busy !== undefined;
 
   const resetDraft = (snapshot = saved): void => {
-    setExposeMode(snapshot.exposeMode);
+    setConnectionMethod(connectionMethodFor(snapshot));
     setGatewayPort(String(snapshot.gatewayPort));
     setAdvertisedEndpoint(snapshot.advertisedEndpoint);
     setTokenTtlMs(String(snapshot.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
@@ -83,6 +89,7 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
     resetDraft(snapshot);
   }), [port]);
 
+  const exposeMode: "loopback" | "network" = connectionMethod === "private-network" ? "network" : "loopback";
   const dirty = exposeMode !== saved.exposeMode
     || gatewayPort !== String(saved.gatewayPort)
     || advertisedEndpoint !== saved.advertisedEndpoint
@@ -96,6 +103,7 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
     || appliedGateway.gatewayPort !== saved.gatewayPort
     || appliedGateway.exposeMode !== saved.exposeMode
     || appliedGateway.advertisedEndpoint !== saved.advertisedEndpoint;
+  const connectionConfigured = connectionMethod !== "unconfigured" && advertisedEndpoint.trim() !== "";
 
   const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -141,12 +149,11 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
   };
 
   const createInvitation = async (): Promise<void> => {
-    if (!port?.createInvite || dirty || gatewayPendingRestart) return;
+    if (!port?.createInvite || dirty || gatewayPendingRestart || appliedGateway.advertisedEndpoint === "") return;
     setBusy("invite");
     setNotice(undefined);
     try {
-      const endpoint = appliedGateway.advertisedEndpoint || `ws://127.0.0.1:${String(appliedGateway.gatewayPort)}/collab`;
-      const result = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint: endpoint });
+      const result = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint: appliedGateway.advertisedEndpoint });
       setHostInvitation(result.invitation);
       setNotice({ tone: "success", message: "Invitation created. It can be used once during the next hour." });
     } catch (cause) {
@@ -192,17 +199,22 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
           <div><h3>Host a room</h3><p>Run the only Agent and Gateway on this DSH.</p></div>
           {dirty ? <span className={css.pending}>Unsaved</span> : null}
         </div>
-        <Field id="collab-exposure" label="Who can connect" hint="Private network mode accepts direct connections; public addresses require your own WSS endpoint.">
-          <select id="collab-exposure" name="exposeMode" className={inputClass} value={exposeMode} onChange={(event) => { setExposeMode(event.target.value as "loopback" | "network"); }} disabled={configurationDisabled}>
-            <option value="loopback">This device only</option>
-            <option value="network">Private network</option>
+        <Field id="collab-connection-method" label="Connection method" hint="Use a private network directly, or provide a secure WSS address that forwards to this Host.">
+          <select id="collab-connection-method" name="connectionMethod" className={inputClass} value={connectionMethod} onChange={(event) => {
+            const next = event.target.value as ConnectionMethod;
+            setConnectionMethod(next);
+            if (next === "custom-wss" && !advertisedEndpoint.trim().startsWith("wss://")) setAdvertisedEndpoint("");
+          }} disabled={configurationDisabled}>
+            <option value="unconfigured" disabled>Not configured</option>
+            <option value="private-network">Private network</option>
+            <option value="custom-wss">Custom WSS endpoint</option>
           </select>
         </Field>
         <Field id="collab-port" label="Gateway port" hint="The dedicated Collab Gateway never exposes the DSH UI or workspace APIs.">
           <input id="collab-port" name="gatewayPort" className={inputClass} type="text" inputMode="numeric" value={gatewayPort} onChange={(event) => { setGatewayPort(event.target.value); }} disabled={configurationDisabled} />
         </Field>
-        <Field id="collab-address" label="Invitation address" hint={exposeMode === "network" ? "Enter this Host's reachable private ws:// address, or an external wss:// endpoint." : "Optional. Leave blank for this device, or enter an external wss:// endpoint."}>
-          <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder={exposeMode === "network" ? "ws://192.168.1.20:4310/collab" : "wss://collab.example.com/collab"} disabled={configurationDisabled} />
+        <Field id="collab-address" label="Invitation address" hint={connectionMethod === "private-network" ? "Enter this Host's reachable private ws:// address." : connectionMethod === "custom-wss" ? "Enter the public or private wss:// address you configured." : "Choose a connection method first."}>
+          <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder={connectionMethod === "private-network" ? "ws://192.168.1.20:4310/collab" : "wss://collab.example.com/collab"} disabled={configurationDisabled || connectionMethod === "unconfigured"} />
         </Field>
         {exposeMode === "network" ? <p className={css.warning} role="status"><strong>Private network exposure</strong><span>Only share invitations with people you trust. Room tokens still gate access.</span></p> : null}
         <details className={css.details}>
@@ -227,7 +239,7 @@ export function DshCollabSettingsPanel({ port }: { port?: DshCollabSettingsPort 
         {gatewayPendingRestart ? <p className={css.warning} role="status">Restart DSH before creating an invitation with the saved Gateway settings.</p> : null}
         <div className={css.actionRow}>
           <button type="button" className={css.secondaryButton} onClick={() => { void openHostRoom(); }} disabled={!port?.bootstrap || busy !== undefined}>{busy === "host" ? "Opening…" : "Open Host room"}</button>
-          <button type="button" className={css.primaryButton} onClick={() => { void createInvitation(); }} disabled={!port?.createInvite || dirty || gatewayPendingRestart || busy !== undefined || (exposeMode === "network" && advertisedEndpoint.trim() === "")}>{busy === "invite" ? "Creating…" : "Create invitation"}</button>
+          <button type="button" className={css.primaryButton} onClick={() => { void createInvitation(); }} disabled={!port?.createInvite || !connectionConfigured || dirty || gatewayPendingRestart || busy !== undefined}>{busy === "invite" ? "Creating…" : "Create invitation"}</button>
         </div>
         <div className={css.invitationOutput}>
           <label className={css.label} htmlFor="collab-host-invitation">Invitation to share</label>

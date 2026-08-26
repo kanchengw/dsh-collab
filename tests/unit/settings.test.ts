@@ -11,6 +11,8 @@ describe("collab settings", () => {
     expect(html).toContain("Invitation address");
     expect(html).toContain('name="gatewayPort"');
     expect(html).toContain('name="advertisedEndpoint"');
+    expect(html).toContain("Not configured");
+    expect(html).not.toContain(">Loopback<");
     expect(html).not.toContain("participantGatewayUrl");
   });
 
