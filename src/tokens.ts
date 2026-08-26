@@ -108,6 +108,19 @@ export class RoomTokenStore {
     return count;
   }
 
+  revokeRoom(roomId: string, now = Date.now()): number {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
+    let count = 0;
+    for (const record of this.tokens.values()) {
+      if (record.claims.roomId === normalizedRoomId && record.revokedAt === undefined) {
+        record.revokedAt = now;
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   revokeDevice(deviceId: string, now = Date.now()): number {
     const normalizedDeviceId = requiredText(deviceId, "deviceId");
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });

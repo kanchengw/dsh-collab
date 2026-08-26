@@ -7,6 +7,31 @@ function response(data: unknown, status = 200): { ok: boolean; status: number; j
 }
 
 describe("browser Gateway client", () => {
+  it("stops sharing without deleting the saved Host room", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/host") && init?.method === "POST") return response({ room: { roomId: "session-current", title: "Room" }, member: { memberId: "host", role: "host" }, roomToken: "token" });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "session-current", title: "Room" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      return response({ sharing: false });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onclose?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket });
+    await client.shareHostRoom({ sessionId: "session-current", title: "Room" });
+    await client.stopSharing("session-current");
+
+    expect(requests.at(-1)).toMatchObject({ url: "http://127.0.0.1:4310/collab/v1/rooms/session-current/host", init: { method: "DELETE" } });
+    expect(client.getSnapshot()).toMatchObject({ connection: "offline" });
+  });
+
   it("shares the exact current DSH session and trimmed Room name", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const fetch: BrowserFetch = async (url, init) => {

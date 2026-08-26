@@ -173,14 +173,14 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
       if (path !== undefined && request.method === "OPTIONS") {
         response.writeHead(204, {
           ...corsHeaders(origin),
-          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
           "access-control-allow-headers": "authorization, content-type, x-request-id",
           "access-control-max-age": "600",
         });
         response.end();
         return;
       }
-      if (path === undefined || (request.method !== "GET" && request.method !== "POST")) {
+      if (path === undefined || (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE")) {
         writeResponse(response, id, notFound(), origin);
         return;
       }

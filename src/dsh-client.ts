@@ -48,6 +48,7 @@ export interface DshCollabSettingsPort {
   save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   shareHostRoom?(input: { sessionId: string; title: string }): Promise<void>;
+  stopSharing?(roomId: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string }, roomId?: string): Promise<{ invitation: string }>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
@@ -258,6 +259,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     },
     bootstrap: actions.bootstrap?.bind(actions),
     shareHostRoom: actions.shareHostRoom?.bind(actions),
+    stopSharing: actions.stopSharing?.bind(actions),
     join: actions.join?.bind(actions),
     createInvite: actions.createInvite?.bind(actions),
     configureGateway: actions.configureGateway?.bind(actions),
@@ -381,7 +383,7 @@ export function DshCollabSessionDock(props: {
   const settings = useSettingsSnapshot(props.settingsPort);
   const [roomName, setRoomName] = useState(props.defaultRoomName);
   const [invitation, setInvitation] = useState("");
-  const [busy, setBusy] = useState<"share" | "invite" | "copy">();
+  const [busy, setBusy] = useState<"share" | "stop" | "invite" | "copy">();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
   useEffect(() => {
     setRoomName(props.defaultRoomName);
@@ -422,6 +424,20 @@ export function DshCollabSessionDock(props: {
       setBusy(undefined);
     }
   };
+  const stopSharing = async (): Promise<void> => {
+    if (!props.settingsPort?.stopSharing) return;
+    setBusy("stop");
+    setNotice(undefined);
+    try {
+      await props.settingsPort.stopSharing(props.sessionId);
+      setInvitation("");
+      setNotice({ tone: "success", text: "Sharing stopped. The room and its history are saved." });
+    } catch (cause) {
+      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : "Unable to stop sharing" });
+    } finally {
+      setBusy(undefined);
+    }
+  };
   const copyInvitation = async (): Promise<void> => {
     setBusy("copy");
     setNotice(undefined);
@@ -446,6 +462,7 @@ export function DshCollabSessionDock(props: {
       ),
       hosted ? createElement("div", { className: roomCss.inviteControls },
         createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void createInvitation(); }, disabled: !props.settingsPort?.createInvite || gatewayEndpoint === "" || busy !== undefined }, busy === "invite" ? "Creating…" : "Create invitation"),
+        createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void stopSharing(); }, disabled: !props.settingsPort?.stopSharing || busy !== undefined }, busy === "stop" ? "Stopping…" : "Stop sharing"),
         gatewayEndpoint === "" ? createElement("span", { className: roomCss.shareHint }, "Configure a Private network or Custom WSS endpoint in Settings to invite people.") : null,
         invitation ? createElement("div", { className: roomCss.invitation },
           createElement("textarea", { name: "hostInvitationOutput", value: invitation, readOnly: true, rows: 3, "aria-label": "Invitation to share", className: roomCss.invitationText }),

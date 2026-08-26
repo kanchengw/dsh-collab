@@ -1,4 +1,5 @@
 export * from "./approvals.js";
+export * from "./active-rooms.js";
 export * from "./audit.js";
 export * from "./room-client.js";
 export * from "./gateway.js";

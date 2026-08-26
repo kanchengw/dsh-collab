@@ -10,6 +10,7 @@ import { RoomStreamHub } from "./stream.js";
 import { CollabStreamUpgrade } from "./upgrade.js";
 import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServer, type HttpHeaders } from "./http.js";
 import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./resume-credentials.js";
+import { ActiveRoomRegistry } from "./active-rooms.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -49,6 +50,7 @@ export interface DshCollabHostRuntime {
   readonly hub: RoomStreamHub;
   readonly upgrade: CollabStreamUpgrade;
   readonly http: CollabHttpServer;
+  readonly activeRooms: ActiveRoomRegistry;
   snapshot(): DshCollabHostRuntimeSnapshot;
   dispose(): Promise<void>;
 }
@@ -89,6 +91,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const approvals = snapshot?.approvals
     ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: snapshot.approvals })
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
+  const activeRooms = new ActiveRoomRegistry();
+  if (!snapshot && options.roomId && options.hostSessionId && options.title) activeRooms.activate(options.roomId);
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
     maxQueuedRequestsPerRoom: options.maxQueue,
@@ -109,13 +113,14 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     hostPrincipalId: options.hostId,
     hostDisplayName: options.hostDisplayName,
     ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
+    activeRooms,
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
     void gateway.dispatcher.processQueue();
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
-  const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits });
+  const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });
   const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });
   const http = createCollabHttpServer({
     gateway,
@@ -133,7 +138,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot() }),
     async dispose(): Promise<void> {
       await upgrade.close();

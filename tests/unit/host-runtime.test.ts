@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
 
 describe("host runtime factory", () => {
+  it("restores Owned rooms as inactive until explicitly shared in this process", async () => {
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: (sessionId: string) => sessionId === "room-1", followup() {}, steer() {}, cancel() {} },
+      now: () => 10,
+    };
+    const first = createDshCollabHostRuntime(options);
+    const snapshot = first.snapshot();
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    expect(await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } })).toMatchObject({ status: 409, body: { error: { code: "ROOM_INACTIVE" } } });
+    const shared = await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Room" } });
+    expect(shared).toMatchObject({ status: 200 });
+    expect(await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } })).toMatchObject({ status: 200 });
+    const frames: unknown[] = [];
+    restored.hub.connect({ connectionId: "connection-1", roomId: "room-1", token: (shared.body as { roomToken: string }).roomToken, onFrame: (frame) => { frames.push(frame); } });
+    expect(await restored.gateway.handle({ method: "DELETE", path: "/v1/rooms/room-1/host", auth: { principalId: "host" } })).toMatchObject({ status: 200, body: { sharing: false } });
+    expect(frames).toContainEqual(expect.objectContaining({ kind: "closed", reason: "room_not_shared" }));
+    expect(await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } })).toMatchObject({ status: 409 });
+    expect(restored.rooms.getRoom("room-1")).toMatchObject({ title: "Room" });
+    await restored.dispose();
+  });
+
   it("creates one room backed by the trusted DSH session service", async () => {
     const runtime = createDshCollabHostRuntime({ roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", sessions: {
       owns: (sessionId) => sessionId === "session-1",
@@ -119,9 +143,9 @@ describe("host runtime factory", () => {
   });
 
   it("exchanges a restored Participant credential for a fresh room token after Host restart", async () => {
-    const tokens = ["invite-secret", "room-token-1", "room-token-2"];
+    const tokens = ["invite-secret", "room-token-1", "host-token-2", "room-token-2"];
     const options = {
-      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",
       sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
       port: 0,
       tokenFactory: () => tokens.shift()!,
@@ -135,7 +159,8 @@ describe("host runtime factory", () => {
     expect(JSON.stringify(snapshot)).not.toContain("resume-secret");
     await runtime.dispose();
 
-    const restored = createDshCollabHostRuntime({ ...options, hostSessionId: "session-2", snapshot });
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Room" } });
     const resumed = await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/resume", body: { credential: "resume-secret" } });
     expect(resumed.status).toBe(200);
     expect(resumed.body).toMatchObject({ member: { memberId: "member-bob" }, roomToken: "room-token-2" });

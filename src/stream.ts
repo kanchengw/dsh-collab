@@ -4,6 +4,7 @@ import { ResourceLimiter } from "./limits.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import type { RoomEvent, StreamFrame } from "./types.js";
+import type { ActiveRoomRegistry } from "./active-rooms.js";
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -33,6 +34,7 @@ export interface StreamConnection {
 export class RoomStreamHub {
   private readonly connections = new Map<string, ConnectionRecord>();
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeActive: (() => void) | undefined;
   private readonly now: () => number;
 
   constructor(private readonly options: {
@@ -41,9 +43,13 @@ export class RoomStreamHub {
     ledger: EventLedger;
     now?: () => number;
     limits?: ResourceLimiter;
+    activeRooms?: ActiveRoomRegistry;
   }) {
     this.now = options.now ?? (() => Date.now());
     this.unsubscribe = options.ledger.subscribe((event) => this.publish(event));
+    this.unsubscribeActive = options.activeRooms?.subscribe((roomId, active) => {
+      if (!active) this.closeRoom(roomId, "room_not_shared");
+    });
   }
 
   connect(input: {
@@ -55,6 +61,7 @@ export class RoomStreamHub {
   }): StreamConnection {
     const connectionId = requiredText(input.connectionId, "connectionId");
     const roomId = requiredText(input.roomId, "roomId");
+    this.options.activeRooms?.requireActive(roomId);
     const afterSeq = input.afterSeq ?? 0;
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
       throw invalidInput("afterSeq must be a non-negative integer", { afterSeq });
@@ -114,7 +121,14 @@ export class RoomStreamHub {
 
   dispose(): void {
     this.unsubscribe();
+    this.unsubscribeActive?.();
     for (const connectionId of [...this.connections.keys()]) this.close(connectionId, "hub_disposed");
+  }
+
+  private closeRoom(roomId: string, reason: string): void {
+    for (const record of [...this.connections.values()]) {
+      if (record.roomId === roomId) this.close(record.connectionId, reason);
+    }
   }
 
   private publish(event: RoomEvent): void {

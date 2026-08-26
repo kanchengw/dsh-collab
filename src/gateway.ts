@@ -8,6 +8,7 @@ import { classifyMessage } from "./messages.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
+import { ActiveRoomRegistry } from "./active-rooms.js";
 import type {
   GatewayRequest,
   GatewayResponse,
@@ -41,6 +42,7 @@ interface GatewayOptions {
   hostPrincipalId?: string;
   hostDisplayName?: string;
   ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
+  activeRooms?: ActiveRoomRegistry;
 }
 
 const MAX_ROOM_TITLE_LENGTH = 80;
@@ -85,7 +87,7 @@ function statusFor(error: CollabError): number {
   if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
   if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
   if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND") return 404;
-  if (error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED") return 409;
+  if (error.code === "ROOM_INACTIVE" || error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED") return 409;
   if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
 }
@@ -139,6 +141,9 @@ export class CollabGateway {
       const roomId = requiredText(segments[2], "roomId");
       const resource = segments[3];
       if (request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
+      if (request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
+      this.options.rooms.getRoom(roomId);
+      this.options.activeRooms?.requireActive(roomId);
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
@@ -228,9 +233,21 @@ export class CollabGateway {
       hostDisplayName: this.options.hostDisplayName ?? "Host",
       now: this.now(),
     });
+    this.options.activeRooms?.activate(roomId);
     const member = this.options.rooms.authorize(roomId, principalId, "read");
     const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
     return { status: 200, body: { room, member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
+  }
+
+  private stopSharing(roomId: string, request: GatewayRequest): GatewayResponse {
+    const principalId = authPrincipal(request);
+    const room = this.options.rooms.getRoom(roomId);
+    if (!this.options.hostPrincipalId || principalId !== this.options.hostPrincipalId || room.hostId !== principalId) {
+      throw new CollabError("ACTION_FORBIDDEN", "only the room Host can stop sharing");
+    }
+    this.options.activeRooms?.deactivate(roomId);
+    this.tokens.revokeRoom(roomId, this.now());
+    return { status: 200, body: { room, sharing: false } };
   }
 
   private resume(roomId: string, request: GatewayRequest): GatewayResponse {

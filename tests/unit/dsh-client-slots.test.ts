@@ -89,6 +89,7 @@ describe("real DSH client slot adapter", () => {
     }));
 
     expect(html).toContain("Create invitation");
+    expect(html).toContain("Stop sharing");
     expect(other).toContain("Share this session");
     expect(other).not.toContain("Create invitation");
   });

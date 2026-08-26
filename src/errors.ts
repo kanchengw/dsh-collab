@@ -2,6 +2,7 @@ export type CollabErrorCode =
   | "INVALID_INPUT"
   | "ROOM_EXISTS"
   | "ROOM_NOT_FOUND"
+  | "ROOM_INACTIVE"
   | "MEMBER_EXISTS"
   | "MEMBER_NOT_FOUND"
   | "MEMBER_INACTIVE"

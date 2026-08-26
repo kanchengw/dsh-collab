@@ -70,6 +70,7 @@ export interface DshBrowserInviteInput {
 export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   bootstrap(roomId?: string): Promise<void>;
   shareHostRoom(input: { sessionId: string; title: string }): Promise<void>;
+  stopSharing(roomId: string): Promise<void>;
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
@@ -152,6 +153,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
   private disposed = false;
+  private manuallyDisconnected = false;
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -214,6 +216,25 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     await this.options.participantPersistence?.clear();
     this.applyRoom(data);
     await this.connect();
+  }
+
+  async stopSharing(roomId: string): Promise<void> {
+    const normalizedRoomId = roomId.trim();
+    if (normalizedRoomId === "") throw new Error("roomId must not be blank");
+    parseEnvelope(await this.request("DELETE", `/v1/rooms/${encodeURIComponent(normalizedRoomId)}/host`, undefined, false, this.hostBase));
+    this.disconnect();
+  }
+
+  disconnect(): void {
+    this.manuallyDisconnected = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.clearHeartbeat();
+    const socket = this.socket;
+    this.socket = undefined;
+    this.token = undefined;
+    socket?.close(1000, "client_disconnected");
+    this.setConnection("offline");
   }
 
   async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
@@ -299,6 +320,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private async connect(): Promise<void> {
+    this.manuallyDisconnected = false;
     if (!this.token) throw new Error("room token is missing");
     const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/snapshot`, undefined, true)) as SnapshotData;
     await this.recoverEvents(snapshot.lastEventSeq);
@@ -369,7 +391,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private scheduleReconnect(): void {
-    if (this.disposed || this.reconnectTimer) return;
+    if (this.disposed || this.manuallyDisconnected || this.reconnectTimer) return;
     if (this.snapshot.role === "participant" && !this.options.participantPersistence?.load()) return;
     const delay = this.reconnectDelayMs;
     this.reconnectTimer = setTimeout(() => {
@@ -461,6 +483,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
   shareHostRoom(input: { sessionId: string; title: string }): Promise<void> { return this.client.shareHostRoom(input); }
+  stopSharing(roomId: string): Promise<void> { return this.client.stopSharing(roomId); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> { return this.client.createInvite(input, roomId); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
