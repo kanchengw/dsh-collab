@@ -32,6 +32,28 @@ describe("real DSH client slot adapter", () => {
     expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
   });
 
+  it("preserves class-backed room actions when adding Gateway controls", async () => {
+    class BrowserSettings {
+      readonly shared: string[] = [];
+
+      getSnapshot() {
+        return { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" };
+      }
+
+      async save(): Promise<void> {}
+
+      async shareHostRoom(input: { sessionId: string }): Promise<void> {
+        this.shared.push(input.sessionId);
+      }
+    }
+    const base = new BrowserSettings();
+    const port = createDshGatewayControlPort(base, { call: vi.fn() });
+
+    await port.shareHostRoom?.({ sessionId: "session-current", title: "Current" });
+
+    expect(base.shared).toEqual(["session-current"]);
+  });
+
   it("renders the native conversation dock with role, connection and target controls", () => {
     const html = renderToStaticMarkup(createElement(DshCollabDock, { fallback: snapshot }));
     expect(html).toContain('data-collab-mode="host"');

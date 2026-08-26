@@ -246,17 +246,16 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     for (const listener of roomListeners) listener();
     return ownedRooms;
   };
-  return {
-    ...base,
+  return Object.assign(base, {
     getGatewaySnapshot: () => gateway,
-    subscribeGateway: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeGateway: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     refreshGateway: () => call("gateway/status"),
     startGateway: async () => { publish({ status: "starting" }); const result = await call("gateway/start"); await refreshOwnedRooms(); return result; },
     stopGateway: async () => { const result = await call("gateway/stop"); await refreshOwnedRooms(); return result; },
     getOwnedRooms: () => ownedRooms,
-    subscribeOwnedRooms: (listener) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
+    subscribeOwnedRooms: (listener: () => void) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
     refreshOwnedRooms,
-  };
+  });
 }
 
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
