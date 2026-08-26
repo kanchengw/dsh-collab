@@ -44,7 +44,7 @@ reverse proxy, public Relay, TLS certificate, or NAT traversal.
 
 ## HTTP requests
 
-Every request uses:
+Authenticated room requests use:
 
 ```text
 X-Request-Id: req_<client-generated-id>
@@ -60,6 +60,7 @@ The current routes are:
 
 | Method | Public path | Meaning |
 | --- | --- | --- |
+| `POST` | `/collab/v1/rooms/:roomId/host` | Authenticated local Host creates, resumes, or renames the exact current DSH session room |
 | `POST` | `/collab/v1/rooms/:roomId/invites` | Host creates an invite |
 | `POST` | `/collab/v1/rooms/:roomId/join` | Participant accepts an invite |
 | `POST` | `/collab/v1/rooms/:roomId/resume` | Participant exchanges a durable resume credential for a new room token |
@@ -69,6 +70,14 @@ The current routes are:
 | `GET` | `/collab/v1/rooms/:roomId/approvals` | Host lists approval projections |
 | `POST` | `/collab/v1/rooms/:roomId/approvals` | Host creates an approval projection |
 | `POST` | `/collab/v1/rooms/:roomId/actions` | Host cancels, manages members or decides an approval |
+
+The `host` request is authenticated by the local Gateway boundary rather than
+an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
+`roomId` must equal `hostSessionId`, the title is trimmed and limited to 80
+characters, and the Host session service must prove that the current DSH
+runtime owns that session. A successful response issues the Host's initial room
+token. `join` authenticates with the one-time invitation, while `resume`
+authenticates with the durable Participant resume credential.
 
 A successful `join` response includes both a short-lived `roomToken` and a
 durable `resumeCredential`. The raw resume credential is returned only once

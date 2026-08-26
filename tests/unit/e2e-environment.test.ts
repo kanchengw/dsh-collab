@@ -21,25 +21,22 @@ describe("isolated two-DSH browser environment", () => {
     expect(assets).not.toMatch(/nginx|127\.0\.0\.2|3182|3183|participantGatewayUrl|trustedProxy|localProxy/i);
   });
 
-  it("prepares two role-neutral clients from one symmetric patch", () => {
+  it("adds only the browser-test directory picker overlay to the released plugin", () => {
     const clientPatch = read("e2e/dsh-client.patch.yml");
     const prepare = read("e2e/prepare.ps1");
     const start = read("e2e/start.ps1");
 
     expect(existsSync(resolve(root, "e2e/dsh-host.patch.yml"))).toBe(false);
     expect(existsSync(resolve(root, "e2e/dsh-participant.patch.yml"))).toBe(false);
-    expect(clientPatch).toContain("hostId: __CLIENT_ID__");
-    expect(clientPatch).toContain("port: __GATEWAY_PORT__");
-    expect(clientPatch).toContain("hostDisplayName: __CLIENT_DISPLAY_NAME__");
-    expect(clientPatch).toContain("allowLoopbackPrincipal: true");
+    expect(clientPatch).not.toContain("collab-host");
+    expect(clientPatch).not.toMatch(/roomId|hostId|hostDisplayName|gatewayPort|__CLIENT_/);
     expect(clientPatch).toContain("id: directory-picker\n  disabled: true");
     expect(clientPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
     expect(clientPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
 
     expect(prepare).toContain('Id = "client-a"');
     expect(prepare).toContain('Id = "client-b"');
-    expect(prepare).toContain("GatewayPort = 4312");
-    expect(prepare).toContain("GatewayPort = 4313");
+    expect(prepare).not.toMatch(/GatewayPort|4312|4313|__GATEWAY_PORT__/);
     expect(prepare).toContain("plugin --profile web add");
     expect(start).toContain('[ValidateSet("A", "B")]');
     expect(start).toContain('A = @{ Home = "client-a"; UiPort = 3082 }');
@@ -53,9 +50,10 @@ describe("isolated two-DSH browser environment", () => {
     const packageJson = JSON.parse(read("package.json")) as { files?: string[] };
 
     expect(settingsPatch).toContain("gatewayHost: 0.0.0.0");
-    expect(settingsPatch).toContain("gatewayPort: __GATEWAY_PORT__");
+    expect(settingsPatch).toContain("gatewayPort: 4310");
     expect(settingsPatch).toContain("exposeMode: network");
-    expect(settingsPatch).toContain("ws://__PRIVATE_ADDRESS__:__GATEWAY_PORT__/collab");
+    expect(settingsPatch).toContain("ws://__PRIVATE_ADDRESS__:4310/collab");
+    expect(settingsPatch).not.toContain("__GATEWAY_PORT__");
     expect(prepare).toContain("dsh-client.settings.patch.yml");
     expect(prepare).toContain("foreach ($client in $clients)");
     expect(prepare).toContain("plugin --profile web add $projectRoot");

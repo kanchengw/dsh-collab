@@ -21,16 +21,19 @@ If it selects the wrong adapter, pass the address explicitly:
 ./e2e/prepare.ps1 -PrivateAddress 192.168.1.20
 ```
 
-Client A's Collab Gateway listens at `0.0.0.0:4312`; Client B's listens at
-`0.0.0.0:4313`. Both advertise their own `ws://<private-ip>:<port>/collab`
-endpoint. These ports identify the two processes only:
+Both profiles start from the released preferred Gateway port `4310`. Start
+Client A first, then Client B. The released runtime claims the first available
+port in `4310-4399`, persists the selected value, and derives each profile's
+`ws://<private-ip>:<selected-port>/collab` endpoint. No port is assigned to a
+role or client identity:
 
 - If A creates a room and invitation, A is that room's Owner and B joins as a Participant.
 - If B creates a room and invitation, B is that room's Owner and A joins as a Participant.
 
 The DSH UI listeners remain loopback at `3082` and `3083` and are never exposed
 by Collab. Generated DSH homes live under `e2e/.state/` and are excluded from
-Git. `dsh-client.patch.yml` and `dsh-client.settings.patch.yml` are rendered for
-both profiles by `prepare.ps1`. Both profiles install the package from the
-project root, so release changes require only rebuilding and rerunning the
-prepare script; there is no copied test source tree.
+Git. The Cordis overlay only replaces the native Windows directory picker for
+browser automation; the settings overlay selects the released Private network
+mode with the same preferred port for both profiles. Both profiles install the
+package from the project root, so release changes require only rebuilding and
+rerunning the prepare script; there is no copied test source tree.

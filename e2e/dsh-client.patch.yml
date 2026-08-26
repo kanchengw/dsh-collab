@@ -1,14 +1,4 @@
-# Symmetric runtime overlay rendered once for each isolated DSH client.
-- id: collab-host
-  config:
-    enabled: true
-    roomId: dsh-room
-    hostId: __CLIENT_ID__
-    allowLoopbackPrincipal: true
-    host: 127.0.0.1
-    port: __GATEWAY_PORT__
-    title: DSH Collaboration
-    hostDisplayName: __CLIENT_DISPLAY_NAME__
+# Browser automation cannot control the Windows native directory picker.
 - id: directory-picker
   disabled: true
 - insert:

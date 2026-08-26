@@ -9,6 +9,7 @@
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
 - Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers two released connection methods: direct `Private network` access or a user-supplied `Custom WSS endpoint`. Participants get their remote endpoint from the invitation instead of persistent configuration.
+- The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. A room is created only when the Owner uses `Share this session` in a real DSH conversation; its room ID is that exact native session ID and its editable Room Name defaults to the DSH conversation title.
 - Host runtime settings now apply token lifetime, member/message/queue limits and approval policy; runtime snapshots restore room, ledger, dispatcher and approval state while short-lived invites and room tokens are reissued after restart.
 - After the first invite is accepted, the Participant's own DSH stores one hidden resume record and automatically exchanges it for a fresh room token after either DSH restarts. Opening a local Host room clears that remote Participant role.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
@@ -62,10 +63,12 @@ For complete browser testing, run `e2e/prepare.ps1`, then start
 `e2e/start.ps1 -Client A` and `e2e/start.ps1 -Client B` in separate terminals.
 They install the same complete plugin through DSH's official profile command,
 use isolated `DSH_HOME` directories, and expose the two DSH UIs at `3082` and
-`3083` while their independent Collab Gateways use `4312` and `4313`. Both
-clients advertise a detected private IPv4 address, so either can own a room and
-invite the other through the released `Private network` path. Ports identify
-processes only; room creation determines Owner/Participant roles. See
+`3083`. Both independent Collab Gateways start from the same released preferred
+port `4310`; the first claims it and the second automatically selects the next
+available port. Both clients advertise a detected private IPv4 address, so
+either can share its current DSH session and invite the other through the
+released `Private network` path. Port selection carries no role or identity.
+See
 [`e2e/README.md`](./e2e/README.md).
 
 ## DSH package shape
@@ -83,9 +86,9 @@ The bundle patch contains one row:
         hostId: local-host
 ```
 
-The package's `dsh.client` declaration supplies the browser face. A DSH profile can install the package with its normal plugin command after `pnpm build`; the Host runtime is created through the public adapter seam (`createDshCollabHostRuntime`) and can be mounted by a profile-specific Host integration that supplies the trusted session service and room/session facts. No separate participant-only package is used.
+The package's `dsh.client` declaration supplies the browser face. A DSH profile can install the package with its normal plugin command after `pnpm build`; the Host runtime is created through the public adapter seam (`createDshCollabHostRuntime`) and receives the trusted session service. The official session-scoped conversation slot passes the current DSH session ID to the browser face, and the Gateway verifies that exact session against the Host's Agent registry before creating or reopening its room. No separate participant-only package is used.
 
-The Host row registers the formal `dsh-collab` settings namespace. Gateway host, port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; one-time invite tokens and short-lived room tokens remain ephemeral. These Gateway settings apply after a DSH restart.
+The Host row registers the formal `dsh-collab` settings namespace. Gateway binding, the auto-selected port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; one-time invite tokens and short-lived room tokens remain ephemeral. Private-network users edit only the reachable private address, while the UI derives the fixed `/collab` endpoint from that address and the persisted runtime-selected port. These Gateway settings apply after a DSH restart.
 
 Participant recovery uses a separate `dsh-collab-participant` settings namespace whose `resume` object is marked hidden in the DSH schema and is never rendered by the Collab settings card. The Participant's own DSH stores the remote endpoint, room/member binding and raw high-entropy resume credential in its local settings file. This is local private state, not Host configuration and not browser `localStorage`. A rejected credential is cleared; a temporary network failure keeps it for the next start. The room owner stores only the credential digest.
 

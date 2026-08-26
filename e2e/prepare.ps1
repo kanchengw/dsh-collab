@@ -7,8 +7,8 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $previousDshHome = [Environment]::GetEnvironmentVariable("DSH_HOME", "Process")
 $clients = @(
-  @{ Id = "client-a"; DisplayName = "Client A"; GatewayPort = 4312 },
-  @{ Id = "client-b"; DisplayName = "Client B"; GatewayPort = 4313 }
+  @{ Id = "client-a" },
+  @{ Id = "client-b" }
 )
 
 function Test-PrivateIpv4([string]$Address) {
@@ -62,11 +62,10 @@ try {
       Pop-Location
     }
 
-    $cordisPatch = $cordisTemplate.Replace("__CLIENT_ID__", $client.Id).Replace("__CLIENT_DISPLAY_NAME__", $client.DisplayName).Replace("__GATEWAY_PORT__", [string]$client.GatewayPort)
     $cordisPath = Join-Path $clientHome "profiles/web/cordis.patch.yml"
-    [System.IO.File]::WriteAllText($cordisPath, $cordisPatch, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($cordisPath, $cordisTemplate, [System.Text.UTF8Encoding]::new($false))
 
-    $settingsPatch = $settingsTemplate.Replace("__PRIVATE_ADDRESS__", $PrivateAddress).Replace("__GATEWAY_PORT__", [string]$client.GatewayPort).Trim()
+    $settingsPatch = $settingsTemplate.Replace("__PRIVATE_ADDRESS__", $PrivateAddress).Trim()
     $settingsPath = Join-Path $clientHome "settings.yaml"
     $beginMarker = "# BEGIN dsh-collab same-machine E2E"
     $endMarker = "# END dsh-collab same-machine E2E"
@@ -93,6 +92,4 @@ try {
 }
 
 Write-Output "Prepared symmetric Client A and Client B DSH profiles."
-foreach ($client in $clients) {
-  Write-Output "$($client.DisplayName) invitation endpoint: ws://$($PrivateAddress):$($client.GatewayPort)/collab"
-}
+Write-Output "Both clients prefer port 4310; each runtime will select and persist the first available port in 4310-4399."
