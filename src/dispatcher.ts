@@ -138,7 +138,8 @@ export class AgentDispatcher {
     }
     const records = new Map<string, { record: QueueRecord; fingerprint: string }>();
     for (const record of snapshot.records) {
-      if (!record.requestId || records.has(record.requestId) || !isQueueStatus(record.status)) {
+      if (!record.requestId || records.has(record.requestId) || !isQueueStatus(record.status)
+        || (record.claimAttempt !== undefined && (!Number.isSafeInteger(record.claimAttempt) || record.claimAttempt < 1))) {
         throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher record");
       }
       records.set(record.requestId, { record: copy(record), fingerprint: JSON.stringify(record.message) });
@@ -191,12 +192,14 @@ export class AgentDispatcher {
     }
     entry.record.status = "running";
     this.activeRequestId = requestId;
+    const claimAttempt = (entry.record.claimAttempt ?? 0) + 1;
+    entry.record.claimAttempt = claimAttempt;
     this.options.ledger.append({
-      eventId: requestId + ":claimed",
+      eventId: requestId + ":claimed" + (claimAttempt === 1 ? "" : ":" + String(claimAttempt)),
       roomId: entry.record.roomId,
       type: "agent.request.claimed",
       actor: { memberId: member.memberId, principalId: member.principalId },
-      payload: { requestId, hostSessionId: entry.record.hostSessionId },
+      payload: { requestId, hostSessionId: entry.record.hostSessionId, claimAttempt },
     });
 
     const delivery: AgentDelivery = {

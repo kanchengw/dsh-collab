@@ -63,6 +63,7 @@ function rebindSnapshot(snapshot: DshCollabHostRuntimeSnapshot, roomId: string, 
   if (rebound.dispatcher.activeRequestId) {
     const active = rebound.dispatcher.records.find((record) => record.requestId === rebound.dispatcher.activeRequestId);
     if (active?.status === "running") {
+      active.claimAttempt ??= 1;
       active.status = "queued";
       if (!rebound.dispatcher.queue.includes(active.requestId)) rebound.dispatcher.queue.unshift(active.requestId);
       delete rebound.dispatcher.activeRequestId;
@@ -104,7 +105,10 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     approvalPolicy: options.approvalPolicy,
     resumes,
   });
-  if (snapshot) gateway.dispatcher.restore(snapshot.dispatcher);
+  if (snapshot) {
+    gateway.dispatcher.restore(snapshot.dispatcher);
+    void gateway.dispatcher.processQueue();
+  }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits });
   const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });

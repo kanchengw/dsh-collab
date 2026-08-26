@@ -211,6 +211,7 @@ export interface QueueRecord {
   deliveryMode: "followup" | "steer";
   status: QueueStatus;
   queueSeq: number;
+  claimAttempt?: number;
   message: AgentRequest;
   error?: string;
 }
