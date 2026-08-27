@@ -23,6 +23,8 @@ export * from "./settings.js";
 export * from "./ui.js";
 export * from "./workspace-service.js";
 export * from "./workspace-sharing.js";
+export * from "./workspace-snapshot.js";
+export * from "./workspace-snapshot-store.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";

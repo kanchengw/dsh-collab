@@ -8,6 +8,10 @@ export function resolveDefaultCollabStateFile(env: Record<string, string | undef
   return join(resolveDshHome(undefined, env), "collab", "v1", "state.json");
 }
 
+export function resolveDefaultCollabSnapshotDir(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDshHome(undefined, env), "collab", "v1", "snapshots");
+}
+
 function parseSnapshot(text: string): DshCollabHostRuntimeSnapshot {
   try {
     const value = JSON.parse(text) as DshCollabHostRuntimeSnapshot;
