@@ -1,5 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { apply, applyDshCollabClient, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabRoomSurface, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
@@ -8,6 +10,15 @@ import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
 
 describe("real DSH client slot adapter", () => {
+  it("keeps room status and actions available at narrow viewports", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/collab-room.module.css"), "utf8");
+    const narrow = css.slice(css.indexOf("@media (max-width: 720px)"), css.indexOf("@media (max-width: 440px)"));
+
+    expect(narrow).not.toMatch(/\.surfaceHeader > \.connection\s*{[^}]*display:\s*none/);
+    expect(narrow).not.toMatch(/\.surfaceActions \.toolbarButton\s*{[^}]*display:\s*none/);
+    expect(narrow).toMatch(/\.surfaceActions\s*{[^}]*flex-wrap:\s*wrap/);
+  });
+
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
     expect(inject).toEqual(["slots", "settingsScope", "connection", "locale"]);

@@ -490,18 +490,47 @@
 
 @media (max-width: 720px) {
   .surfaceHeader {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 0 10px;
+    box-sizing: border-box;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 180px);
+    gap: 4px 8px;
+    min-height: 72px;
+    padding: 8px 10px;
+  }
+
+  .surfaceHeader > .backButton {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+
+  .surfaceIdentity {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .surfaceIdentity .host {
+    display: none;
   }
 
   .surfaceHeader > .connection {
-    display: none;
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    margin-left: 0;
   }
 
-  .surfaceIdentity .host,
-  .surfaceActions .toolbarButton {
-    display: none;
+  .surfaceActions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    align-self: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    max-width: 180px;
+  }
+
+  .surfaceNotice,
+  .surfaceError {
+    top: 82px;
   }
 
   .surface .timeline,
