@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLLAB_CAPABILITY_HEADER,
   COLLAB_PROTOCOL,
+  SIDECAR_REVIEW_CAPABILITY,
+  decodeCollaborationCapabilities,
   decodeClientStreamFrame,
   decodeServerStreamFrame,
+  encodeCollaborationServerStreamFrame,
   encodeGatewayResponse,
   encodeClientStreamFrame,
   encodeServerStreamFrame,
@@ -96,6 +100,55 @@ describe("dsh-collab wire protocol", () => {
       streaming: true,
     });
     expect(decodeServerStreamFrame(wire)).toEqual(frame);
+  });
+
+  it("negotiates only known additive collaboration capabilities", () => {
+    expect(COLLAB_CAPABILITY_HEADER).toBe("x-dsh-collab-capabilities");
+    expect(decodeCollaborationCapabilities([
+      SIDECAR_REVIEW_CAPABILITY,
+      "future-capability.v9",
+      SIDECAR_REVIEW_CAPABILITY,
+    ])).toEqual([SIDECAR_REVIEW_CAPABILITY]);
+    expect(decodeCollaborationCapabilities(`future.v9, ${SIDECAR_REVIEW_CAPABILITY}`)).toEqual([SIDECAR_REVIEW_CAPABILITY]);
+    expect(decodeCollaborationCapabilities(undefined)).toEqual([]);
+    expect(() => decodeCollaborationCapabilities([SIDECAR_REVIEW_CAPABILITY, 42])).toThrow("capability");
+  });
+
+  it("round-trips capability-gated workspace sharing events", () => {
+    const frame = {
+      kind: "collaboration-event",
+      event: {
+        type: "workspace-sharing.changed",
+        state: {
+          roomId: "room-1",
+          enabled: true,
+          enabledBy: "member-host",
+          enabledAt: 100,
+          revision: 1,
+        },
+      },
+    } as const;
+
+    const wire = encodeCollaborationServerStreamFrame(frame);
+
+    expect(wire).toEqual({ protocol: COLLAB_PROTOCOL, type: "collaboration-event", event: frame.event });
+    expect(decodeServerStreamFrame(wire)).toEqual(frame);
+  });
+
+  it("fails closed on malformed collaboration payloads", () => {
+    expect(() => decodeServerStreamFrame({
+      protocol: COLLAB_PROTOCOL,
+      type: "collaboration-event",
+      event: {
+        type: "workspace-sharing.changed",
+        state: { roomId: "room-1", enabled: true, revision: 1 },
+      },
+    })).toThrow("enabledBy");
+    expect(() => decodeServerStreamFrame({
+      protocol: COLLAB_PROTOCOL,
+      type: "collaboration-event",
+      event: { type: "future.event", state: {} },
+    })).toThrow("event.type");
   });
 
   it("rejects unknown versions, frame types, and negative cursors", () => {

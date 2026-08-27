@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket, type ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import { decodeCollabInvitation } from "../../src/invitation.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 function response(data: unknown, status = 200): { ok: boolean; status: number; json(): Promise<unknown> } {
   return { ok: status < 400, status, json: async () => ({ protocol: "dsh-collab.v1", requestId: "test", ok: true, data }) };
@@ -215,6 +216,8 @@ describe("browser Gateway client", () => {
     expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh" });
     expect(socketUrls[0]).toContain("token=host-room-token");
     expect(new URL(socketUrls[0]!).searchParams.getAll("feature")).toContain("agent-output");
+    expect(new URL(socketUrls[0]!).searchParams.getAll("feature")).toContain(SIDECAR_REVIEW_CAPABILITY);
+    expect(requests.every((request) => request.init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toBe(true);
     const created = await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
     expect(decodeCollabInvitation(created.invitation)).toMatchObject({ gatewayEndpoint: "ws://192.168.1.20:4310/collab", roomId: "room-1", inviteId: "invite-1", token: "invite-secret" });
     client.dispose();

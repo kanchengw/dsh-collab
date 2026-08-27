@@ -3,7 +3,8 @@ import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime } from "../../src/host-runtime.js";
 import { decodeServerStreamFrame } from "../../src/protocol.js";
-import type { RoomEvent, StreamFrame } from "../../src/types.js";
+import type { DecodedServerStreamFrame } from "../../src/protocol.js";
+import type { RoomEvent } from "../../src/types.js";
 
 async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; token?: string; body?: unknown; headers?: Record<string, string> }): Promise<{ status: number; data: any }> {
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
@@ -29,8 +30,8 @@ async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: 
   });
 }
 
-function connect(base: string, roomId: string, token: string, connectionId: string): { socket: WebSocket; frames: StreamFrame[]; connected: Promise<void>; close: () => void } {
-  const frames: StreamFrame[] = [];
+function connect(base: string, roomId: string, token: string, connectionId: string): { socket: WebSocket; frames: DecodedServerStreamFrame[]; connected: Promise<void>; close: () => void } {
+  const frames: DecodedServerStreamFrame[] = [];
   let resolveConnected!: () => void;
   const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
   const socket = new WebSocket(base.replace("http", "ws") + `/collab/v1/stream?roomId=${roomId}&connectionId=${connectionId}`, { headers: { authorization: `Bearer ${token}` } });
@@ -42,9 +43,9 @@ function connect(base: string, roomId: string, token: string, connectionId: stri
   return { socket, frames, connected, close: () => socket.close() };
 }
 
-async function waitForEvent(frames: StreamFrame[], predicate: (event: RoomEvent) => boolean): Promise<RoomEvent> {
+async function waitForEvent(frames: DecodedServerStreamFrame[], predicate: (event: RoomEvent) => boolean): Promise<RoomEvent> {
   for (;;) {
-    const event = frames.find((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event" && predicate(frame.event));
+    const event = frames.find((frame): frame is Extract<DecodedServerStreamFrame, { kind: "event" }> => frame.kind === "event" && predicate(frame.event));
     if (event) return event.event;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -113,7 +114,7 @@ describe("local end-to-end collaboration", () => {
       await waitForEvent(one.frames, (event) => event.type === "agent.request.created" && typeof event.payload === "object" && event.payload !== null && (event.payload as { text?: string }).text === "Summarize the thread");
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
 
-      const cursor = two.frames.filter((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;
+      const cursor = two.frames.filter((frame): frame is Extract<DecodedServerStreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;
       two.close();
       const twoReconnected = connect(base, "room-1", joined2.data.roomToken, "connection-2-reconnect");
       sockets.push(twoReconnected);

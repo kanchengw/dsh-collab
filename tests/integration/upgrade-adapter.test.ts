@@ -7,6 +7,7 @@ import { RoomStreamHub } from "../../src/stream.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { CollabStreamUpgrade, COLLAB_STREAM_PATH } from "../../src/upgrade.js";
+import { SIDECAR_REVIEW_CAPABILITY } from "../../src/collaboration-types.js";
 
 let httpServer: Server | undefined;
 let upgrade: CollabStreamUpgrade | undefined;
@@ -62,7 +63,7 @@ describe("WebSocket upgrade adapter", () => {
     httpServer = createServer();
     httpServer.on("upgrade", (request, socket, head) => upgrade!.handleUpgrade(request, socket, head));
     const port = await listen(httpServer);
-    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&after=0&feature=agent-output`, {
+    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&after=0&feature=agent-output&feature=${SIDECAR_REVIEW_CAPABILITY}&feature=future.v9`, {
       headers: { authorization: `Bearer ${token}` },
     });
     const connected = nextMessage(socket);
@@ -73,6 +74,7 @@ describe("WebSocket upgrade adapter", () => {
       type: "connected",
       connectionId: "conn-1",
       roomId: "room-1",
+      capabilities: [SIDECAR_REVIEW_CAPABILITY],
     });
 
     const event = nextMessage(socket);
@@ -89,6 +91,20 @@ describe("WebSocket upgrade adapter", () => {
     const agentOutput = nextMessage(socket);
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "partial", streaming: true });
     await expect(agentOutput).resolves.toMatchObject({ protocol: "dsh-collab.v1", type: "agent-output", requestId: "request-1", text: "partial" });
+
+    const collaborationEvent = nextMessage(socket);
+    hub.publishCollaborationEvent({
+      type: "workspace-sharing.changed",
+      state: { roomId: "room-1", enabled: false, revision: 1 },
+    });
+    await expect(collaborationEvent).resolves.toEqual({
+      protocol: "dsh-collab.v1",
+      type: "collaboration-event",
+      event: {
+        type: "workspace-sharing.changed",
+        state: { roomId: "room-1", enabled: false, revision: 1 },
+      },
+    });
 
     const heartbeat = nextMessage(socket);
     socket.send(JSON.stringify({ protocol: "dsh-collab.v1", type: "heartbeat" }));

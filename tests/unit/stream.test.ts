@@ -3,6 +3,7 @@ import { EventLedger } from "../../src/events.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { RoomStreamHub } from "../../src/stream.js";
+import { SIDECAR_REVIEW_CAPABILITY, type CollaborationEvent } from "../../src/collaboration-types.js";
 import type { StreamFrame } from "../../src/types.js";
 
 function setup() {
@@ -148,5 +149,36 @@ describe("RoomStreamHub", () => {
     const thirdFrames: StreamFrame[] = [];
     hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => thirdFrames.push(frame) });
     expect(thirdFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
+  });
+
+  it("sends collaboration events only to clients that declared the capability", () => {
+    const { hub, token1 } = setup();
+    const event: CollaborationEvent = {
+      type: "workspace-sharing.changed",
+      state: { roomId: "room-1", enabled: false, revision: 2 },
+    };
+    const legacyEvents: CollaborationEvent[] = [];
+    const capableEvents: CollaborationEvent[] = [];
+
+    hub.connect({
+      connectionId: "legacy",
+      roomId: "room-1",
+      token: token1,
+      onFrame: () => {},
+      onCollaborationEvent: (value) => legacyEvents.push(value),
+    });
+    hub.connect({
+      connectionId: "capable",
+      roomId: "room-1",
+      token: token1,
+      capabilities: [SIDECAR_REVIEW_CAPABILITY],
+      onFrame: () => {},
+      onCollaborationEvent: (value) => capableEvents.push(value),
+    });
+
+    hub.publishCollaborationEvent(event);
+
+    expect(legacyEvents).toEqual([]);
+    expect(capableEvents).toEqual([event]);
   });
 });

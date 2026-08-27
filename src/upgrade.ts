@@ -3,10 +3,11 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
 import { CollabError, invalidInput } from "./errors.js";
-import { decodeClientStreamFrame, encodeServerStreamFrame } from "./protocol.js";
+import { decodeClientStreamFrame, decodeCollaborationCapabilities, encodeCollaborationServerStreamFrame, encodeServerStreamFrame } from "./protocol.js";
 import { RoomStreamHub } from "./stream.js";
 import { RoomTokenStore } from "./tokens.js";
 import type { StreamConnection } from "./stream.js";
+import type { CollaborationCapability } from "./collaboration-types.js";
 
 export const COLLAB_STREAM_PATH = "/collab/v1/stream";
 
@@ -70,7 +71,7 @@ export class CollabStreamUpgrade {
   }
 
   handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    let input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean };
+    let input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean; capabilities: CollaborationCapability[] };
     try {
       const url = new URL(request.url ?? "/", "http://dsh-collab.local");
       if (url.pathname !== COLLAB_STREAM_PATH) {
@@ -82,8 +83,9 @@ export class CollabStreamUpgrade {
       const afterSeq = cursor(url.searchParams.get("after"));
       const connectionId = text(url.searchParams.get("connectionId") ?? this.connectionIdFactory(), "connectionId");
       const agentOutput = url.searchParams.getAll("feature").includes("agent-output");
+      const capabilities = decodeCollaborationCapabilities(url.searchParams.getAll("feature"));
       this.options.tokens.verify({ roomId, token, now: this.now() });
-      input = { roomId, token, afterSeq, connectionId, agentOutput };
+      input = { roomId, token, afterSeq, connectionId, agentOutput, capabilities };
     } catch (error) {
       if (error instanceof CollabError) {
         reject(socket, statusFor(error), error.message);
@@ -104,12 +106,12 @@ export class CollabStreamUpgrade {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
-  private open(websocket: WebSocket, input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean }): void {
+  private open(websocket: WebSocket, input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean; capabilities: CollaborationCapability[] }): void {
     this.sockets.add(websocket);
     let connection: StreamConnection | undefined;
     let closed = false;
     const send = (frame: Parameters<typeof encodeServerStreamFrame>[0]): void => {
-      if (websocket.readyState === WebSocket.OPEN) websocket.send(JSON.stringify(encodeServerStreamFrame(frame)));
+      if (websocket.readyState === WebSocket.OPEN) websocket.send(JSON.stringify(encodeServerStreamFrame(frame, input.capabilities)));
       if (frame.kind === "closed" && websocket.readyState === WebSocket.OPEN) {
         websocket.close(frame.reason === "client_closed" ? 1000 : 1008, frame.reason);
       }
@@ -150,7 +152,11 @@ export class CollabStreamUpgrade {
         token: input.token,
         afterSeq: input.afterSeq,
         agentOutput: input.agentOutput,
+        capabilities: input.capabilities,
         onFrame: send,
+        onCollaborationEvent: (event) => {
+          if (websocket.readyState === WebSocket.OPEN) websocket.send(JSON.stringify(encodeCollaborationServerStreamFrame({ kind: "collaboration-event", event })));
+        },
       });
     } catch {
       close("auth_invalid", 1008);

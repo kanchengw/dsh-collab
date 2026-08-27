@@ -5,6 +5,7 @@ export * from "./room-client.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
+export * from "./collaboration-types.js";
 export * from "./dsh-cordis-agent.js";
 export * from "./dsh-cordis-host.js";
 export * from "./endpoint-policy.js";

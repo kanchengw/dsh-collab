@@ -2,8 +2,8 @@ import type { ComposerTarget } from "./ui.js";
 import { projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js";
-import { COLLAB_PROTOCOL, decodeServerStreamFrame, encodeClientStreamFrame } from "./protocol.js";
-import type { AgentOutputFrame, RoomEvent, StreamFrame } from "./types.js";
+import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
+import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 
 export interface BrowserRequestInit {
@@ -395,6 +395,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     url.searchParams.set("connectionId", this.connectionIdFactory());
     url.searchParams.set("token", this.token);
     url.searchParams.append("feature", "agent-output");
+    url.searchParams.append("feature", SIDECAR_REVIEW_CAPABILITY);
     await new Promise<void>((resolve, reject) => {
       const socket = new this.socketFactory(url.toString());
       this.socket = socket;
@@ -458,7 +459,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private async request(method: string, path: string, body: unknown, withToken: boolean, base = this.base): Promise<unknown> {
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
+    };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
     let response: BrowserResponse;
@@ -499,7 +503,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private applyFrame(raw: string): void {
-    let frame: StreamFrame;
+    let frame: DecodedServerStreamFrame;
     try { frame = decodeServerStreamFrame(JSON.parse(raw) as unknown); } catch { return; }
     if (frame.kind === "closed" && frame.reason === "room_not_shared" && this.snapshot.role === "participant") {
       this.setUnavailableReason("host-stopped-sharing");
@@ -518,6 +522,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       this.emit();
       return;
     }
+    if (frame.kind === "collaboration-event") return;
     if (frame.kind === "event") {
       const event = frame.event;
       if (this.events.has(event.eventId)) return;

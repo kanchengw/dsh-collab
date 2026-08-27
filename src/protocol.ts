@@ -1,7 +1,16 @@
 import { invalidInput } from "./errors.js";
+import {
+  SIDECAR_REVIEW_CAPABILITY,
+  type CollaborationCapability,
+  type CollaborationEvent,
+  type CollaborationStreamFrame,
+  type WorkspaceSharingState,
+} from "./collaboration-types.js";
 import type { GatewayResponse, RoomEvent, StreamFrame } from "./types.js";
 
 export const COLLAB_PROTOCOL = "dsh-collab.v1" as const;
+export const COLLAB_CAPABILITY_HEADER = "x-dsh-collab-capabilities" as const;
+export { SIDECAR_REVIEW_CAPABILITY };
 
 export interface ProtocolError {
   code: string;
@@ -18,12 +27,20 @@ export type ClientStreamFrame =
   | { protocol: typeof COLLAB_PROTOCOL; type: "close" };
 
 export type ServerStreamFrame =
-  | { protocol: typeof COLLAB_PROTOCOL; type: "connected"; connectionId: string; roomId: string; lastEventSeq: number }
+  | { protocol: typeof COLLAB_PROTOCOL; type: "connected"; connectionId: string; roomId: string; lastEventSeq: number; capabilities?: CollaborationCapability[] }
   | { protocol: typeof COLLAB_PROTOCOL; type: "presence"; roomId: string; onlineMemberCount: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "agent-output"; roomId: string; requestId: string; text: string; streaming: boolean }
   | { protocol: typeof COLLAB_PROTOCOL; type: "event"; event: RoomEvent }
   | { protocol: typeof COLLAB_PROTOCOL; type: "heartbeat"; connectionId: string; serverTime: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "closed"; connectionId: string; reason: string };
+
+export type CollaborationServerStreamFrame = {
+  protocol: typeof COLLAB_PROTOCOL;
+  type: "collaboration-event";
+  event: CollaborationEvent;
+};
+
+export type DecodedServerStreamFrame = StreamFrame | CollaborationStreamFrame;
 
 const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "room.created",
@@ -79,6 +96,18 @@ function protocol(value: unknown): void {
   if (value !== COLLAB_PROTOCOL) throw invalidInput("protocol is not supported", { protocol: value });
 }
 
+export function decodeCollaborationCapabilities(value: unknown): CollaborationCapability[] {
+  if (value === undefined) return [];
+  const input = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(input)) throw invalidInput("capabilities must be a string or array", { field: "capabilities" });
+  const capabilities = new Set<CollaborationCapability>();
+  for (const candidate of input) {
+    if (typeof candidate !== "string") throw invalidInput("capability must be a string", { field: "capabilities" });
+    if (candidate.trim() === SIDECAR_REVIEW_CAPABILITY) capabilities.add(SIDECAR_REVIEW_CAPABILITY);
+  }
+  return [...capabilities];
+}
+
 function requestId(value: string): string {
   return text(value, "requestId");
 }
@@ -111,10 +140,17 @@ export function encodeClientStreamFrame(frame: ClientStreamFrame): ClientStreamF
   return { protocol: COLLAB_PROTOCOL, type: frame.type };
 }
 
-export function encodeServerStreamFrame(frame: StreamFrame): ServerStreamFrame {
+export function encodeServerStreamFrame(frame: StreamFrame, capabilities: readonly CollaborationCapability[] = []): ServerStreamFrame {
   switch (frame.kind) {
     case "connected":
-      return { protocol: COLLAB_PROTOCOL, type: "connected", connectionId: frame.connectionId, roomId: frame.roomId, lastEventSeq: frame.lastEventSeq };
+      return {
+        protocol: COLLAB_PROTOCOL,
+        type: "connected",
+        connectionId: frame.connectionId,
+        roomId: frame.roomId,
+        lastEventSeq: frame.lastEventSeq,
+        ...(capabilities.length === 0 ? {} : { capabilities: [...capabilities] }),
+      };
     case "presence":
       return { protocol: COLLAB_PROTOCOL, type: "presence", roomId: frame.roomId, onlineMemberCount: frame.onlineMemberCount };
     case "agent-output":
@@ -128,6 +164,10 @@ export function encodeServerStreamFrame(frame: StreamFrame): ServerStreamFrame {
   }
 }
 
+export function encodeCollaborationServerStreamFrame(frame: CollaborationStreamFrame): CollaborationServerStreamFrame {
+  return { protocol: COLLAB_PROTOCOL, type: "collaboration-event", event: decodeCollaborationEvent(frame.event) };
+}
+
 export function decodeClientStreamFrame(value: unknown): ClientStreamFrame {
   const input = record(value, "stream frame");
   protocol(input.protocol);
@@ -136,17 +176,21 @@ export function decodeClientStreamFrame(value: unknown): ClientStreamFrame {
   throw invalidInput("stream frame.type is not supported", { field: "type" });
 }
 
-export function decodeServerStreamFrame(value: unknown): StreamFrame {
+export function decodeServerStreamFrame(value: unknown): DecodedServerStreamFrame {
   const input = record(value, "stream frame");
   protocol(input.protocol);
   const type = text(input.type, "type");
   if (type === "connected") {
+    if (input.capabilities !== undefined) decodeCollaborationCapabilities(input.capabilities);
     return {
       kind: "connected",
       connectionId: text(input.connectionId, "connectionId"),
       roomId: text(input.roomId, "roomId"),
       lastEventSeq: nonNegativeInteger(input.lastEventSeq, "lastEventSeq"),
     };
+  }
+  if (type === "collaboration-event") {
+    return { kind: "collaboration-event", event: decodeCollaborationEvent(input.event) };
   }
   if (type === "presence") {
     return {
@@ -180,6 +224,30 @@ export function decodeServerStreamFrame(value: unknown): StreamFrame {
     };
   }
   throw invalidInput("stream frame.type is not supported", { field: "type" });
+}
+
+function decodeCollaborationEvent(value: unknown): CollaborationEvent {
+  const input = record(value, "collaboration event");
+  const type = text(input.type, "collaboration event.type");
+  if (type !== "workspace-sharing.changed") {
+    throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
+  }
+  return { type, state: decodeWorkspaceSharingState(input.state) };
+}
+
+function decodeWorkspaceSharingState(value: unknown): WorkspaceSharingState {
+  const input = record(value, "collaboration event.state");
+  const roomId = text(input.roomId, "collaboration event.state.roomId");
+  const revision = nonNegativeInteger(input.revision, "collaboration event.state.revision");
+  const enabled = boolean(input.enabled, "collaboration event.state.enabled");
+  if (!enabled) return { roomId, enabled: false, revision };
+  return {
+    roomId,
+    enabled: true,
+    enabledBy: text(input.enabledBy, "collaboration event.state.enabledBy"),
+    enabledAt: nonNegativeInteger(input.enabledAt, "collaboration event.state.enabledAt"),
+    revision,
+  };
 }
 
 function decodeEvent(value: unknown): RoomEvent {

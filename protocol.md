@@ -42,6 +42,34 @@ be placed in a URL, browser history, access log, or analytics event. The
 external `wss://` endpoint is declarative: v1 does not provision a tunnel,
 reverse proxy, public Relay, TLS certificate, or NAT traversal.
 
+## Additive capability negotiation
+
+The collaboration mechanisms extension is gated by the exact capability token
+`sidecar-review.v1`. A client declares it on HTTP requests with:
+
+```text
+X-DSH-Collab-Capabilities: sidecar-review.v1
+```
+
+and on the existing WebSocket handshake with the repeatable stream feature
+parameter:
+
+```text
+feature=sidecar-review.v1
+```
+
+Unknown capability tokens are ignored. Missing capability declarations retain
+the original v1 HTTP surface and server frame set. Capability-gated HTTP routes
+must reject invalid declaration shapes or malformed payloads with `422`;
+malformed WebSocket declarations or frames cause a protocol error. The server
+acknowledges accepted stream capabilities in the optional `capabilities` array
+of the initial `connected` frame. Existing clients may ignore that additive
+field.
+
+All Workspace, Review and published SideTask HTTP routes added after the base
+v1 contract require `sidecar-review.v1`. The current Unit defines the gate and
+the first event schema only; it does not expose those routes yet.
+
 ## HTTP requests
 
 Authenticated room requests use:
@@ -163,7 +191,7 @@ exact paths only; registering one dynamic route per room would leak room
 lifecycle into the global route table.
 
 ```text
-GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>&feature=agent-output
+GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>&feature=agent-output&feature=sidecar-review.v1
 Authorization: Bearer <room-token>
 ```
 
@@ -175,7 +203,8 @@ Each JSON server frame has `protocol: "dsh-collab.v1"` and one of these types:
   "type": "connected",
   "connectionId": "conn-1",
   "roomId": "room-1",
-  "lastEventSeq": 4
+  "lastEventSeq": 4,
+  "capabilities": ["sidecar-review.v1"]
 }
 ```
 
@@ -209,6 +238,32 @@ The durable `agent.state.changed`, `agent.request.failed`, or
 `agent.request.cancelled` event ends the transient projection and remains the
 authoritative history. A connection opened during generation receives the
 latest accumulated snapshot after normal event replay.
+
+Clients that declare `sidecar-review.v1` may also receive collaboration event
+frames. The first additive event reports the runtime-only Workspace Sharing
+state used by the next implementation Unit:
+
+```json
+{
+  "protocol": "dsh-collab.v1",
+  "type": "collaboration-event",
+  "event": {
+    "type": "workspace-sharing.changed",
+    "state": {
+      "roomId": "room-1",
+      "enabled": true,
+      "enabledBy": "member-host",
+      "enabledAt": 1720000000000,
+      "revision": 1
+    }
+  }
+}
+```
+
+When `enabled` is `false`, `enabledBy` and `enabledAt` are omitted. This event
+is a live projection and does not advance the durable room event cursor. A
+client reconnects by reading the authoritative Workspace Sharing state from
+the capability-gated HTTP API introduced with Workspace Sharing.
 
 ```json
 {
@@ -249,6 +304,8 @@ Transient Agent output never advances that cursor.
 - v1 additions must be optional fields or new event payload fields.
 - A new server frame must be gated by an explicit client `feature` query;
   clients without that opt-in must retain the previous v1 frame set.
+- Unknown additive capabilities are ignored; a known capability never changes
+  the meaning of a pre-existing frame or route.
 - A required field, enum removal, or changed meaning requires a new protocol
   version and an explicit adapter negotiation decision.
 - The wire protocol never carries a local Agent handle, DSH connection ID,
