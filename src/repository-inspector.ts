@@ -167,7 +167,7 @@ interface DshCollectedReader {
   readFrom(offset: number): { text: string; lossy: boolean };
 }
 
-interface DshRepositorySubprocess {
+export interface DshRepositorySubprocess {
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>;
   spawn(spec: {
     argv: readonly string[];

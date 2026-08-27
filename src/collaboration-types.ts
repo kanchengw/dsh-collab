@@ -24,6 +24,16 @@ export interface WorkspaceSnapshotPackage {
   createdAt: number;
 }
 
+export interface WorkspaceSnapshotChunk {
+  snapshotId: string;
+  fileIndex: number;
+  offset: number;
+  byteLength: number;
+  chunkHash: string;
+  data: string;
+  eof: boolean;
+}
+
 export type ReviewLifecycle = "open" | "changes-requested" | "approved" | "closed";
 export type ReviewFreshness = "current" | "stale";
 

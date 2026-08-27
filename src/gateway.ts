@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CollabError, invalidInput } from "./errors.js";
 import { ApprovalStore } from "./approvals.js";
 import { AgentDispatcher } from "./dispatcher.js";
@@ -78,6 +79,18 @@ function booleanField(body: Record<string, unknown>, field: string): boolean {
   return value;
 }
 
+function requestIdField(body: Record<string, unknown>, field: string): string {
+  const value = requiredText(body[field], field);
+  if (value.length > 128) throw invalidInput(field + " must be at most 128 characters", { field });
+  return value;
+}
+
+function snapshotIdField(value: unknown): string {
+  const snapshotId = requiredText(value, "snapshotId");
+  if (!/^[a-f0-9]{64}$/.test(snapshotId)) throw invalidInput("snapshotId is invalid", { field: "snapshotId" });
+  return snapshotId;
+}
+
 function getHeader(request: GatewayRequest, name: string): string | undefined {
   const headers = request.headers ?? {};
   const target = name.toLowerCase();
@@ -95,7 +108,7 @@ function authPrincipal(request: GatewayRequest): string {
 function statusFor(error: CollabError): number {
   if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
   if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
-  if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND") return 404;
+  if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND" || error.code === "SNAPSHOT_NOT_FOUND") return 404;
   if (error.code === "ROOM_INACTIVE" || error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED" || error.code === "WORKSPACE_SHARING_DISABLED") return 409;
   if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
@@ -144,22 +157,25 @@ export class CollabGateway {
     try {
       const url = new URL(request.path, "http://dsh-collab.local");
       const segments = url.pathname.split("/").filter(Boolean);
-      if (segments.length !== 4 || segments[0] !== "v1" || segments[1] !== "rooms") {
+      if (segments.length < 4 || segments[0] !== "v1" || segments[1] !== "rooms") {
         return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       }
       const roomId = requiredText(segments[2], "roomId");
       const resource = segments[3];
-      if (request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
-      if (request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
-      if (resource === "workspace-sharing") {
+      if (segments.length === 4 && request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
+      if (segments.length === 4 && request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
+      if (resource === "workspace-sharing" || resource === "workspace-snapshots") {
         const capabilities = decodeCollaborationCapabilities(getHeader(request, COLLAB_CAPABILITY_HEADER));
-        if (!this.options.workspace || !capabilities.includes(SIDECAR_REVIEW_CAPABILITY)) {
+        if (!this.options.workspace || !capabilities.includes(SIDECAR_REVIEW_CAPABILITY)
+          || (resource === "workspace-snapshots" && !this.options.workspace.snapshotsAvailable)) {
           return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
         }
       }
       this.options.rooms.getRoom(roomId);
       this.options.activeRooms?.requireActive(roomId);
-      if (resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
+      if (segments.length === 4 && resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
+      if (resource === "workspace-snapshots") return await this.workspaceSnapshots(roomId, segments.slice(4), url.searchParams, request);
+      if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
@@ -281,6 +297,49 @@ export class CollabGateway {
         enabled: booleanField(body, "enabled"),
       });
       return { status: 200, body: { state } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+  }
+
+  private async workspaceSnapshots(roomId: string, tail: string[], query: URLSearchParams, request: GatewayRequest): Promise<GatewayResponse> {
+    const workspace = this.options.workspace!;
+    const claims = this.claims(roomId, request);
+    if (request.method === "POST" && tail.length === 0) {
+      const snapshot = await workspace.captureLatest({
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId: requestIdField(objectBody(request.body), "clientRequestId"),
+        roomEventSeq: this.options.ledger.latestSeq(roomId),
+      });
+      return { status: 201, body: { snapshot } };
+    }
+    const snapshotId = tail[0] === undefined ? undefined : snapshotIdField(tail[0]);
+    if (request.method === "GET" && tail.length === 1 && snapshotId) {
+      return { status: 200, body: { snapshot: await workspace.getSnapshot({ roomId, principalId: claims.principalId, snapshotId }) } };
+    }
+    if (request.method === "GET" && tail.length === 3 && snapshotId && tail[1] === "files") {
+      const fileIndex = this.parseQueryInteger(tail[2]!, "fileIndex");
+      const offset = this.parseQueryInteger(query.get("offset"), "offset");
+      const limit = this.parseQueryInteger(query.get("limit"), "limit");
+      if (limit < 1 || limit > 256 * 1024) throw invalidInput("limit must be between 1 and 262144", { field: "limit" });
+      const { snapshot, bytes } = await workspace.readSnapshotChunk({
+        roomId,
+        principalId: claims.principalId,
+        snapshotId,
+        fileIndex,
+        offset,
+        length: limit,
+      });
+      const file = snapshot.files[fileIndex]!;
+      return { status: 200, body: { chunk: {
+        snapshotId,
+        fileIndex,
+        offset,
+        byteLength: bytes.byteLength,
+        chunkHash: createHash("sha256").update(bytes).digest("hex"),
+        data: Buffer.from(bytes).toString("base64"),
+        eof: offset + bytes.byteLength === file.size,
+      } } };
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
   }

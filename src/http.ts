@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CollabError, invalidInput } from "./errors.js";
 import { CollabGateway } from "./gateway.js";
-import { encodeGatewayResponse } from "./protocol.js";
+import { COLLAB_CAPABILITY_HEADER, encodeGatewayResponse } from "./protocol.js";
 import type { GatewayResponse } from "./types.js";
 
 const PUBLIC_PREFIX = "/collab";
@@ -174,7 +174,7 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
         response.writeHead(204, {
           ...corsHeaders(origin),
           "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-          "access-control-allow-headers": "authorization, content-type, x-request-id",
+          "access-control-allow-headers": `authorization, content-type, x-request-id, ${COLLAB_CAPABILITY_HEADER}`,
           "access-control-max-age": "600",
         });
         response.end();

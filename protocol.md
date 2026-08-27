@@ -101,6 +101,9 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/actions` | Host cancels, manages members or decides an approval |
 | `GET` | `/collab/v1/rooms/:roomId/workspace-sharing` | Active member reads the runtime-only Workspace Sharing state; requires `sidecar-review.v1` |
 | `POST` | `/collab/v1/rooms/:roomId/workspace-sharing` | Host enables or disables Workspace Sharing for this runtime; requires `sidecar-review.v1` |
+| `POST` | `/collab/v1/rooms/:roomId/workspace-snapshots` | Active member captures the current immutable Host workspace; requires `sidecar-review.v1` and enabled Workspace Sharing |
+| `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId` | Active member reads one snapshot manifest under the same sharing gate |
+| `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId/files/:fileIndex?offset=&limit=` | Active member reads an authenticated, bounded content chunk; `limit` is at most 262144 bytes |
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -155,6 +158,23 @@ disabled, is not included in Host snapshots, and resets to disabled when room
 sharing stops or the Host runtime restarts. A later workspace read while the
 switch is off returns `409 WORKSPACE_SHARING_DISABLED`.
 
+Snapshot capture accepts `{ "clientRequestId": "..." }`. The Gateway derives a
+stable snapshot ID from the verified room principal and that request ID, so a
+retry after a lost response or Host restart returns the same immutable artifact
+instead of capturing a second version. The client cannot supply a workspace
+path, Host Session ID, file path, or snapshot ID. A manifest contains only
+repository-relative paths, content hashes, byte sizes and snapshot metadata;
+content is fetched by numeric `fileIndex` so untrusted paths never enter the
+HTTP route.
+
+Each chunk response includes `snapshotId`, `fileIndex`, `offset`, `byteLength`,
+`chunkHash`, base64 `data` and `eof`. Clients validate every chunk and the final
+file hash before atomically publishing a local read-only workspace. Capture is
+bounded to 10,000 files, 64 MiB per file and 256 MiB total; Participant download
+is independently bounded to 10,000 files and 256 MiB total. Disabling Workspace
+Sharing rejects every new manifest or chunk request, but already materialized
+local content remains readable without the Host.
+
 ## HTTP responses
 
 Successful responses use:
@@ -191,7 +211,7 @@ stable status mapping is:
 - `404`: route, room, invite, or event not found;
 - `409`: idempotency, invite, event, room-activation, or Workspace Sharing state conflict;
 - `422`: invalid input or unsupported protocol data;
-- `429`: resource limit (reserved for the production hardening phase);
+- `429`: configured message, queue, member, or Workspace Snapshot resource limit;
 - `503`: Host or Agent unavailable (must not claim the request was queued).
 
 ## Stream frames

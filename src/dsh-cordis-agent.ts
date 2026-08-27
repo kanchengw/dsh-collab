@@ -15,7 +15,7 @@ export interface DshCordisAgent {
   steer(message: DshUserMessage): Promise<void> | void;
   cancel(cause: { kind: "user" }, options: { keepInbox: boolean }): Promise<void> | void;
   whenIdle?(): Promise<void>;
-  session?: { readonly events: readonly DshCordisSessionEvent[] };
+  session?: { readonly events: readonly DshCordisSessionEvent[]; readonly header?: { readonly cwd?: string } };
 }
 
 export interface DshCordisSessionEvent {
@@ -136,6 +136,7 @@ export function createDshCordisSessionService(input: {
   };
   return {
     owns: (sessionId) => input.agents.get(sessionId) !== undefined,
+    workspacePath: (sessionId) => input.agents.get(sessionId)?.session?.header?.cwd,
     followup: (delivery) => deliver("followup", delivery),
     steer: (delivery) => deliver("steer", delivery),
     async cancel(request): Promise<void> {

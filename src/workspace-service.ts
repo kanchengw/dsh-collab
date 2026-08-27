@@ -1,7 +1,15 @@
+import { createHash } from "node:crypto";
 import { CollabError } from "./errors.js";
 import { RoomStore } from "./room.js";
-import type { WorkspaceSharingState } from "./collaboration-types.js";
+import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
+import { WorkspaceSnapshotError } from "./workspace-snapshot.js";
+
+export interface WorkspaceSnapshotProvider {
+  capture(input: { roomId: string; hostSessionId: string; roomEventSeq: number; snapshotId: string; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage>;
+  load(snapshotId: string): Promise<WorkspaceSnapshotPackage | undefined>;
+  readChunk(snapshotId: string, path: string, offset: number, length: number): Promise<Uint8Array>;
+}
 
 export class WorkspaceService {
   private readonly now: () => number;
@@ -9,6 +17,7 @@ export class WorkspaceService {
   constructor(private readonly options: {
     rooms: RoomStore;
     registry: WorkspaceSharingRegistry;
+    snapshots?: WorkspaceSnapshotProvider;
     now?: () => number;
   }) {
     this.now = options.now ?? (() => Date.now());
@@ -37,5 +46,63 @@ export class WorkspaceService {
 
   clearRoom(roomId: string): void {
     this.options.registry.clear(roomId);
+  }
+
+  get snapshotsAvailable(): boolean {
+    return this.options.snapshots !== undefined;
+  }
+
+  async captureLatest(input: { roomId: string; principalId: string; clientRequestId: string; roomEventSeq: number; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage> {
+    this.requireWorkspaceRead(input);
+    const provider = this.requireSnapshots();
+    const room = this.options.rooms.getRoom(input.roomId);
+    const snapshotId = createHash("sha256").update(`${input.roomId}\0${input.principalId}\0${input.clientRequestId}`).digest("hex");
+    const existing = await provider.load(snapshotId);
+    if (existing) return this.assertRoomSnapshot(existing, room.roomId, room.hostSessionId);
+    try {
+      const captured = await provider.capture({
+        roomId: room.roomId,
+        hostSessionId: room.hostSessionId,
+        roomEventSeq: input.roomEventSeq,
+        snapshotId,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      return this.assertRoomSnapshot(captured, room.roomId, room.hostSessionId);
+    } catch (error) {
+      const raced = await provider.load(snapshotId);
+      if (raced) return this.assertRoomSnapshot(raced, room.roomId, room.hostSessionId);
+      if (error instanceof WorkspaceSnapshotError) {
+        if (error.code === "WORKSPACE_LIMIT") throw new CollabError("RESOURCE_LIMIT", "Workspace Snapshot exceeds the configured limit");
+        throw new CollabError("SNAPSHOT_INVALID", "Unable to capture Workspace Snapshot");
+      }
+      throw error;
+    }
+  }
+
+  async getSnapshot(input: { roomId: string; principalId: string; snapshotId: string }): Promise<WorkspaceSnapshotPackage> {
+    this.requireWorkspaceRead(input);
+    const room = this.options.rooms.getRoom(input.roomId);
+    const snapshot = await this.requireSnapshots().load(input.snapshotId);
+    if (!snapshot) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot does not exist");
+    return this.assertRoomSnapshot(snapshot, room.roomId, room.hostSessionId);
+  }
+
+  async readSnapshotChunk(input: { roomId: string; principalId: string; snapshotId: string; fileIndex: number; offset: number; length: number }): Promise<{ snapshot: WorkspaceSnapshotPackage; bytes: Uint8Array }> {
+    const snapshot = await this.getSnapshot(input);
+    const file = snapshot.files[input.fileIndex];
+    if (!file || input.offset > file.size) throw new CollabError("INVALID_INPUT", "Workspace Snapshot chunk range is invalid");
+    return { snapshot, bytes: await this.requireSnapshots().readChunk(snapshot.snapshotId, file.path, input.offset, input.length) };
+  }
+
+  private requireSnapshots(): WorkspaceSnapshotProvider {
+    if (!this.options.snapshots) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot transport is unavailable");
+    return this.options.snapshots;
+  }
+
+  private assertRoomSnapshot(snapshot: WorkspaceSnapshotPackage, roomId: string, hostSessionId: string): WorkspaceSnapshotPackage {
+    if (snapshot.roomId !== roomId || snapshot.hostSessionId !== hostSessionId) {
+      throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot does not belong to this room");
+    }
+    return structuredClone(snapshot);
   }
 }

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { createDshCordisSessionService, type DshUserMessage } from "../../src/dsh-cordis-agent.js";
 
 describe("real DSH Cordis Agent bridge", () => {
+  it("reads the immutable workspace path from the live DSH Session header", () => {
+    const service = createDshCordisSessionService({
+      agents: { get: (sessionId) => sessionId === "session-1" ? {
+        session: { events: [], header: { cwd: "C:/trusted/workspace" } },
+        followup() {}, steer() {}, cancel() {},
+      } : undefined },
+    });
+
+    expect(service.workspacePath?.("session-1")).toBe("C:/trusted/workspace");
+    expect(service.workspacePath?.("missing")).toBeUndefined();
+  });
+
   it("publishes accumulated text chunks for only the matching Collab request", async () => {
     const events: Array<{ seq: number; type: string; data: unknown }> = [];
     let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;

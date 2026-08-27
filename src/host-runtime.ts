@@ -12,7 +12,7 @@ import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServe
 import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
-import { WorkspaceService } from "./workspace-service.js";
+import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-service.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -37,6 +37,7 @@ export interface DshCollabHostRuntimeOptions {
   trustedProxyMarkerHeader?: string;
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
   approvalAnswerer?: object;
+  workspaceSnapshots?: WorkspaceSnapshotProvider;
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
 
@@ -96,7 +97,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const activeRooms = new ActiveRoomRegistry();
   const workspaceSharing = new WorkspaceSharingRegistry();
-  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, now: options.now });
+  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
   if (!snapshot && options.roomId && options.hostSessionId && options.title) activeRooms.activate(options.roomId);
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,

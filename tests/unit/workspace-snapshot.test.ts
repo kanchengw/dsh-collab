@@ -166,4 +166,27 @@ describe("WorkspaceSnapshotCapture", () => {
 
     await expect(new WorkspaceSnapshotStore(root).load("snapshot-1")).rejects.toThrow("manifest is malformed");
   });
+
+  it("bounds Host capture before an oversized repository can become a transport artifact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-snapshots-"));
+    temporaryDirectories.push(root);
+    const commands = commandPort({
+      "rev-parse --show-toplevel": { exitCode: 0, stdout: "C:/repo\n" },
+      "rev-parse --verify --quiet HEAD": { exitCode: 1 },
+      "ls-files -z --cached": { exitCode: 0, stdout: "large.bin\0" },
+      "ls-files -z --others --exclude-standard": { exitCode: 0, stdout: "" },
+    });
+    const read = vi.fn(async () => Buffer.alloc(5));
+    const capture = new WorkspaceSnapshotCapture({
+      commands: commands.port,
+      files: { inspect: async () => "file", read },
+      store: new WorkspaceSnapshotStore(root),
+      maxFileBytes: 4,
+      maxTotalBytes: 4,
+    });
+
+    await expect(capture.capture({ roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 0 }))
+      .rejects.toMatchObject({ code: "WORKSPACE_LIMIT" });
+    expect(read).toHaveBeenCalledWith("large.bin", undefined, 4);
+  });
 });

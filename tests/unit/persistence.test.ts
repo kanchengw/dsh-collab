@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HostSnapshotFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "../../src/persistence.js";
+import { HostSnapshotFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile, resolveDefaultCollabWorkspaceDir } from "../../src/persistence.js";
 import type { DshCollabHostRuntimeSnapshot } from "../../src/host-runtime.js";
 
 const dirs: string[] = [];
@@ -25,6 +25,7 @@ describe("Host snapshot file", () => {
   it("uses the DSH home convention and atomically round-trips a versioned snapshot", async () => {
     expect(resolveDefaultCollabStateFile({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "state.json"));
     expect(resolveDefaultCollabSnapshotDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "snapshots"));
+    expect(resolveDefaultCollabWorkspaceDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "workspaces"));
     const dir = await mkdtemp(join(tmpdir(), "dsh-collab-state-"));
     dirs.push(dir);
     const path = join(dir, "nested", "state.json");

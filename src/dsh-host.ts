@@ -3,6 +3,7 @@ import type { AgentDelivery, AgentDeliveryResult, AgentOutputFrame, HostAgentPor
 
 export interface DshSessionService {
   owns(sessionId: string): boolean | Promise<boolean>;
+  workspacePath?(sessionId: string): string | undefined;
   followup(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   steer(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   cancel(input: { sessionId: string; requestId: string; keepInbox: boolean }): Promise<void> | void;

@@ -6,6 +6,7 @@ export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
 export * from "./collaboration-types.js";
+export * from "./collaboration-client.js";
 export * from "./dsh-cordis-agent.js";
 export * from "./dsh-cordis-host.js";
 export * from "./endpoint-policy.js";
@@ -25,6 +26,7 @@ export * from "./workspace-service.js";
 export * from "./workspace-sharing.js";
 export * from "./workspace-snapshot.js";
 export * from "./workspace-snapshot-store.js";
+export * from "./snapshot-workspace.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
