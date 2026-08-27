@@ -10,6 +10,12 @@ import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
 
 describe("real DSH client slot adapter", () => {
+  it("lets the Owner dismiss a generated invitation without stopping the room", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
+
+    expect(source).toMatch(/setInvitation\(""\);[^\n]*share\.hideInvitation/);
+  });
+
   it("keeps room status and actions available at narrow viewports", () => {
     const css = readFileSync(resolve(process.cwd(), "src/collab-room.module.css"), "utf8");
     const narrow = css.slice(css.indexOf("@media (max-width: 720px)"), css.indexOf("@media (max-width: 440px)"));

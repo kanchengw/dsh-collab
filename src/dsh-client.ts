@@ -622,6 +622,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
     invitation ? createElement("section", { className: roomCss.invitationBar },
       createElement("input", { name: "hostInvitationOutput", type: "text", value: invitation, readOnly: true, "aria-label": t("share.invitationAria"), className: roomCss.invitationText }),
       createElement("button", { className: roomCss.toolbarButton, type: "button", onClick: () => { void copyInvitation(); }, disabled: busy !== undefined }, t(busy === "copy" ? "share.copying" : "share.copyInvitation")),
+      createElement("button", { className: roomCss.toolbarButton, type: "button", onClick: () => { setInvitation(""); } }, t("share.hideInvitation")),
     ) : null,
     notice ? createElement("p", { className: notice.tone === "error" ? roomCss.surfaceError : roomCss.surfaceNotice, role: notice.tone === "error" ? "alert" : "status" }, notice.text) : null,
   );
