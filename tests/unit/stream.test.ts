@@ -122,17 +122,20 @@ describe("RoomStreamHub", () => {
     const { hub, ledger, token1 } = setup();
     const firstFrames: StreamFrame[] = [];
     const secondFrames: StreamFrame[] = [];
-    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, onFrame: (frame) => firstFrames.push(frame) });
+    const legacyFrames: StreamFrame[] = [];
+    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => firstFrames.push(frame) });
+    hub.connect({ connectionId: "connection-legacy", roomId: "room-1", token: token1, onFrame: (frame) => legacyFrames.push(frame) });
 
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "Hel", streaming: true });
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true });
-    hub.connect({ connectionId: "connection-b", roomId: "room-1", token: token1, onFrame: (frame) => secondFrames.push(frame) });
+    hub.connect({ connectionId: "connection-b", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => secondFrames.push(frame) });
 
     expect(firstFrames.filter((frame) => frame.kind === "agent-output")).toEqual([
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hel", streaming: true },
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
     ]);
     expect(secondFrames).toContainEqual({ kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true });
+    expect(legacyFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
 
     ledger.append({
       eventId: "request-1:output",
@@ -143,7 +146,7 @@ describe("RoomStreamHub", () => {
       payload: { requestId: "request-1", state: "output", text: "Hello" },
     });
     const thirdFrames: StreamFrame[] = [];
-    hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, onFrame: (frame) => thirdFrames.push(frame) });
+    hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => thirdFrames.push(frame) });
     expect(thirdFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
   });
 });

@@ -19,6 +19,7 @@ interface ConnectionRecord {
   memberId: string;
   principalId: string;
   token: string;
+  agentOutput: boolean;
   lastEventSeq: number;
   onFrame: (frame: StreamFrame) => void;
 }
@@ -61,6 +62,7 @@ export class RoomStreamHub {
     roomId: string;
     token: string;
     afterSeq?: number;
+    agentOutput?: boolean;
     onFrame: (frame: StreamFrame) => void;
   }): StreamConnection {
     const connectionId = requiredText(input.connectionId, "connectionId");
@@ -82,6 +84,7 @@ export class RoomStreamHub {
         memberId: claims.memberId,
         principalId: claims.principalId,
         token: input.token,
+        agentOutput: input.agentOutput === true,
         lastEventSeq: afterSeq,
         onFrame: input.onFrame,
       };
@@ -89,7 +92,7 @@ export class RoomStreamHub {
       this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
       for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
       for (const frame of this.activeAgentOutputs.values()) {
-        if (frame.roomId === roomId) this.emit(record, frame);
+        if (record.agentOutput && frame.roomId === roomId) this.emit(record, frame);
       }
       this.broadcastPresence(roomId);
       return {
@@ -124,7 +127,7 @@ export class RoomStreamHub {
     const output: AgentOutputFrame = { kind: "agent-output", ...frame };
     this.activeAgentOutputs.set(frame.roomId + ":" + frame.requestId, output);
     for (const record of [...this.connections.values()]) {
-      if (record.roomId !== frame.roomId) continue;
+      if (record.roomId !== frame.roomId || !record.agentOutput) continue;
       try {
         this.options.tokens.verify({ roomId: record.roomId, token: record.token, now: this.now() });
       } catch (error) {

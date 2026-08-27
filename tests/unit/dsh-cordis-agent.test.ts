@@ -26,11 +26,33 @@ describe("real DSH Cordis Agent bridge", () => {
     observe?.({ id: "session-1" }, { seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "reasoning-delta", index: 0, text: "hidden" } } });
     observe?.({ id: "session-1" }, { seq: 3, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "Hello" } } });
     observe?.({ id: "session-1" }, { seq: 4, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: " world" } } });
+    observe?.({ id: "session-1" }, { seq: 5, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    observe?.({ id: "session-1" }, { seq: 6, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: " private Host turn" } } });
 
     expect(output).toEqual([
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello world", streaming: true },
     ]);
+  });
+
+  it("forgets stream association when waiting for the Host Agent fails", async () => {
+    let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
+    const output: unknown[] = [];
+    const agent = {
+      session: { events: [] },
+      followup(message: DshUserMessage) { observe?.({ id: "session-1" }, { seq: 0, type: "user/message", data: message }); },
+      steer() {}, cancel() {}, whenIdle: () => Promise.reject(new Error("Host stopped")),
+    };
+    const service = createDshCordisSessionService({
+      agents: { get: () => agent },
+      onSessionEvent: (listener) => { observe = listener; return () => {}; },
+    });
+    service.onAgentOutput?.((frame) => output.push(frame));
+
+    await service.followup({ roomId: "room-1", requestId: "request-1", sessionId: "session-1", text: "reply" });
+    await expect(service.whenIdle?.({ requestId: "request-1", sessionId: "session-1" })).rejects.toThrow("Host stopped");
+    observe?.({ id: "session-1" }, { seq: 1, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: "unrelated" } } });
+    expect(output).toEqual([]);
   });
 
   it("resolves ctx.agents.get and forwards followup, steer, and cancel", async () => {

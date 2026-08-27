@@ -70,7 +70,7 @@ export class CollabStreamUpgrade {
   }
 
   handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    let input: { roomId: string; token: string; afterSeq: number; connectionId: string };
+    let input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean };
     try {
       const url = new URL(request.url ?? "/", "http://dsh-collab.local");
       if (url.pathname !== COLLAB_STREAM_PATH) {
@@ -81,8 +81,9 @@ export class CollabStreamUpgrade {
       const token = bearer(request.headers.authorization, url.searchParams.get("token"));
       const afterSeq = cursor(url.searchParams.get("after"));
       const connectionId = text(url.searchParams.get("connectionId") ?? this.connectionIdFactory(), "connectionId");
+      const agentOutput = url.searchParams.getAll("feature").includes("agent-output");
       this.options.tokens.verify({ roomId, token, now: this.now() });
-      input = { roomId, token, afterSeq, connectionId };
+      input = { roomId, token, afterSeq, connectionId, agentOutput };
     } catch (error) {
       if (error instanceof CollabError) {
         reject(socket, statusFor(error), error.message);
@@ -103,7 +104,7 @@ export class CollabStreamUpgrade {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
-  private open(websocket: WebSocket, input: { roomId: string; token: string; afterSeq: number; connectionId: string }): void {
+  private open(websocket: WebSocket, input: { roomId: string; token: string; afterSeq: number; connectionId: string; agentOutput: boolean }): void {
     this.sockets.add(websocket);
     let connection: StreamConnection | undefined;
     let closed = false;
@@ -148,6 +149,7 @@ export class CollabStreamUpgrade {
         roomId: input.roomId,
         token: input.token,
         afterSeq: input.afterSeq,
+        agentOutput: input.agentOutput,
         onFrame: send,
       });
     } catch {

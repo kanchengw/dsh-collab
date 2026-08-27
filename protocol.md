@@ -163,7 +163,7 @@ exact paths only; registering one dynamic route per room would leak room
 lifecycle into the global route table.
 
 ```text
-GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>
+GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>&feature=agent-output
 Authorization: Bearer <room-token>
 ```
 
@@ -187,7 +187,10 @@ Each JSON server frame has `protocol: "dsh-collab.v1"` and one of these types:
 }
 ```
 
-Active Agent text is sent as an accumulated, transient snapshot:
+Clients opt in to active Agent text with the repeatable `feature=agent-output`
+query parameter. Without that feature the Host sends only the original v1
+frames, so older clients continue to receive the durable final result. An
+opted-in client receives accumulated, transient snapshots:
 
 ```json
 {
@@ -244,6 +247,8 @@ Transient Agent output never advances that cursor.
 ## Compatibility rules
 
 - v1 additions must be optional fields or new event payload fields.
+- A new server frame must be gated by an explicit client `feature` query;
+  clients without that opt-in must retain the previous v1 frame set.
 - A required field, enum removal, or changed meaning requires a new protocol
   version and an explicit adapter negotiation decision.
 - The wire protocol never carries a local Agent handle, DSH connection ID,

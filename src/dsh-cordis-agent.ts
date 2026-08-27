@@ -37,6 +37,7 @@ interface PendingDelivery {
   roomId?: string;
   sessionId: string;
   started: boolean;
+  finished: boolean;
   text: string;
   textStep?: string;
 }
@@ -97,7 +98,11 @@ export function createDshCordisSessionService(input: {
         delivery.started = true;
         continue;
       }
-      if (!delivery.started || event.type !== "assistant/chunk") continue;
+      if (delivery.started && event.type === "turn/end") {
+        delivery.finished = true;
+        continue;
+      }
+      if (!delivery.started || delivery.finished || event.type !== "assistant/chunk") continue;
       const data = record(event.data);
       const chunk = record(data?.chunk);
       if (chunk?.type !== "text-delta" || typeof chunk.text !== "string" || delivery.roomId === undefined) continue;
@@ -119,6 +124,7 @@ export function createDshCordisSessionService(input: {
       roomId: delivery.roomId,
       sessionId: delivery.sessionId,
       started: false,
+      finished: false,
       text: "",
     });
     try {
@@ -136,12 +142,15 @@ export function createDshCordisSessionService(input: {
       await liveAgent(input.agents, request.sessionId).cancel({ kind: "user" }, { keepInbox: request.keepInbox });
     },
     async whenIdle(request): Promise<AgentDeliveryResult | undefined> {
-      const agent = liveAgent(input.agents, request.sessionId);
-      await agent.whenIdle?.();
       const delivery = pending.get(request.requestId);
-      pending.delete(request.requestId);
-      if (!delivery || delivery.agent !== agent || !agent.session) return undefined;
-      return assistantOutput(agent.session.events, delivery.baseline, delivery.messageId);
+      try {
+        const agent = liveAgent(input.agents, request.sessionId);
+        await agent.whenIdle?.();
+        if (!delivery || delivery.agent !== agent || !agent.session) return undefined;
+        return assistantOutput(agent.session.events, delivery.baseline, delivery.messageId);
+      } finally {
+        pending.delete(request.requestId);
+      }
     },
     onAgentOutput(listener): () => void {
       outputListeners.add(listener);

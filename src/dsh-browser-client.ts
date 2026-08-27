@@ -393,6 +393,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     url.searchParams.set("after", String(this.lastEventSeq));
     url.searchParams.set("connectionId", this.connectionIdFactory());
     url.searchParams.set("token", this.token);
+    url.searchParams.append("feature", "agent-output");
     await new Promise<void>((resolve, reject) => {
       const socket = new this.socketFactory(url.toString());
       this.socket = socket;

@@ -231,7 +231,8 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       }
     }
   }
-  let streamSeq = Math.max(0, ...events.map((event) => event.seq));
+  let streamSeq = 0;
+  for (const event of events) streamSeq = Math.max(streamSeq, event.seq);
   const roomId = events[0]?.roomId;
   for (const output of activeAgentOutputs) {
     if (roomId !== undefined && output.roomId !== roomId) continue;

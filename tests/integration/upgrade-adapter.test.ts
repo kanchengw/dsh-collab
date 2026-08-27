@@ -62,7 +62,7 @@ describe("WebSocket upgrade adapter", () => {
     httpServer = createServer();
     httpServer.on("upgrade", (request, socket, head) => upgrade!.handleUpgrade(request, socket, head));
     const port = await listen(httpServer);
-    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&after=0`, {
+    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&after=0&feature=agent-output`, {
       headers: { authorization: `Bearer ${token}` },
     });
     const connected = nextMessage(socket);
@@ -85,6 +85,10 @@ describe("WebSocket upgrade adapter", () => {
       payload: { text: "hello" },
     });
     await expect(event).resolves.toMatchObject({ protocol: "dsh-collab.v1", type: "event", event: { seq: 1 } });
+
+    const agentOutput = nextMessage(socket);
+    hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "partial", streaming: true });
+    await expect(agentOutput).resolves.toMatchObject({ protocol: "dsh-collab.v1", type: "agent-output", requestId: "request-1", text: "partial" });
 
     const heartbeat = nextMessage(socket);
     socket.send(JSON.stringify({ protocol: "dsh-collab.v1", type: "heartbeat" }));

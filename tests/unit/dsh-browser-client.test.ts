@@ -210,6 +210,7 @@ describe("browser Gateway client", () => {
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
     expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh" });
     expect(socketUrls[0]).toContain("token=host-room-token");
+    expect(new URL(socketUrls[0]!).searchParams.getAll("feature")).toContain("agent-output");
     const created = await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
     expect(decodeCollabInvitation(created.invitation)).toMatchObject({ gatewayEndpoint: "ws://192.168.1.20:4310/collab", roomId: "room-1", inviteId: "invite-1", token: "invite-secret" });
     client.dispose();
