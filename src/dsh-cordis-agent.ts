@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CollabError } from "./errors.js";
 import type { DshSessionService } from "./dsh-host.js";
-import type { AgentDeliveryResult } from "./types.js";
+import type { AgentDeliveryResult, AgentOutputFrame } from "./types.js";
 
 export interface DshUserMessage {
   id: string;
@@ -26,6 +26,19 @@ export interface DshCordisSessionEvent {
 
 export interface DshCordisAgentRegistry {
   get(sessionId: string): DshCordisAgent | undefined;
+}
+
+export type DshCordisSessionEventListener = (session: { id: string }, event: DshCordisSessionEvent) => void;
+
+interface PendingDelivery {
+  agent: DshCordisAgent;
+  baseline: number;
+  messageId: string;
+  roomId?: string;
+  sessionId: string;
+  started: boolean;
+  text: string;
+  textStep?: string;
 }
 
 function userMessage(text: string): DshUserMessage {
@@ -71,12 +84,43 @@ function assistantOutput(events: readonly DshCordisSessionEvent[], baseline: num
 }
 
 /** Adapt the public DSH `ctx.agents` service to the collab HostAgentPort seam. */
-export function createDshCordisSessionService(input: { agents: DshCordisAgentRegistry }): DshSessionService {
-  const pending = new Map<string, { agent: DshCordisAgent; baseline: number; messageId: string }>();
-  const deliver = async (mode: "followup" | "steer", delivery: { sessionId: string; requestId: string; text: string }): Promise<void> => {
+export function createDshCordisSessionService(input: {
+  agents: DshCordisAgentRegistry;
+  onSessionEvent?: (listener: DshCordisSessionEventListener) => () => void;
+}): DshSessionService {
+  const pending = new Map<string, PendingDelivery>();
+  const outputListeners = new Set<(frame: AgentOutputFrame) => void>();
+  const unsubscribeSessionEvents = input.onSessionEvent?.((session, event) => {
+    for (const [requestId, delivery] of pending) {
+      if (delivery.sessionId !== session.id) continue;
+      if (event.type === "user/message" && record(event.data)?.id === delivery.messageId) {
+        delivery.started = true;
+        continue;
+      }
+      if (!delivery.started || event.type !== "assistant/chunk") continue;
+      const data = record(event.data);
+      const chunk = record(data?.chunk);
+      if (chunk?.type !== "text-delta" || typeof chunk.text !== "string" || delivery.roomId === undefined) continue;
+      const step = String(data?.turn) + ":" + String(data?.step);
+      if (delivery.text !== "" && delivery.textStep !== undefined && delivery.textStep !== step) delivery.text += "\n\n";
+      delivery.textStep = step;
+      delivery.text += chunk.text;
+      const frame: AgentOutputFrame = { kind: "agent-output", roomId: delivery.roomId, requestId, text: delivery.text, streaming: true };
+      for (const listener of outputListeners) listener(frame);
+    }
+  });
+  const deliver = async (mode: "followup" | "steer", delivery: { sessionId: string; roomId?: string; requestId: string; text: string }): Promise<void> => {
     const agent = liveAgent(input.agents, delivery.sessionId);
     const message = userMessage(delivery.text);
-    pending.set(delivery.requestId, { agent, baseline: agent.session?.events.length ?? 0, messageId: message.id });
+    pending.set(delivery.requestId, {
+      agent,
+      baseline: agent.session?.events.length ?? 0,
+      messageId: message.id,
+      roomId: delivery.roomId,
+      sessionId: delivery.sessionId,
+      started: false,
+      text: "",
+    });
     try {
       await agent[mode](message);
     } catch (error) {
@@ -98,6 +142,15 @@ export function createDshCordisSessionService(input: { agents: DshCordisAgentReg
       pending.delete(request.requestId);
       if (!delivery || delivery.agent !== agent || !agent.session) return undefined;
       return assistantOutput(agent.session.events, delivery.baseline, delivery.messageId);
+    },
+    onAgentOutput(listener): () => void {
+      outputListeners.add(listener);
+      return () => { outputListeners.delete(listener); };
+    },
+    dispose(): void {
+      unsubscribeSessionEvents?.();
+      outputListeners.clear();
+      pending.clear();
     },
   };
 }

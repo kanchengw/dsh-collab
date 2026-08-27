@@ -187,6 +187,26 @@ Each JSON server frame has `protocol: "dsh-collab.v1"` and one of these types:
 }
 ```
 
+Active Agent text is sent as an accumulated, transient snapshot:
+
+```json
+{
+  "protocol": "dsh-collab.v1",
+  "type": "agent-output",
+  "roomId": "room-1",
+  "requestId": "request-1",
+  "text": "partial answer",
+  "streaming": true
+}
+```
+
+`agent-output` is not assigned an event sequence and is not written to the
+room ledger. A later snapshot for the same request replaces the earlier text.
+The durable `agent.state.changed`, `agent.request.failed`, or
+`agent.request.cancelled` event ends the transient projection and remains the
+authoritative history. A connection opened during generation receives the
+latest accumulated snapshot after normal event replay.
+
 ```json
 {
   "protocol": "dsh-collab.v1",
@@ -219,6 +239,7 @@ Unknown protocol versions, frame types, negative cursors, and malformed event
 actors are rejected. Event `seq` is assigned by the Host ledger; clients
 cannot choose or advance it. Reconnection starts with the last confirmed
 cursor and uses exclusive replay, with event ID de-duplication at the client.
+Transient Agent output never advances that cursor.
 
 ## Compatibility rules
 

@@ -121,6 +121,9 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });
+  const unsubscribeAgentOutput = options.sessions.onAgentOutput?.((frame) => {
+    hub.publishAgentOutput(frame);
+  });
   const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });
   const http = createCollabHttpServer({
     gateway,
@@ -141,6 +144,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot() }),
     async dispose(): Promise<void> {
+      unsubscribeAgentOutput?.();
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);
       await http.close();

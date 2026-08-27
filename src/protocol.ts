@@ -20,6 +20,7 @@ export type ClientStreamFrame =
 export type ServerStreamFrame =
   | { protocol: typeof COLLAB_PROTOCOL; type: "connected"; connectionId: string; roomId: string; lastEventSeq: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "presence"; roomId: string; onlineMemberCount: number }
+  | { protocol: typeof COLLAB_PROTOCOL; type: "agent-output"; roomId: string; requestId: string; text: string; streaming: boolean }
   | { protocol: typeof COLLAB_PROTOCOL; type: "event"; event: RoomEvent }
   | { protocol: typeof COLLAB_PROTOCOL; type: "heartbeat"; connectionId: string; serverTime: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "closed"; connectionId: string; reason: string };
@@ -61,6 +62,16 @@ function nonNegativeInteger(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw invalidInput(field + " must be a non-negative safe integer", { field });
   }
+  return value;
+}
+
+function boolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw invalidInput(field + " must be a boolean", { field });
+  return value;
+}
+
+function rawText(value: unknown, field: string): string {
+  if (typeof value !== "string") throw invalidInput(field + " must be a string", { field });
   return value;
 }
 
@@ -106,6 +117,8 @@ export function encodeServerStreamFrame(frame: StreamFrame): ServerStreamFrame {
       return { protocol: COLLAB_PROTOCOL, type: "connected", connectionId: frame.connectionId, roomId: frame.roomId, lastEventSeq: frame.lastEventSeq };
     case "presence":
       return { protocol: COLLAB_PROTOCOL, type: "presence", roomId: frame.roomId, onlineMemberCount: frame.onlineMemberCount };
+    case "agent-output":
+      return { protocol: COLLAB_PROTOCOL, type: "agent-output", roomId: frame.roomId, requestId: frame.requestId, text: frame.text, streaming: frame.streaming };
     case "event":
       return { protocol: COLLAB_PROTOCOL, type: "event", event: frame.event };
     case "heartbeat":
@@ -140,6 +153,15 @@ export function decodeServerStreamFrame(value: unknown): StreamFrame {
       kind: "presence",
       roomId: text(input.roomId, "roomId"),
       onlineMemberCount: nonNegativeInteger(input.onlineMemberCount, "onlineMemberCount"),
+    };
+  }
+  if (type === "agent-output") {
+    return {
+      kind: "agent-output",
+      roomId: text(input.roomId, "roomId"),
+      requestId: text(input.requestId, "requestId"),
+      text: rawText(input.text, "text"),
+      streaming: boolean(input.streaming, "streaming"),
     };
   }
   if (type === "event") return { kind: "event", event: decodeEvent(input.event) };

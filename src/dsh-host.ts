@@ -1,12 +1,14 @@
 import { CollabError } from "./errors.js";
-import type { AgentDelivery, AgentDeliveryResult, HostAgentPort } from "./types.js";
+import type { AgentDelivery, AgentDeliveryResult, AgentOutputFrame, HostAgentPort } from "./types.js";
 
 export interface DshSessionService {
   owns(sessionId: string): boolean | Promise<boolean>;
-  followup(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
-  steer(input: { sessionId: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
+  followup(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
+  steer(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
   cancel(input: { sessionId: string; requestId: string; keepInbox: boolean }): Promise<void> | void;
   whenIdle?(input: { sessionId: string; requestId: string }): Promise<AgentDeliveryResult | void>;
+  onAgentOutput?(listener: (frame: AgentOutputFrame) => void): () => void;
+  dispose?(): void;
 }
 
 async function assertOwned(service: DshSessionService, sessionId: string): Promise<void> {
@@ -18,6 +20,7 @@ export function createDshHostAgentPort(input: { sessions: DshSessionService }): 
     await assertOwned(input.sessions, delivery.hostSessionId);
     await input.sessions[mode]({
       sessionId: delivery.hostSessionId,
+      roomId: delivery.roomId,
       requestId: delivery.requestId,
       text: delivery.text,
       ...(delivery.contextRefs ? { contextRefs: [...delivery.contextRefs] } : {}),

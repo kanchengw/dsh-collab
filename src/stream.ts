@@ -3,7 +3,7 @@ import { EventLedger } from "./events.js";
 import { ResourceLimiter } from "./limits.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
-import type { RoomEvent, StreamFrame } from "./types.js";
+import type { AgentOutputFrame, RoomEvent, StreamFrame } from "./types.js";
 import type { ActiveRoomRegistry } from "./active-rooms.js";
 
 function requiredText(value: unknown, field: string): string {
@@ -33,6 +33,7 @@ export interface StreamConnection {
 
 export class RoomStreamHub {
   private readonly connections = new Map<string, ConnectionRecord>();
+  private readonly activeAgentOutputs = new Map<string, AgentOutputFrame>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeActive: (() => void) | undefined;
   private readonly now: () => number;
@@ -48,7 +49,10 @@ export class RoomStreamHub {
     this.now = options.now ?? (() => Date.now());
     this.unsubscribe = options.ledger.subscribe((event) => this.publish(event));
     this.unsubscribeActive = options.activeRooms?.subscribe((roomId, active) => {
-      if (!active) this.closeRoom(roomId, "room_not_shared");
+      if (!active) {
+        this.clearRoomAgentOutputs(roomId);
+        this.closeRoom(roomId, "room_not_shared");
+      }
     });
   }
 
@@ -84,6 +88,9 @@ export class RoomStreamHub {
       this.connections.set(connectionId, record);
       this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
       for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
+      for (const frame of this.activeAgentOutputs.values()) {
+        if (frame.roomId === roomId) this.emit(record, frame);
+      }
       this.broadcastPresence(roomId);
       return {
         connectionId,
@@ -112,6 +119,23 @@ export class RoomStreamHub {
     return frame;
   }
 
+  publishAgentOutput(frame: Omit<AgentOutputFrame, "kind">): void {
+    if (this.options.activeRooms && !this.options.activeRooms.isActive(frame.roomId)) return;
+    const output: AgentOutputFrame = { kind: "agent-output", ...frame };
+    this.activeAgentOutputs.set(frame.roomId + ":" + frame.requestId, output);
+    for (const record of [...this.connections.values()]) {
+      if (record.roomId !== frame.roomId) continue;
+      try {
+        this.options.tokens.verify({ roomId: record.roomId, token: record.token, now: this.now() });
+      } catch (error) {
+        const reason = error instanceof CollabError && error.code === "MEMBER_INACTIVE" ? "member_inactive" : "auth_invalid";
+        this.close(record.connectionId, reason);
+        continue;
+      }
+      this.emit(record, output);
+    }
+  }
+
   close(connectionId: string, reason = "server_closed"): void {
     const record = this.connections.get(connectionId);
     if (!record) return;
@@ -134,6 +158,10 @@ export class RoomStreamHub {
   }
 
   private publish(event: RoomEvent): void {
+    if (event.type === "agent.state.changed" || event.type === "agent.request.failed" || event.type === "agent.request.cancelled") {
+      const requestId = recordText(event.payload, "requestId");
+      if (requestId) this.activeAgentOutputs.delete(event.roomId + ":" + requestId);
+    }
     for (const record of [...this.connections.values()]) {
       if (record.roomId !== event.roomId) continue;
       try {
@@ -144,6 +172,12 @@ export class RoomStreamHub {
         continue;
       }
       this.publishTo(record, event);
+    }
+  }
+
+  private clearRoomAgentOutputs(roomId: string): void {
+    for (const [key, frame] of this.activeAgentOutputs) {
+      if (frame.roomId === roomId) this.activeAgentOutputs.delete(key);
     }
   }
 
@@ -173,4 +207,10 @@ export class RoomStreamHub {
       // A slow or broken client callback cannot roll back room state.
     }
   }
+}
+
+function recordText(value: unknown, field: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = (value as Record<string, unknown>)[field];
+  return typeof candidate === "string" && candidate !== "" ? candidate : undefined;
 }

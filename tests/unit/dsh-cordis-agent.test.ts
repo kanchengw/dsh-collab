@@ -2,6 +2,37 @@ import { describe, expect, it } from "vitest";
 import { createDshCordisSessionService, type DshUserMessage } from "../../src/dsh-cordis-agent.js";
 
 describe("real DSH Cordis Agent bridge", () => {
+  it("publishes accumulated text chunks for only the matching Collab request", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
+    const output: unknown[] = [];
+    const agent = {
+      session: { get events() { return events; } },
+      followup(message: DshUserMessage) {
+        const appended = { seq: 0, type: "user/message", data: message };
+        events.push(appended);
+        observe?.({ id: "session-1" }, appended);
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({
+      agents: { get: () => agent },
+      onSessionEvent: (listener) => { observe = listener; return () => { observe = undefined; }; },
+    });
+    service.onAgentOutput?.((frame) => output.push(frame));
+
+    await service.followup({ roomId: "room-1", requestId: "request-1", sessionId: "session-1", text: "reply" });
+    observe?.({ id: "other-session" }, { seq: 1, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "wrong" } } });
+    observe?.({ id: "session-1" }, { seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "reasoning-delta", index: 0, text: "hidden" } } });
+    observe?.({ id: "session-1" }, { seq: 3, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "Hello" } } });
+    observe?.({ id: "session-1" }, { seq: 4, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: " world" } } });
+
+    expect(output).toEqual([
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello world", streaming: true },
+    ]);
+  });
+
   it("resolves ctx.agents.get and forwards followup, steer, and cancel", async () => {
     const calls: string[] = [];
     const messages: DshUserMessage[] = [];

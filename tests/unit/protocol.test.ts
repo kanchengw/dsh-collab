@@ -76,6 +76,28 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeServerStreamFrame(wire)).toEqual(frame);
   });
 
+  it("round-trips transient accumulated Agent output", () => {
+    const frame: StreamFrame = {
+      kind: "agent-output",
+      roomId: "room-1",
+      requestId: "request-1",
+      text: "partial **answer**",
+      streaming: true,
+    };
+
+    const wire = encodeServerStreamFrame(frame);
+
+    expect(wire).toEqual({
+      protocol: COLLAB_PROTOCOL,
+      type: "agent-output",
+      roomId: "room-1",
+      requestId: "request-1",
+      text: "partial **answer**",
+      streaming: true,
+    });
+    expect(decodeServerStreamFrame(wire)).toEqual(frame);
+  });
+
   it("rejects unknown versions, frame types, and negative cursors", () => {
     expect(() => decodeClientStreamFrame({ protocol: "dsh-collab.v2", type: "heartbeat" })).toThrow("protocol");
     expect(() => decodeClientStreamFrame({ protocol: COLLAB_PROTOCOL, type: "event" })).toThrow("type");
@@ -99,5 +121,13 @@ describe("dsh-collab wire protocol", () => {
         payload: {},
       },
     })).toThrow("event.type");
+    expect(() => decodeServerStreamFrame({
+      protocol: COLLAB_PROTOCOL,
+      type: "agent-output",
+      roomId: "room-1",
+      requestId: "request-1",
+      text: "partial",
+      streaming: "yes",
+    })).toThrow("streaming");
   });
 });
