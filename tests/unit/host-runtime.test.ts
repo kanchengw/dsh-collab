@@ -1,7 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 describe("host runtime factory", () => {
+  it("broadcasts Workspace Sharing changes and resets them on stop or restart", async () => {
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+      now: () => 10,
+    };
+    const runtime = createDshCollabHostRuntime(options);
+    const host = await runtime.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const roomToken = (host.body as { roomToken: string }).roomToken;
+    const collaborationEvents: unknown[] = [];
+    runtime.hub.connect({
+      connectionId: "connection-1",
+      roomId: "room-1",
+      token: roomToken,
+      capabilities: [SIDECAR_REVIEW_CAPABILITY],
+      onFrame: () => {},
+      onCollaborationEvent: (event) => collaborationEvents.push(event),
+    });
+    const headers = { authorization: `Bearer ${roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+
+    expect(await runtime.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers, body: { enabled: true } })).toMatchObject({ status: 200 });
+    expect(collaborationEvents).toContainEqual(expect.objectContaining({ type: "workspace-sharing.changed", state: expect.objectContaining({ enabled: true }) }));
+    const snapshot = runtime.snapshot();
+    expect(JSON.stringify(snapshot)).not.toContain("workspaceSharing");
+    await runtime.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Room" } });
+    const nextHost = await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const nextHeaders = { authorization: `Bearer ${(nextHost.body as { roomToken: string }).roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    expect(await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/workspace-sharing", headers: nextHeaders })).toMatchObject({ body: { state: { enabled: false, revision: 0 } } });
+
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers: nextHeaders, body: { enabled: true } });
+    await restored.gateway.handle({ method: "DELETE", path: "/v1/rooms/room-1/host", auth: { principalId: "host" } });
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Room" } });
+    const reshared = await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const resharedHeaders = { authorization: `Bearer ${(reshared.body as { roomToken: string }).roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    expect(await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/workspace-sharing", headers: resharedHeaders })).toMatchObject({ body: { state: { enabled: false, revision: 0 } } });
+    await restored.dispose();
+  });
   it("restores Owned rooms as inactive until explicitly shared in this process", async () => {
     const options = {
       roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",

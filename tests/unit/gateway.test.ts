@@ -5,6 +5,10 @@ import { InviteStore } from "../../src/invites.js";
 import { ApprovalStore } from "../../src/approvals.js";
 import { RoomStore } from "../../src/room.js";
 import type { GatewayRequest, HostAgentPort } from "../../src/types.js";
+import { ActiveRoomRegistry } from "../../src/active-rooms.js";
+import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
+import { WorkspaceService } from "../../src/workspace-service.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 function setup(agentOverride?: HostAgentPort, withApprovals = false) {
   const rooms = new RoomStore();
@@ -41,13 +45,20 @@ function setup(agentOverride?: HostAgentPort, withApprovals = false) {
   };
   const invites = new InviteStore(rooms, { tokenFactory: () => "invite-token" });
   const approvals = withApprovals ? new ApprovalStore({ rooms, ledger, answerer: {} }) : undefined;
+  const activeRooms = new ActiveRoomRegistry();
+  activeRooms.activate("room-1");
+  activeRooms.activate("room-2");
+  const workspaceSharing = new WorkspaceSharingRegistry();
+  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, now: () => 10 });
   const gateway = new CollabGateway({
     rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10, approvals,
     hostPrincipalId: "host",
     hostDisplayName: "Host",
     ownsHostSession: (sessionId) => sessionId !== "session-missing",
+    activeRooms,
+    workspace,
   });
-  return { gateway, calls, rooms, ledger };
+  return { gateway, calls, rooms, ledger, workspaceSharing, activeRooms };
 }
 
 async function request(gateway: CollabGateway, input: GatewayRequest) {
@@ -59,6 +70,49 @@ function bearer(token: string) {
 }
 
 describe("CollabGateway route contract", () => {
+  it("gates Workspace Sharing routes by capability and Host role", async () => {
+    const { gateway, activeRooms } = setup();
+    const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const participant = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
+    const capability = { [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    const hostHeaders = { ...bearer((host.body as { roomToken: string }).roomToken), ...capability };
+    const participantHeaders = { ...bearer((participant.body as { roomToken: string }).roomToken), ...capability };
+
+    expect(await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+    })).toMatchObject({ status: 404 });
+    expect(await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: participantHeaders,
+    })).toMatchObject({ status: 200, body: { state: { enabled: false, revision: 0 } } });
+    expect(await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: participantHeaders,
+      body: { enabled: true },
+    })).toMatchObject({ status: 403, body: { error: { code: "ACTION_FORBIDDEN" } } });
+    expect(await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: hostHeaders,
+      body: { enabled: true, principalId: "alice" },
+    })).toMatchObject({ status: 200, body: { state: { enabled: true, enabledBy: "member-host", revision: 1 } } });
+    expect(await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: participantHeaders,
+    })).toMatchObject({ status: 200, body: { state: { enabled: true, enabledBy: "member-host" } } });
+
+    activeRooms.deactivate("room-1");
+    expect(await request(gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+    })).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
+  });
   it("shares only an owned current session and updates its Room name idempotently", async () => {
     const { gateway, rooms } = setup();
 

@@ -24,6 +24,7 @@ export type CollabErrorCode =
   | "CONNECTION_EXISTS"
   | "CONNECTION_NOT_FOUND"
   | "ACTION_FORBIDDEN"
+  | "WORKSPACE_SHARING_DISABLED"
   | "RESOURCE_LIMIT";
 
 export class CollabError extends Error {

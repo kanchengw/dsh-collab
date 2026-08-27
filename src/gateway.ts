@@ -9,6 +9,8 @@ import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
+import type { WorkspaceService } from "./workspace-service.js";
 import type {
   GatewayRequest,
   GatewayResponse,
@@ -43,6 +45,7 @@ interface GatewayOptions {
   hostDisplayName?: string;
   ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
   activeRooms?: ActiveRoomRegistry;
+  workspace?: WorkspaceService;
 }
 
 const MAX_ROOM_TITLE_LENGTH = 80;
@@ -69,6 +72,12 @@ function numberField(body: Record<string, unknown>, field: string): number {
   return value;
 }
 
+function booleanField(body: Record<string, unknown>, field: string): boolean {
+  const value = body[field];
+  if (typeof value !== "boolean") throw invalidInput(field + " must be a boolean", { field });
+  return value;
+}
+
 function getHeader(request: GatewayRequest, name: string): string | undefined {
   const headers = request.headers ?? {};
   const target = name.toLowerCase();
@@ -87,7 +96,7 @@ function statusFor(error: CollabError): number {
   if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
   if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
   if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND") return 404;
-  if (error.code === "ROOM_INACTIVE" || error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED") return 409;
+  if (error.code === "ROOM_INACTIVE" || error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED" || error.code === "WORKSPACE_SHARING_DISABLED") return 409;
   if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
 }
@@ -142,8 +151,15 @@ export class CollabGateway {
       const resource = segments[3];
       if (request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
       if (request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
+      if (resource === "workspace-sharing") {
+        const capabilities = decodeCollaborationCapabilities(getHeader(request, COLLAB_CAPABILITY_HEADER));
+        if (!this.options.workspace || !capabilities.includes(SIDECAR_REVIEW_CAPABILITY)) {
+          return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+        }
+      }
       this.options.rooms.getRoom(roomId);
       this.options.activeRooms?.requireActive(roomId);
+      if (resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return this.join(roomId, request);
@@ -245,9 +261,28 @@ export class CollabGateway {
     if (!this.options.hostPrincipalId || principalId !== this.options.hostPrincipalId || room.hostId !== principalId) {
       throw new CollabError("ACTION_FORBIDDEN", "only the room Host can stop sharing");
     }
+    this.options.workspace?.clearRoom(roomId);
     this.options.activeRooms?.deactivate(roomId);
     this.tokens.revokeRoom(roomId, this.now());
     return { status: 200, body: { room, sharing: false } };
+  }
+
+  private workspaceSharing(roomId: string, request: GatewayRequest): GatewayResponse {
+    const workspace = this.options.workspace!;
+    const claims = this.claims(roomId, request);
+    if (request.method === "GET") {
+      return { status: 200, body: { state: workspace.getState({ roomId, principalId: claims.principalId }) } };
+    }
+    if (request.method === "POST") {
+      const body = objectBody(request.body);
+      const state = workspace.setSharing({
+        roomId,
+        principalId: claims.principalId,
+        enabled: booleanField(body, "enabled"),
+      });
+      return { status: 200, body: { state } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
   }
 
   private resume(roomId: string, request: GatewayRequest): GatewayResponse {

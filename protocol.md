@@ -67,8 +67,9 @@ of the initial `connected` frame. Existing clients may ignore that additive
 field.
 
 All Workspace, Review and published SideTask HTTP routes added after the base
-v1 contract require `sidecar-review.v1`. The current Unit defines the gate and
-the first event schema only; it does not expose those routes yet.
+v1 contract require `sidecar-review.v1`. A capability-gated route behaves as
+not found (`404`) when that capability is absent, so an older client retains
+the original v1 surface instead of discovering a partial extension.
 
 ## HTTP requests
 
@@ -98,6 +99,8 @@ The current routes are:
 | `GET` | `/collab/v1/rooms/:roomId/approvals` | Host lists approval projections |
 | `POST` | `/collab/v1/rooms/:roomId/approvals` | Host creates an approval projection |
 | `POST` | `/collab/v1/rooms/:roomId/actions` | Host cancels, manages members or decides an approval |
+| `GET` | `/collab/v1/rooms/:roomId/workspace-sharing` | Active member reads the runtime-only Workspace Sharing state; requires `sidecar-review.v1` |
+| `POST` | `/collab/v1/rooms/:roomId/workspace-sharing` | Host enables or disables Workspace Sharing for this runtime; requires `sidecar-review.v1` |
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -144,6 +147,14 @@ Approval requests are created and listed at `/collab/v1/rooms/:roomId/approvals`
 All actions are authorized from the room token principal; body-level actor
 fields are ignored because they are not part of the contract.
 
+Workspace Sharing updates accept only `{ "enabled": true | false }`. The
+Gateway derives the actor from the verified room token and current RoomStore
+membership; body-level actor fields have no effect. Only the current Host may
+change the state, while any active member may read it. The state defaults to
+disabled, is not included in Host snapshots, and resets to disabled when room
+sharing stops or the Host runtime restarts. A later workspace read while the
+switch is off returns `409 WORKSPACE_SHARING_DISABLED`.
+
 ## HTTP responses
 
 Successful responses use:
@@ -178,7 +189,7 @@ stable status mapping is:
 - `401`: missing or invalid authentication;
 - `403`: authenticated but outside room/action scope;
 - `404`: route, room, invite, or event not found;
-- `409`: idempotency, invite, or event conflict;
+- `409`: idempotency, invite, event, room-activation, or Workspace Sharing state conflict;
 - `422`: invalid input or unsupported protocol data;
 - `429`: resource limit (reserved for the production hardening phase);
 - `503`: Host or Agent unavailable (must not claim the request was queued).

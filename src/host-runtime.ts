@@ -11,6 +11,8 @@ import { CollabStreamUpgrade } from "./upgrade.js";
 import { authenticateCollabRequest, createCollabHttpServer, type CollabHttpServer, type HttpHeaders } from "./http.js";
 import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
+import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
+import { WorkspaceService } from "./workspace-service.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -51,6 +53,7 @@ export interface DshCollabHostRuntime {
   readonly upgrade: CollabStreamUpgrade;
   readonly http: CollabHttpServer;
   readonly activeRooms: ActiveRoomRegistry;
+  readonly workspace: WorkspaceService;
   snapshot(): DshCollabHostRuntimeSnapshot;
   dispose(): Promise<void>;
 }
@@ -92,6 +95,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: snapshot.approvals })
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const activeRooms = new ActiveRoomRegistry();
+  const workspaceSharing = new WorkspaceSharingRegistry();
+  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, now: options.now });
   if (!snapshot && options.roomId && options.hostSessionId && options.title) activeRooms.activate(options.roomId);
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
@@ -114,6 +119,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     hostDisplayName: options.hostDisplayName,
     ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
     activeRooms,
+    workspace,
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
@@ -121,6 +127,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });
+  const unsubscribeWorkspaceSharing = workspaceSharing.subscribe((event) => hub.publishCollaborationEvent(event));
   const unsubscribeAgentOutput = options.sessions.onAgentOutput?.((frame) => {
     hub.publishAgentOutput(frame);
   });
@@ -141,10 +148,11 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
+      unsubscribeWorkspaceSharing();
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);
       await http.close();
