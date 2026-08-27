@@ -6,6 +6,10 @@ function response(data: unknown, status = 200): { ok: boolean; status: number; j
   return { ok: status < 400, status, json: async () => ({ protocol: "dsh-collab.v1", requestId: "test", ok: true, data }) };
 }
 
+function errorResponse(code: string, message: string, status: number): { ok: boolean; status: number; json(): Promise<unknown> } {
+  return { ok: false, status, json: async () => ({ protocol: "dsh-collab.v1", requestId: "test", ok: false, error: { code, message } }) };
+}
+
 describe("browser Gateway client", () => {
   it("uses live presence instead of persisted memberships for the online count", async () => {
     let socket: BrowserSocket | undefined;
@@ -692,7 +696,56 @@ describe("browser Gateway client", () => {
       gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
       fetch: async () => { throw new Error("network offline"); }, WebSocket: class {} as never,
     });
-    await expect(offline.restoreParticipant()).rejects.toThrow("network offline");
+    await expect(offline.restoreParticipant()).rejects.toMatchObject({ code: "GATEWAY_UNREACHABLE" });
     expect(persisted?.credential).toBe("offline");
+  });
+
+  it("distinguishes a stopped Host share, an unreachable Gateway, and a connection limit", async () => {
+    const saved: ParticipantResumeState = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret", roomTitle: "Remote" };
+    const persistence = { load: () => saved, save: async () => {} };
+    const stopped = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
+      fetch: async () => errorResponse("ROOM_INACTIVE", "room is not currently shared", 409), WebSocket: class {} as never,
+    });
+    await expect(stopped.restoreParticipant()).rejects.toMatchObject({ status: 409, code: "ROOM_INACTIVE" });
+    expect(stopped.getSnapshot()).toMatchObject({ roomId: "room-2", unavailableReason: "host-stopped-sharing" });
+
+    const limited = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
+      fetch: async () => errorResponse("RESOURCE_LIMIT", "connection limit reached", 429), WebSocket: class {} as never,
+    });
+    await expect(limited.restoreParticipant()).rejects.toMatchObject({ status: 429, code: "RESOURCE_LIMIT" });
+    expect(limited.getSnapshot()).toMatchObject({ roomId: "room-2", unavailableReason: "resource-limited" });
+
+    const unreachable = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: persistence,
+      fetch: async () => { throw new TypeError("Failed to fetch"); }, WebSocket: class {} as never,
+    });
+    await expect(unreachable.restoreParticipant()).rejects.toMatchObject({ code: "GATEWAY_UNREACHABLE" });
+    expect(unreachable.getSnapshot()).toMatchObject({ roomId: "room-2", unavailableReason: "host-unreachable" });
+  });
+
+  it("marks a connected Participant room as stopped when the Host closes its stream", async () => {
+    let socket: BrowserSocket | undefined;
+    const saved: ParticipantResumeState = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret", roomTitle: "Remote" };
+    const fetch: BrowserFetch = async (url) => url.endsWith("/resume")
+      ? response({ room: { roomId: "room-2", title: "Remote" }, member: { memberId: "member-bob", role: "participant" }, roomToken: "room-token" })
+      : response({ room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 });
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", participantPersistence: { load: () => saved, save: async () => {} }, fetch, WebSocket });
+    await client.restoreParticipant();
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "closed", connectionId: "connection-1", reason: "room_not_shared" }) });
+
+    expect(client.getSnapshot()).toMatchObject({ unavailableReason: "host-stopped-sharing" });
+    client.dispose();
   });
 });

@@ -28,6 +28,9 @@ describe("dsh-collab locale dictionaries", () => {
   it("ships balanced English and Simplified Chinese dictionaries", () => {
     expect(COLLAB_LOCALE_NAMESPACE).toBe("dsh-collab");
     expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort());
+    expect(zh["room.hostStoppedSharing"]).toContain("主机已停止分享");
+    expect(zh["room.hostUnreachable"]).toContain("主机是否在线");
+    expect(zh["room.resourceLimited"]).toContain("稍后重试");
   });
 
   it("registers its dictionaries and declares the locale namespace on every DSH slot", () => {

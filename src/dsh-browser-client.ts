@@ -103,7 +103,7 @@ type SnapshotData = {
 
 type EventsData = { events: RoomEvent[]; nextSeq?: number };
 
-type Envelope = { ok: boolean; data?: unknown; error?: { message?: string } };
+type Envelope = { ok: boolean; data?: unknown; error?: { code?: string; message?: string } };
 
 const OPEN = 1;
 const HEARTBEAT_INTERVAL_MS = 5_000;
@@ -250,7 +250,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.socket = undefined;
     this.token = undefined;
     this.activeAgentOutputs.clear();
-    this.snapshot = { ...this.snapshot, timeline: this.projectTimeline() };
+    this.snapshot = { ...this.snapshot, unavailableReason: undefined, timeline: this.projectTimeline() };
     socket?.close(1000, "client_disconnected");
     this.setConnection("offline");
   }
@@ -293,6 +293,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       await this.connect();
       return true;
     } catch (error) {
+      this.applyParticipantFailure(state, error);
       if (error instanceof GatewayRequestError && (error.status === 401 || error.status === 403 || error.status === 404)) {
         if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(state);
         else await this.options.participantPersistence?.clear?.();
@@ -405,12 +406,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         this.socket = undefined;
         this.clearHeartbeat();
         this.setConnection("offline");
-        if (!settled) reject(new Error("collaboration stream closed"));
+        if (!settled) reject(new GatewayConnectionError());
         else this.scheduleReconnect();
       };
       socket.onerror = () => {
         if (this.socket !== socket) return;
-        if (!settled) { settled = true; reject(new Error("collaboration stream failed")); }
+        if (!settled) { settled = true; reject(new GatewayConnectionError()); }
+        if (this.snapshot.role === "participant" && !this.snapshot.unavailableReason) this.setUnavailableReason("host-unreachable");
         this.setConnection("offline");
       };
     });
@@ -459,9 +461,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const headers: Record<string, string> = { accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
-    const response = await this.fetcher(base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const envelope = await response.json();
-    if (!response.ok) throw new GatewayRequestError(response.status);
+    let response: BrowserResponse;
+    try {
+      response = await this.fetcher(base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    } catch (cause) {
+      throw new GatewayConnectionError(cause);
+    }
+    const envelope = await response.json() as Envelope;
+    if (!response.ok) throw new GatewayRequestError(response.status, envelope.error?.code, envelope.error?.message);
     return envelope;
   }
 
@@ -480,6 +487,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       connection: "connecting",
       onlineCount: sameRoom ? this.snapshot.onlineCount : 0,
       canSteer: data.member.role === "host" || data.member.role === "lead",
+      unavailableReason: undefined,
       members: sameRoom
         ? this.snapshot.members
         : typeof data.member.displayName === "string" && data.member.displayName.trim() !== ""
@@ -493,6 +501,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private applyFrame(raw: string): void {
     let frame: StreamFrame;
     try { frame = decodeServerStreamFrame(JSON.parse(raw) as unknown); } catch { return; }
+    if (frame.kind === "closed" && frame.reason === "room_not_shared" && this.snapshot.role === "participant") {
+      this.setUnavailableReason("host-stopped-sharing");
+      this.setConnection("offline");
+      return;
+    }
     if (frame.kind === "presence" && frame.roomId === this.snapshot.roomId) {
       this.snapshot = { ...this.snapshot, onlineCount: frame.onlineMemberCount };
       this.emit();
@@ -548,12 +561,52 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.emit();
   }
 
+  private applyParticipantFailure(state: ParticipantResumeState, error: unknown): void {
+    const unavailableReason = error instanceof GatewayRequestError
+      ? error.code === "ROOM_INACTIVE"
+        ? "host-stopped-sharing"
+        : error.code === "RESOURCE_LIMIT"
+          ? "resource-limited"
+          : undefined
+      : error instanceof GatewayConnectionError
+        ? "host-unreachable"
+        : undefined;
+    if (!unavailableReason) return;
+    this.snapshot = {
+      ...this.snapshot,
+      roomId: state.roomId,
+      roomTitle: state.roomTitle ?? this.snapshot.roomTitle,
+      hostDisplayName: state.hostDisplayName ?? this.snapshot.hostDisplayName,
+      role: "participant",
+      connection: "offline",
+      onlineCount: 0,
+      unavailableReason,
+    };
+    this.emit();
+  }
+
+  private setUnavailableReason(unavailableReason: NonNullable<DshCollabClientSnapshot["unavailableReason"]>): void {
+    if (this.snapshot.unavailableReason === unavailableReason) return;
+    this.snapshot = { ...this.snapshot, unavailableReason };
+    this.emit();
+  }
+
   private emit(): void { for (const listener of this.listeners) listener(); }
 }
 
-class GatewayRequestError extends Error {
-  constructor(readonly status: number) {
-    super(`Gateway request failed (${String(status)})`);
+export class GatewayRequestError extends Error {
+  constructor(readonly status: number, readonly code?: string, message?: string) {
+    super(message ?? `Gateway request failed (${String(status)})`);
+    this.name = "GatewayRequestError";
+  }
+}
+
+export class GatewayConnectionError extends Error {
+  readonly code = "GATEWAY_UNREACHABLE";
+
+  constructor(cause?: unknown) {
+    super("Gateway is unreachable", { cause });
+    this.name = "GatewayConnectionError";
   }
 }
 

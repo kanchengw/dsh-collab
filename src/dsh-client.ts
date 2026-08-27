@@ -1,7 +1,7 @@
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
 import { composerKeyAction, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
-import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
+import { createDshBrowserCollabClient, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
@@ -17,6 +17,7 @@ export interface DshCollabClientSnapshot {
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
   canSteer: boolean;
+  unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited";
   members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
 }
@@ -402,6 +403,15 @@ function connectionLabel(connection: DshCollabClientSnapshot["connection"], t: C
   return t(key[connection]);
 }
 
+function actionErrorText(cause: unknown, t: CollabTranslate): string {
+  if (cause instanceof GatewayRequestError) {
+    if (cause.code === "ROOM_INACTIVE") return t("room.hostStoppedSharing");
+    if (cause.code === "RESOURCE_LIMIT") return t("room.resourceLimited");
+  }
+  if (cause instanceof GatewayConnectionError) return t("room.hostUnreachable");
+  return cause instanceof Error ? cause.message : t("rooms.actionError");
+}
+
 function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   if (item.text) return item.text;
   if (item.kind === "agent-request") return t("room.agentRequest", { status: agentStatusLabel(item.status ?? "updated", t) });
@@ -545,11 +555,17 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
     setInvitation("");
     setNotice(undefined);
   }, [selection?.kind, selection?.roomId]);
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = setTimeout(() => { setNotice(undefined); }, notice.tone === "success" ? 3_000 : 6_000);
+    return () => { clearTimeout(timeout); };
+  }, [notice]);
   if (!selection) return null;
 
   const role = selection.kind === "owned" ? "host" : "participant";
-  const active = snapshot.roomId === selection.roomId && snapshot.role === role && snapshot.connection !== "offline";
-  const view: DshCollabClientSnapshot = active ? snapshot : {
+  const selected = snapshot.roomId === selection.roomId && snapshot.role === role;
+  const active = selected && snapshot.connection !== "offline";
+  const view: DshCollabClientSnapshot = selected ? snapshot : {
     ...fallbackSnapshot,
     roomId: selection.roomId,
     roomTitle: selection.roomTitle,
@@ -565,7 +581,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       await action();
       if (success) setNotice({ tone: "success", text: success });
     } catch (cause) {
-      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("rooms.actionError") });
+      setNotice({ tone: "error", text: actionErrorText(cause, t) });
     } finally {
       setBusy(undefined);
     }
@@ -593,6 +609,13 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   const copyInvitation = async (): Promise<void> => {
     await perform("copy", async () => { await navigator.clipboard.writeText(invitation); }, t("share.copiedNotice"));
   };
+  const participantInactiveKey: CollabLocaleKey = view.unavailableReason === "host-stopped-sharing"
+    ? "room.hostStoppedSharing"
+    : view.unavailableReason === "host-unreachable"
+      ? "room.hostUnreachable"
+      : view.unavailableReason === "resource-limited"
+        ? "room.resourceLimited"
+        : "room.participantInactive";
 
   return createElement("main", { className: roomCss.surface, "data-collab-room-ui": true, "data-collab-surface": "room", "data-collab-mode": role, "aria-label": t("room.aria") },
     createElement("header", { className: roomCss.surfaceHeader },
@@ -613,7 +636,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
     active ? createElement(DshCollabDock, { port: props.port, fallback: view, showHeader: false, t }) : createElement("section", { className: roomCss.inactiveRoom },
       createElement("div", { className: roomCss.inactiveMark, "aria-hidden": true }, "@"),
       createElement("h2", null, view.roomTitle),
-      createElement("p", null, t(role === "host" ? "room.ownerInactive" : "room.participantInactive")),
+      createElement("p", null, t(role === "host" ? "room.ownerInactive" : participantInactiveKey)),
       role === "host" ? createElement("form", { className: roomCss.roomSetup, onSubmit: (event: FormEvent<HTMLFormElement>) => { void startSharing(event); } },
         createElement("label", { className: roomCss.shareField }, t("share.roomName"), createElement("input", { name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) })),
         createElement("button", { type: "submit", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.shareHostRoom || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : "share.startAndShare")),

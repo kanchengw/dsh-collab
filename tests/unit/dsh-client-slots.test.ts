@@ -16,6 +16,15 @@ describe("real DSH client slot adapter", () => {
     expect(source).toMatch(/setInvitation\(""\);[^\n]*share\.hideInvitation/);
   });
 
+  it("expires transient room notices while keeping Participant availability visible", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
+
+    expect(source).toContain('notice.tone === "success" ? 3_000 : 6_000');
+    expect(source).toContain('view.unavailableReason === "host-stopped-sharing"');
+    expect(source).toContain('view.unavailableReason === "host-unreachable"');
+    expect(source).toContain('view.unavailableReason === "resource-limited"');
+  });
+
   it("keeps room status and actions available at narrow viewports", () => {
     const css = readFileSync(resolve(process.cwd(), "src/collab-room.module.css"), "utf8");
     const narrow = css.slice(css.indexOf("@media (max-width: 720px)"), css.indexOf("@media (max-width: 440px)"));
