@@ -76,7 +76,7 @@ export class AgentDispatcher {
       roomId: message.roomId,
       type: "agent.request.created",
       actor,
-      payload: { requestId, deliveryMode: message.deliveryMode },
+      payload: { requestId, deliveryMode: message.deliveryMode, text: message.text },
     });
     this.options.ledger.append({
       eventId: requestId + ":queued",

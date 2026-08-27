@@ -13,8 +13,8 @@ export interface ParticipantShellState {
 }
 
 export interface ComposerState {
-  target: ComposerTarget;
-  canSteer: boolean;
+  target?: ComposerTarget;
+  canSteer?: boolean;
   draft: string;
 }
 
@@ -23,7 +23,7 @@ export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed
 export interface TimelineItem {
   eventId: string;
   seq: number;
-  kind: "human" | "agent";
+  kind: "human" | "agent-request" | "agent";
   authorMemberId: string;
   text?: string;
   requestId?: string;
@@ -77,6 +77,21 @@ export function getComposerTargets(canSteer: boolean): ComposerTarget[] {
   return canSteer ? ["room", "dsh", "dsh-steer"] : ["room", "dsh"];
 }
 
+export const AGENT_MENTION = "@agent";
+
+/** Resolve the shared composer route without treating email-like text as a mention. */
+export function composerTargetForText(text: string): Exclude<ComposerTarget, "dsh-steer"> {
+  return /(?:^|[^A-Za-z0-9_])@agent(?![A-Za-z0-9_])/.test(text) ? "dsh" : "room";
+}
+
+export function shouldSuggestAgentMention(draft: string): boolean {
+  return /(?:^|[^A-Za-z0-9_])@$/.test(draft);
+}
+
+export function insertAgentMention(draft: string): string {
+  return shouldSuggestAgentMention(draft) ? `${draft.slice(0, -1)}${AGENT_MENTION} ` : draft;
+}
+
 export function createComposerSubmission(input: {
   messageId: string;
   roomId: string;
@@ -102,11 +117,8 @@ export function createComposerSubmission(input: {
 }
 
 export function renderComposer(state: ComposerState): string {
-  const options = getComposerTargets(state.canSteer).map((target) => {
-    const label = target === "room" ? "People" : target === "dsh" ? "DSH Agent" : "Steer Agent";
-    return `<option value="${target}"${target === state.target ? " selected" : ""}>${label}</option>`;
-  }).join("");
-  return `<form class="collab-composer" data-target="${state.target}"><label>Send to <select name="target">${options}</select></label><textarea name="text">${escapeHtml(state.draft)}</textarea></form>`;
+  const suggestion = shouldSuggestAgentMention(state.draft) ? `<button type="button" data-mention="${AGENT_MENTION}">${AGENT_MENTION}</button>` : "";
+  return `<form class="collab-composer" data-target="${composerTargetForText(state.draft)}"><textarea name="text" placeholder="Message the room or mention @agent to ask the Host Agent">${escapeHtml(state.draft)}</textarea>${suggestion}</form>`;
 }
 
 function objectPayload(value: unknown): Record<string, unknown> {
@@ -125,6 +137,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
   const seen = new Set<string>();
   const items: TimelineItem[] = [];
   const requests = new Map<string, TimelineItem>();
+  const outputs = new Map<string, TimelineItem>();
   for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
     if (seen.has(event.eventId)) continue;
     seen.add(event.eventId);
@@ -142,7 +155,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
     }
     if (event.type === "agent.state.changed") {
       const requestId = payloadRequestId(payload) ?? "state:" + event.eventId;
-      const item = requests.get(requestId) ?? {
+      const item = outputs.get(requestId) ?? {
         eventId: event.eventId,
         seq: event.seq,
         kind: "agent" as const,
@@ -152,8 +165,8 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
       item.seq = event.seq;
       item.state = typeof payload.state === "string" ? payload.state : undefined;
       item.text = payloadText(payload) ?? item.text;
-      if (!requests.has(requestId)) {
-        requests.set(requestId, item);
+      if (!outputs.has(requestId)) {
+        outputs.set(requestId, item);
         items.push(item);
       }
       continue;
@@ -173,16 +186,32 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
     const item = requests.get(requestId) ?? {
       eventId: event.eventId,
       seq: event.seq,
-      kind: "agent" as const,
+      kind: "agent-request" as const,
       authorMemberId: event.actor.memberId,
       requestId,
     };
-    item.seq = event.seq;
     item.status = status;
-    if (status === "failed" && typeof payload.error === "string") item.text = payload.error;
+    item.text = payloadText(payload) ?? item.text;
     if (!requests.has(requestId)) {
       requests.set(requestId, item);
       items.push(item);
+    }
+    if (status === "failed" && typeof payload.error === "string") {
+      const failureKey = requestId + ":failure";
+      const failure = outputs.get(failureKey) ?? {
+        eventId: event.eventId + ":detail",
+        seq: event.seq,
+        kind: "agent" as const,
+        authorMemberId: event.actor.memberId,
+        requestId,
+      };
+      failure.seq = event.seq;
+      failure.state = "failed";
+      failure.text = payload.error;
+      if (!outputs.has(failureKey)) {
+        outputs.set(failureKey, failure);
+        items.push(failure);
+      }
     }
   }
   return items.sort((left, right) => left.seq - right.seq).map((item) => ({ ...item }));

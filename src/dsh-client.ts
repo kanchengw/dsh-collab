@@ -1,5 +1,5 @@
-import { createElement, useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import type { ComposerTarget, TimelineItem } from "./ui.js";
+import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection } from "./collab-rooms.js";
@@ -377,11 +377,6 @@ const fallbackSnapshot: DshCollabClientSnapshot = {
   canSteer: false,
 };
 
-function option(target: ComposerTarget, selected: ComposerTarget, t: CollabTranslate, disabled = false): ReactNode {
-  const label = t(target === "room" ? "composer.people" : target === "dsh" ? "composer.dshAgent" : "composer.steerAgent");
-  return createElement("option", { key: target, value: target, disabled }, label);
-}
-
 function agentStatusLabel(status: string, t: CollabTranslate): string {
   const key = ({
     accepted: "agent.accepted",
@@ -407,7 +402,8 @@ function connectionLabel(connection: DshCollabClientSnapshot["connection"], t: C
 
 function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   if (item.text) return item.text;
-  if (item.kind === "agent") return t("room.agentRequest", { status: agentStatusLabel(item.status ?? item.state ?? "updated", t) });
+  if (item.kind === "agent-request") return t("room.agentRequest", { status: agentStatusLabel(item.status ?? "updated", t) });
+  if (item.kind === "agent") return t("room.hostAgent");
   return t("room.message");
 }
 
@@ -421,9 +417,9 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; t: CollabTra
       "data-status": item.status,
       "data-state": item.state,
     },
-    createElement("small", { className: roomCss.author }, item.kind === "human" ? item.authorMemberId : props.t("room.hostAgent")),
+    createElement("small", { className: roomCss.author }, item.kind === "agent" ? props.t("room.hostAgent") : item.authorMemberId),
     createElement("p", { className: roomCss.text }, timelineLabel(item, props.t)),
-    item.kind === "agent" ? createElement("span", { className: roomCss.status }, agentStatusLabel(item.status ?? item.state ?? "", props.t)) : null)),
+    item.status || item.state ? createElement("span", { className: roomCss.status }, agentStatusLabel(item.status ?? item.state ?? "", props.t)) : null)),
   );
 }
 
@@ -432,17 +428,16 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
   const t = props.t ?? defaultCollabTranslate;
   const fallback = props.fallback ?? fallbackSnapshot;
   const snapshot = usePortSnapshot(props.port, fallback);
-  const [target, setTarget] = useState<ComposerTarget>("room");
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string>();
-  const canSteer = snapshot.role === "host" && snapshot.canSteer;
-  const selectedTarget = canSteer || target !== "dsh-steer" ? target : "dsh";
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (!props.port || draft.trim() === "") return;
     try {
       setError(undefined);
-      await props.port.send({ text: draft.trim(), target: selectedTarget });
+      const text = draft.trim();
+      await props.port.send({ text, target: composerTargetForText(text) });
       setDraft("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("composer.sendError"));
@@ -457,8 +452,15 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
     ),
     createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },
-      createElement("label", { className: roomCss.targetLabel }, t("composer.sendTo"), createElement("select", { className: roomCss.select, value: selectedTarget, onChange: (event: ChangeEvent<HTMLSelectElement>) => setTarget(event.target.value as ComposerTarget), name: "collab-target" }, [option("room", selectedTarget, t), option("dsh", selectedTarget, t), canSteer ? option("dsh-steer", selectedTarget, t) : null])),
-      createElement("textarea", { className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
+      createElement("div", { className: roomCss.composerInput },
+        createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
+        shouldSuggestAgentMention(draft) ? createElement("div", { className: roomCss.mentionMenu },
+          createElement("button", { type: "button", className: roomCss.mentionSuggestion, "aria-label": t("composer.mentionAgent"), onClick: () => { setDraft(insertAgentMention(draft)); textareaRef.current?.focus(); } },
+            createElement("strong", null, "@agent"),
+            createElement("span", null, t("room.hostAgent")),
+          ),
+        ) : null,
+      ),
       createElement("button", { className: roomCss.send, type: "submit", disabled: !props.port || draft.trim() === "" }, t("composer.send")),
     ),
     error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,

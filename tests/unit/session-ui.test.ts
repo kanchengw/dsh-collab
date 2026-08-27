@@ -13,7 +13,7 @@ const base: CollabSessionViewState = {
     { memberId: "m-me", displayName: "Lin", role: "participant", status: "active" },
   ],
   timeline: [],
-  composer: { target: "room", canSteer: false, draft: "" },
+  composer: { draft: "" },
 };
 
 describe("unified session UI", () => {
@@ -23,17 +23,17 @@ describe("unified session UI", () => {
     expect(html).toContain("Participant");
     expect(html).toContain("Hosted by Ada");
     expect(html).toContain('aria-label="Collaborators"');
-    expect(html).toContain('name="target"');
-    expect(html).toContain("DSH Agent");
+    expect(html).not.toContain("<select");
+    expect(html).toContain("@agent");
     expect(html).not.toContain("Invite");
   });
 
   it("renders host controls and explicit loading/offline/error states", () => {
-    const html = renderCollabSession({ ...base, role: "host", connection: "offline", loading: true, error: "Gateway unavailable", composer: { ...base.composer, canSteer: true, target: "dsh-steer" } });
+    const html = renderCollabSession({ ...base, role: "host", connection: "offline", loading: true, error: "Gateway unavailable" });
     expect(html).toContain('data-collab-mode="host"');
     expect(html).toContain("Host");
     expect(html).toContain("Invite");
-    expect(html).toContain("Steer Agent");
+    expect(html).not.toContain("Steer Agent");
     expect(html).toContain('data-state="loading"');
     expect(html).toContain('data-state="offline"');
     expect(html).toContain("Gateway unavailable");

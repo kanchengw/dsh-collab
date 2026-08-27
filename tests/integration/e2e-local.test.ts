@@ -5,13 +5,14 @@ import { createDshCollabHostRuntime, type DshCollabHostRuntime } from "../../src
 import { decodeServerStreamFrame } from "../../src/protocol.js";
 import type { RoomEvent, StreamFrame } from "../../src/types.js";
 
-async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; token?: string; body?: unknown }): Promise<{ status: number; data: any }> {
+async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: string; token?: string; body?: unknown; headers?: Record<string, string> }): Promise<{ status: number; data: any }> {
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
   return new Promise((resolve, reject) => {
     const request = httpRequest(base + "/collab" + input.path, {
       method: input.method,
       headers: {
       "content-type": "application/json",
+      ...input.headers,
       ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
       ...(body === undefined ? {} : { "content-length": Buffer.byteLength(body) }),
       },
@@ -91,8 +92,16 @@ describe("local end-to-end collaboration", () => {
       expect(forbiddenAction.status).toBe(403);
       const one = connect(base, "room-1", joined1.data.roomToken, "connection-1");
       const two = connect(base, "room-1", joined2.data.roomToken, "connection-2");
-      sockets.push(one, two);
-      await Promise.all([one.connected, two.connected]);
+      const bootstrappedHost = await jsonRequest(base, { method: "GET", path: "/v1/rooms/room-1/bootstrap", headers: { origin: base } });
+      expect(bootstrappedHost.status).toBe(200);
+      const host = connect(base, "room-1", bootstrappedHost.data.roomToken, "connection-host");
+      sockets.push(host, one, two);
+      await Promise.all([host.connected, one.connected, two.connected]);
+
+      const hostHuman = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: bootstrappedHost.data.roomToken, body: { clientMessageId: "m-host-human", text: "Host room announcement", target: "room" } });
+      expect(hostHuman.status).toBe(201);
+      const hostHumanOnParticipant = await waitForEvent(two.frames, (event) => event.type === "human.message" && typeof event.payload === "object" && event.payload !== null && (event.payload as { text?: string }).text === "Host room announcement");
+      expect(hostHumanOnParticipant.actor.memberId).toBe("member-host");
 
       const human = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined1.data.roomToken, body: { clientMessageId: "m-human", text: "Can someone review this?", target: "room" } });
       expect(human.status).toBe(201);
@@ -101,6 +110,7 @@ describe("local end-to-end collaboration", () => {
       const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
       expect(agent.status).toBe(202);
       expect(followups).toEqual(["Summarize the thread"]);
+      await waitForEvent(one.frames, (event) => event.type === "agent.request.created" && typeof event.payload === "object" && event.payload !== null && (event.payload as { text?: string }).text === "Summarize the thread");
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
 
       const cursor = two.frames.filter((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;

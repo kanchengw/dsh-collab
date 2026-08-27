@@ -85,6 +85,9 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain("done");
     expect(html).toContain('name="collab-text"');
     expect(html.match(/<textarea/g)).toHaveLength(1);
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain('name="collab-target"');
+    expect(html).toContain("@agent");
     expect(html).not.toContain('style="');
     expect(renderToStaticMarkup(createElement(DshCollabRoomSurface, { fallback: snapshot }))).toBe("");
   });

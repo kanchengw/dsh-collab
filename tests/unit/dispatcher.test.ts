@@ -40,7 +40,7 @@ function request(messageId: string, text: string, target: MessageTarget = "dsh")
 describe("AgentDispatcher", () => {
   it("queues a request and delivers it to the one host session", async () => {
     const calls: unknown[] = [];
-    const { dispatcher } = createDispatcher({
+    const { dispatcher, ledger } = createDispatcher({
       followup(input) {
         calls.push(input);
       },
@@ -53,6 +53,11 @@ describe("AgentDispatcher", () => {
       requestId: "message-1",
       hostSessionId: "session-host",
       status: "queued",
+    });
+    expect(ledger.readAfter("room-1", 0)[0]).toMatchObject({
+      type: "agent.request.created",
+      actor: { memberId: "member-alice" },
+      payload: { requestId: "message-1", text: "Run tests" },
     });
 
     const running = await dispatcher.drainOne();

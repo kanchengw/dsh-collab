@@ -3,7 +3,8 @@
 .backButton,
 .closeSurface,
 .send,
-.shareButton {
+.shareButton,
+.mentionSuggestion {
   box-sizing: border-box;
   font: inherit;
   cursor: pointer;
@@ -36,7 +37,8 @@
 .backButton:focus-visible,
 .closeSurface:focus-visible,
 .send:focus-visible,
-.shareButton:focus-visible {
+.shareButton:focus-visible,
+.mentionSuggestion:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
 }
@@ -268,7 +270,7 @@
 .composer {
   flex: none;
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px;
   width: min(900px, calc(100% - 48px));
@@ -280,7 +282,6 @@
   box-shadow: var(--dsw-shadow-lv1);
 }
 
-.targetLabel,
 .shareField {
   display: flex;
   flex-direction: column;
@@ -290,7 +291,6 @@
   line-height: 14px;
 }
 
-.select,
 .textarea,
 .roomName,
 .invitationText {
@@ -305,7 +305,6 @@
   line-height: 18px;
 }
 
-.select,
 .roomName {
   height: 34px;
   padding: 0 9px;
@@ -323,7 +322,6 @@
   padding: 0 9px;
 }
 
-.select:focus-visible,
 .textarea:focus-visible,
 .roomName:focus-visible,
 .invitationText:focus-visible {
@@ -346,6 +344,54 @@
 .send:hover:not(:disabled),
 .shareButton:hover:not(:disabled) {
   background: var(--dsw-alias-button-primary-hover);
+}
+
+.composerInput {
+  position: relative;
+  min-width: 0;
+}
+
+.mentionMenu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 2;
+  width: min(280px, calc(100vw - 48px));
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-shadow-lv2);
+}
+
+.mentionSuggestion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+}
+
+.mentionSuggestion:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.mentionSuggestion strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mentionSuggestion span {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error {
@@ -477,14 +523,9 @@
     grid-column: 2;
   }
 
-  .composer,
   .roomSetup,
   .invitationBar {
     grid-template-columns: 1fr auto;
-  }
-
-  .targetLabel {
-    grid-column: 1 / -1;
   }
 }
 

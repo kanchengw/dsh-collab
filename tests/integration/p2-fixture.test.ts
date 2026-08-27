@@ -9,7 +9,7 @@ describe("P2 runtime fixture", () => {
       hostDisplayName: "Host",
       connection: "online",
       memberCount: 2,
-      composer: { target: "room", canSteer: false, draft: "hello" },
+      composer: { draft: "hello" },
       timeline: [{ eventId: "e-1", seq: 1, kind: "human", authorMemberId: "member-1", text: "hello" }],
     });
 
