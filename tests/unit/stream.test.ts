@@ -63,12 +63,14 @@ describe("RoomStreamHub", () => {
     expect(framesA).toEqual([
       expect.objectContaining({ kind: "connected", lastEventSeq: 0 }),
       expect.objectContaining({ kind: "event", event: expect.objectContaining({ eventId: "event-1", seq: 1 }) }),
+      expect.objectContaining({ kind: "presence", onlineMemberCount: 1 }),
     ]);
     ledger.append(event("room-1", "event-2", 2));
 
     expect(framesA.at(-1)).toMatchObject({ kind: "event", event: { eventId: "event-2", seq: 2 } });
-    expect(framesB).toHaveLength(1);
+    expect(framesB).toHaveLength(2);
     expect(framesB[0]).toMatchObject({ kind: "connected", lastEventSeq: 0 });
+    expect(framesB[1]).toMatchObject({ kind: "presence", onlineMemberCount: 1 });
   });
 
   it("sends heartbeat frames and closes a connection when membership is revoked", () => {
@@ -93,5 +95,26 @@ describe("RoomStreamHub", () => {
       .toThrowError(expect.objectContaining({ code: "CONNECTION_EXISTS" }));
     expect(() => hub.connect({ connectionId: "connection-b", roomId: "room-2", token: token1, onFrame: () => {} }))
       .toThrowError(expect.objectContaining({ code: "TOKEN_SCOPE" }));
+  });
+
+  it("broadcasts the number of distinct online members when connections change", () => {
+    const { hub, rooms, tokens, token1 } = setup();
+    const hostToken = tokens.issue({ roomId: "room-1", member: rooms.listMembers("room-1")[0]!, now: 10 }).token;
+    const aliceFrames: StreamFrame[] = [];
+    const aliceSecondTabFrames: StreamFrame[] = [];
+    const hostFrames: StreamFrame[] = [];
+
+    const alice = hub.connect({ connectionId: "alice-a", roomId: "room-1", token: token1, onFrame: (frame) => aliceFrames.push(frame) });
+    const aliceSecondTab = hub.connect({ connectionId: "alice-b", roomId: "room-1", token: token1, onFrame: (frame) => aliceSecondTabFrames.push(frame) });
+    const host = hub.connect({ connectionId: "host-a", roomId: "room-1", token: hostToken, onFrame: (frame) => hostFrames.push(frame) });
+
+    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", roomId: "room-1", onlineMemberCount: 2 });
+    expect(aliceSecondTabFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 2 });
+    expect(hostFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 2 });
+
+    host.close();
+    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 1 });
+    aliceSecondTab.close();
+    alice.close();
   });
 });

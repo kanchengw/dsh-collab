@@ -84,6 +84,7 @@ export class RoomStreamHub {
       this.connections.set(connectionId, record);
       this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
       for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
+      this.broadcastPresence(roomId);
       return {
         connectionId,
         roomId,
@@ -117,6 +118,7 @@ export class RoomStreamHub {
     this.connections.delete(connectionId);
     this.options.limits?.releaseConnection(record.roomId);
     this.emit(record, { kind: "closed", connectionId, reason });
+    this.broadcastPresence(record.roomId);
   }
 
   dispose(): void {
@@ -149,6 +151,12 @@ export class RoomStreamHub {
     if (event.seq <= record.lastEventSeq) return;
     record.lastEventSeq = event.seq;
     this.emit(record, { kind: "event", event });
+  }
+
+  private broadcastPresence(roomId: string): void {
+    const roomConnections = [...this.connections.values()].filter((record) => record.roomId === roomId);
+    const onlineMemberCount = new Set(roomConnections.map((record) => record.memberId)).size;
+    for (const record of roomConnections) this.emit(record, { kind: "presence", roomId, onlineMemberCount });
   }
 
   private record(connectionId: string): ConnectionRecord {

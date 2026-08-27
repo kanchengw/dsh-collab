@@ -7,6 +7,43 @@ function response(data: unknown, status = 200): { ok: boolean; status: number; j
 }
 
 describe("browser Gateway client", () => {
+  it("uses live presence instead of persisted memberships for the online count", async () => {
+    let socket: BrowserSocket | undefined;
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      return response({
+        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        members: [
+          { memberId: "member-host", role: "host", status: "active" },
+          { memberId: "member-old-a", role: "participant", status: "active" },
+          { memberId: "member-old-b", role: "participant", status: "active" },
+        ],
+        lastEventSeq: 0,
+      });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+
+    await client.bootstrap();
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "presence", roomId: "room-1", onlineMemberCount: 1 }) });
+
+    expect(client.getSnapshot()).toMatchObject({ onlineCount: 1 });
+    client.dispose();
+  });
+
   it("connects, disconnects and forgets a saved Joined room only on explicit actions", async () => {
     const saved: ParticipantResumeState[] = [
       { gatewayEndpoint: "wss://one.example/collab", roomId: "room-1", memberId: "member-1", credential: "secret-1", roomTitle: "Design" },

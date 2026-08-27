@@ -67,6 +67,15 @@ describe("dsh-collab wire protocol", () => {
     });
   });
 
+  it("round-trips room presence frames", () => {
+    const frame: StreamFrame = { kind: "presence", roomId: "room-1", onlineMemberCount: 2 };
+
+    const wire = encodeServerStreamFrame(frame);
+
+    expect(wire).toEqual({ protocol: COLLAB_PROTOCOL, type: "presence", roomId: "room-1", onlineMemberCount: 2 });
+    expect(decodeServerStreamFrame(wire)).toEqual(frame);
+  });
+
   it("rejects unknown versions, frame types, and negative cursors", () => {
     expect(() => decodeClientStreamFrame({ protocol: "dsh-collab.v2", type: "heartbeat" })).toThrow("protocol");
     expect(() => decodeClientStreamFrame({ protocol: COLLAB_PROTOCOL, type: "event" })).toThrow("type");

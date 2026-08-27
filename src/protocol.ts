@@ -19,6 +19,7 @@ export type ClientStreamFrame =
 
 export type ServerStreamFrame =
   | { protocol: typeof COLLAB_PROTOCOL; type: "connected"; connectionId: string; roomId: string; lastEventSeq: number }
+  | { protocol: typeof COLLAB_PROTOCOL; type: "presence"; roomId: string; onlineMemberCount: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "event"; event: RoomEvent }
   | { protocol: typeof COLLAB_PROTOCOL; type: "heartbeat"; connectionId: string; serverTime: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "closed"; connectionId: string; reason: string };
@@ -103,6 +104,8 @@ export function encodeServerStreamFrame(frame: StreamFrame): ServerStreamFrame {
   switch (frame.kind) {
     case "connected":
       return { protocol: COLLAB_PROTOCOL, type: "connected", connectionId: frame.connectionId, roomId: frame.roomId, lastEventSeq: frame.lastEventSeq };
+    case "presence":
+      return { protocol: COLLAB_PROTOCOL, type: "presence", roomId: frame.roomId, onlineMemberCount: frame.onlineMemberCount };
     case "event":
       return { protocol: COLLAB_PROTOCOL, type: "event", event: frame.event };
     case "heartbeat":
@@ -130,6 +133,13 @@ export function decodeServerStreamFrame(value: unknown): StreamFrame {
       connectionId: text(input.connectionId, "connectionId"),
       roomId: text(input.roomId, "roomId"),
       lastEventSeq: nonNegativeInteger(input.lastEventSeq, "lastEventSeq"),
+    };
+  }
+  if (type === "presence") {
+    return {
+      kind: "presence",
+      roomId: text(input.roomId, "roomId"),
+      onlineMemberCount: nonNegativeInteger(input.onlineMemberCount, "onlineMemberCount"),
     };
   }
   if (type === "event") return { kind: "event", event: decodeEvent(input.event) };

@@ -14,7 +14,7 @@ export interface DshCollabClientSnapshot {
   hostDisplayName: string;
   role: "host" | "participant";
   connection: "connecting" | "online" | "offline";
-  memberCount: number;
+  onlineCount: number;
   canSteer: boolean;
   timeline?: readonly TimelineItem[];
 }
@@ -373,7 +373,7 @@ const fallbackSnapshot: DshCollabClientSnapshot = {
   hostDisplayName: "",
   role: "participant",
   connection: "offline",
-  memberCount: 0,
+  onlineCount: 0,
   canSteer: false,
 };
 
@@ -453,7 +453,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
       createElement("span", { className: roomCss.badge }, t(snapshot.role === "host" ? "role.owner" : "role.participant")),
       snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: snapshot.hostDisplayName })) : null,
-      createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(snapshot.connection, t), count: snapshot.memberCount })),
+      createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(snapshot.connection, t), count: snapshot.onlineCount })),
     ),
     createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },

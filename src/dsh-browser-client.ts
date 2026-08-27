@@ -182,7 +182,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       hostDisplayName: "",
       role: options.role ?? "participant",
       connection: options.token ? "connecting" : "offline",
-      memberCount: 0,
+      onlineCount: 0,
       canSteer: options.role === "host",
       timeline: [],
     };
@@ -371,7 +371,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       roomId: snapshot.room.roomId,
       roomTitle: snapshot.room.title,
       hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? this.snapshot.hostDisplayName,
-      memberCount: snapshot.members.filter((member) => member.status !== "removed" && member.status !== "suspended").length,
+      onlineCount: 0,
       timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
@@ -457,7 +457,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private applyRoom(data: RoomData): void {
-    if (data.room.roomId !== this.snapshot.roomId) this.events.clear();
+    const sameRoom = data.room.roomId === this.snapshot.roomId;
+    if (!sameRoom) this.events.clear();
     this.token = data.roomToken;
     this.snapshot = {
       roomId: data.room.roomId,
@@ -465,7 +466,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       hostDisplayName: data.room.hostDisplayName ?? this.snapshot.hostDisplayName,
       role: data.member.role === "host" ? "host" : "participant",
       connection: "connecting",
-      memberCount: this.snapshot.memberCount,
+      onlineCount: sameRoom ? this.snapshot.onlineCount : 0,
       canSteer: data.member.role === "host" || data.member.role === "lead",
       timeline: projectTimeline([...this.events.values()]),
     };
@@ -473,15 +474,19 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private applyFrame(raw: string): void {
-    let frame: { type?: string; event?: { seq: number; type: string; payload?: unknown } };
+    let frame: { type?: string; roomId?: string; onlineMemberCount?: number; event?: { seq: number; type: string; payload?: unknown } };
     try { frame = JSON.parse(raw) as typeof frame; } catch { return; }
+    const onlineCount = frame.onlineMemberCount;
+    if (frame.type === "presence" && frame.roomId === this.snapshot.roomId && typeof onlineCount === "number" && Number.isSafeInteger(onlineCount) && onlineCount >= 0) {
+      this.snapshot = { ...this.snapshot, onlineCount };
+      this.emit();
+      return;
+    }
     if (frame.type === "event" && frame.event) {
       const event = frame.event as RoomEvent;
       if (this.events.has(event.eventId)) return;
       this.events.set(event.eventId, event);
       this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
-      if (event.type === "member.joined") this.snapshot.memberCount += 1;
-      if (event.type === "member.removed") this.snapshot.memberCount = Math.max(0, this.snapshot.memberCount - 1);
       this.snapshot = { ...this.snapshot, timeline: projectTimeline([...this.events.values()]) };
       this.emit();
     }
@@ -501,7 +506,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   private setConnection(connection: DshCollabClientSnapshot["connection"]): void {
     if (this.snapshot.connection === connection) return;
-    this.snapshot = { ...this.snapshot, connection };
+    this.snapshot = { ...this.snapshot, connection, ...(connection === "offline" ? { onlineCount: 0 } : {}) };
     this.emit();
   }
 

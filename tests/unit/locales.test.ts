@@ -66,7 +66,7 @@ describe("dsh-collab locale dictionaries", () => {
       sessionId: "session-current",
       defaultRoomName: "Release planning",
       settingsPort: port,
-      fallback: { roomId: "", roomTitle: "", hostDisplayName: "", role: "participant", connection: "offline", memberCount: 0, canSteer: false },
+      fallback: { roomId: "", roomTitle: "", hostDisplayName: "", role: "participant", connection: "offline", onlineCount: 0, canSteer: false },
       t,
     }));
 
