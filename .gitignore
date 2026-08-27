@@ -4,6 +4,7 @@ dist/
 lib/
 .tmp-dsh-*.png
 coverage/
+graphify-out/
 .env
 .env.local
 .env.*.local
