@@ -207,7 +207,7 @@ export class CollabGateway {
       type: "member.joined",
       actor: { memberId: member.memberId, principalId: member.principalId },
       createdAt: this.now(),
-      payload: { memberId: member.memberId, principalId: member.principalId, role: member.role },
+      payload: { memberId: member.memberId, principalId: member.principalId, displayName: member.displayName, role: member.role },
     });
     return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, resumeCredential: resumeCredential.credential, event } };
   }

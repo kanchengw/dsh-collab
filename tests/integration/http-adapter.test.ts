@@ -106,7 +106,15 @@ describe("localhost HTTP adapter", () => {
     });
     const join = await json(joinResponse);
     expect(joinResponse.status).toBe(201);
-    expect(join).toMatchObject({ protocol: "dsh-collab.v1", requestId: "req-join", ok: true, data: { member: { principalId: "invite:invite-1" } } });
+    expect(join).toMatchObject({
+      protocol: "dsh-collab.v1",
+      requestId: "req-join",
+      ok: true,
+      data: {
+        member: { principalId: "invite:invite-1" },
+        event: { type: "member.joined", payload: { memberId: "member-bob", displayName: "Bob" } },
+      },
+    });
 
     const snapshotResponse = await fetch(`${base}/collab/v1/rooms/room-1/snapshot`, {
       headers: { authorization: `Bearer ${join.data.roomToken}`, "x-request-id": "req-snapshot" },

@@ -16,6 +16,7 @@ export interface DshCollabClientSnapshot {
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
   canSteer: boolean;
+  members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
 }
 
@@ -407,19 +408,25 @@ function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   return t("room.message");
 }
 
-function DshCollabTimeline(props: { items: readonly TimelineItem[]; t: CollabTranslate }): ReactNode {
+function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: readonly { memberId: string; displayName: string }[]; t: CollabTranslate }): ReactNode {
   if (props.items.length === 0) return createElement("p", { className: roomCss.empty }, props.t("room.noMessages"));
   return createElement("div", { className: roomCss.timeline, "data-collab-timeline": true, "aria-live": "polite" },
-    props.items.map((item) => createElement("article", {
-      key: item.eventId,
-      className: roomCss.message,
-      "data-kind": item.kind,
-      "data-status": item.status,
-      "data-state": item.state,
-    },
-    createElement("small", { className: roomCss.author }, item.kind === "agent" ? props.t("room.hostAgent") : item.authorMemberId),
-    createElement("p", { className: roomCss.text }, timelineLabel(item, props.t)),
-    item.status || item.state ? createElement("span", { className: roomCss.status }, agentStatusLabel(item.status ?? item.state ?? "", props.t)) : null)),
+    props.items.map((item) => {
+      const status = item.status ?? (item.kind === "agent" && item.state === "failed" ? item.state : undefined);
+      const author = item.kind === "agent"
+        ? props.t("room.hostAgent")
+        : props.members.find((member) => member.memberId === item.authorMemberId)?.displayName ?? item.authorMemberId;
+      return createElement("article", {
+        key: item.eventId,
+        className: roomCss.message,
+        "data-kind": item.kind,
+        "data-status": item.status,
+        "data-state": item.state,
+      },
+      createElement("small", { className: roomCss.author }, author),
+      createElement("p", { className: roomCss.text }, timelineLabel(item, props.t)),
+      status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null);
+    }),
   );
 }
 
@@ -450,7 +457,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: snapshot.hostDisplayName })) : null,
       createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(snapshot.connection, t), count: snapshot.onlineCount })),
     ),
-    createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], t }),
+    createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], members: snapshot.members ?? [], t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },
       createElement("div", { className: roomCss.composerInput },
         createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),

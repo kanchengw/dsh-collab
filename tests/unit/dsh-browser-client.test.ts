@@ -185,7 +185,7 @@ describe("browser Gateway client", () => {
       });
       if (url.endsWith("/snapshot")) return response({
         room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
-        members: [{ memberId: "member-host", role: "host" }],
+        members: [{ memberId: "member-host", role: "host", displayName: "Local Host" }],
         lastEventSeq: 0,
       });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
@@ -204,6 +204,7 @@ describe("browser Gateway client", () => {
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
+    expect(client.getSnapshot()).toMatchObject({ members: [{ memberId: "member-host", displayName: "Local Host" }] });
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online", canSteer: true });
     await client.send({ text: "run tests", target: "dsh" });
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
@@ -287,7 +288,7 @@ describe("browser Gateway client", () => {
       });
       if (url.endsWith("/snapshot")) return response({
         room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
-        members: [{ memberId: "member-host", role: "host" }],
+        members: [{ memberId: "member-host", role: "host", displayName: "Local Host" }],
         lastEventSeq: 2,
       });
       if (url.includes("/events?")) return response({ events: [
@@ -320,6 +321,18 @@ describe("browser Gateway client", () => {
       actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { text: "live" },
     } }) });
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
+
+    socket?.onmessage?.({ data: JSON.stringify({ type: "event", event: {
+      eventId: "member-joined", roomId: "room-1", seq: 4, type: "member.joined",
+      actor: { memberId: "member-bob", principalId: "bob" }, createdAt: 4,
+      payload: { memberId: "member-bob", displayName: "Bob", role: "participant" },
+    } }) });
+    expect(client.getSnapshot()).toMatchObject({
+      members: [
+        { memberId: "member-host", displayName: "Local Host" },
+        { memberId: "member-bob", displayName: "Bob" },
+      ],
+    });
   });
 
   it("paginates recovery through the authoritative event sequence", async () => {

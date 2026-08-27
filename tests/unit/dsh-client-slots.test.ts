@@ -69,6 +69,10 @@ describe("real DSH client slot adapter", () => {
       ...snapshot,
       role: "participant",
       canSteer: false,
+      members: [
+        { memberId: "member-host", displayName: "Host" },
+        { memberId: "member-bob", displayName: "Bob" },
+      ],
       timeline: [
         { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "hello" },
         { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "done" },
@@ -83,6 +87,9 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain('data-collab-room-ui="true"');
     expect(html).toContain("hello");
     expect(html).toContain("done");
+    expect(html).toContain(">Bob<");
+    expect(html).not.toContain(">member-bob<");
+    expect(html).not.toContain(">Output</span>");
     expect(html).toContain('name="collab-text"');
     expect(html.match(/<textarea/g)).toHaveLength(1);
     expect(html).not.toContain("<select");

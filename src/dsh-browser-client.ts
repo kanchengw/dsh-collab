@@ -90,7 +90,7 @@ export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
 
 type RoomData = {
   room: { roomId: string; title: string; hostDisplayName?: string };
-  member: { memberId: string; role: string };
+  member: { memberId: string; role: string; displayName?: string };
   roomToken: string;
   resumeCredential?: string;
 };
@@ -184,6 +184,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       connection: options.token ? "connecting" : "offline",
       onlineCount: 0,
       canSteer: options.role === "host",
+      members: [],
       timeline: [],
     };
   }
@@ -372,6 +373,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       roomTitle: snapshot.room.title,
       hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? this.snapshot.hostDisplayName,
       onlineCount: 0,
+      members: snapshot.members.flatMap((member) => typeof member.displayName === "string" && member.displayName.trim() !== ""
+        ? [{ memberId: member.memberId, displayName: member.displayName }]
+        : []),
       timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
@@ -468,6 +472,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       connection: "connecting",
       onlineCount: sameRoom ? this.snapshot.onlineCount : 0,
       canSteer: data.member.role === "host" || data.member.role === "lead",
+      members: sameRoom
+        ? this.snapshot.members
+        : typeof data.member.displayName === "string" && data.member.displayName.trim() !== ""
+          ? [{ memberId: data.member.memberId, displayName: data.member.displayName }]
+          : [],
       timeline: projectTimeline([...this.events.values()]),
     };
     this.emit();
@@ -487,7 +496,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       if (this.events.has(event.eventId)) return;
       this.events.set(event.eventId, event);
       this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
-      this.snapshot = { ...this.snapshot, timeline: projectTimeline([...this.events.values()]) };
+      let members = this.snapshot.members;
+      if (event.type === "member.joined" && event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)) {
+        const payload = event.payload as Record<string, unknown>;
+        if (typeof payload.memberId === "string" && typeof payload.displayName === "string" && payload.displayName.trim() !== "") {
+          members = [...(members ?? []).filter((member) => member.memberId !== payload.memberId), { memberId: payload.memberId, displayName: payload.displayName }];
+        }
+      }
+      this.snapshot = { ...this.snapshot, members, timeline: projectTimeline([...this.events.values()]) };
       this.emit();
     }
   }
