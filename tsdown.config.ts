@@ -16,7 +16,7 @@ export default defineConfig({
   dts: false,
   sourcemap: true,
   clean: false,
-  deps: { neverBundle: ["react", "react/jsx-runtime", "react-dom", "react-dom/client"] },
+  deps: { neverBundle: ["react", "react/jsx-runtime", "react-dom", "react-dom/client", "@deepseek-ai/dsh-client-ui-primitives"] },
   plugins: [{
     name: "dsh-collab-css-module",
     resolveId(source, importer) {

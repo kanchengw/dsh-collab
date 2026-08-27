@@ -11,6 +11,9 @@ describe("dsh package manifest", () => {
     expect(manifest.dsh.client.platform).toBe("web");
     expect(manifest.dsh.client.inject).toContain("@deepseek-ai/dsh-client-locale");
     expect(manifest.dsh.client.inject).not.toContain("@deepseek-ai/dsh-client-ui-slots");
+    expect(manifest.peerDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe(">=0.1.1-rc.2 <0.2.0");
+    expect(manifest.devDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe("0.1.1-rc.2");
+    expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).not.toContain("dsh-client-ui-primitives/src/");
     expect(manifest.dsh.bundle.patch).toBe("./cordis.patch.yml");
     expect(() => validateDshCollabManifest(manifest)).not.toThrow();
   });

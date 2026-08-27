@@ -1,5 +1,6 @@
-import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
-import { composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
+import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
+import { composerKeyAction, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection } from "./collab-rooms.js";
@@ -424,7 +425,9 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: rea
         "data-state": item.state,
       },
       createElement("small", { className: roomCss.author }, author),
-      createElement("p", { className: roomCss.text }, timelineLabel(item, props.t)),
+      createElement("div", { className: roomCss.text }, item.kind === "agent"
+        ? createElement(MarkdownText, { text: timelineLabel(item, props.t) })
+        : createElement(MessageText, { text: timelineLabel(item, props.t) })),
       status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null);
     }),
   );
@@ -450,6 +453,18 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       setError(cause instanceof Error ? cause.message : t("composer.sendError"));
     }
   };
+  const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    const action = composerKeyAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      keyCode: event.nativeEvent.keyCode,
+      repeat: event.repeat,
+    });
+    if (action === "native") return;
+    event.preventDefault();
+    if (action === "submit") event.currentTarget.form?.requestSubmit();
+  };
   return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": t("room.aria") },
     props.showHeader === false ? null : createElement("div", { className: roomCss.header },
       createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
@@ -460,7 +475,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
     createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], members: snapshot.members ?? [], t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },
       createElement("div", { className: roomCss.composerInput },
-        createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
+        createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), onKeyDown: keyDown, name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
         shouldSuggestAgentMention(draft) ? createElement("div", { className: roomCss.mentionMenu },
           createElement("button", { type: "button", className: roomCss.mentionSuggestion, "aria-label": t("composer.mentionAgent"), onClick: () => { setDraft(insertAgentMention(draft)); textareaRef.current?.focus(); } },
             createElement("strong", null, "@agent"),

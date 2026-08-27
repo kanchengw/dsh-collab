@@ -92,6 +92,17 @@ export function insertAgentMention(draft: string): string {
   return shouldSuggestAgentMention(draft) ? `${draft.slice(0, -1)}${AGENT_MENTION} ` : draft;
 }
 
+export function composerKeyAction(input: {
+  key: string;
+  shiftKey?: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+  repeat?: boolean;
+}): "native" | "submit" | "suppress" {
+  if (input.key !== "Enter" || input.shiftKey || input.isComposing || input.keyCode === 229) return "native";
+  return input.repeat ? "suppress" : "submit";
+}
+
 export function createComposerSubmission(input: {
   messageId: string;
   roomId: string;

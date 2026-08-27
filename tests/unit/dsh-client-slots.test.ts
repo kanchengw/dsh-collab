@@ -85,8 +85,8 @@ describe("real DSH client slot adapter", () => {
         { memberId: "member-bob", displayName: "Bob" },
       ],
       timeline: [
-        { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "hello" },
-        { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "done" },
+        { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "**hello**" },
+        { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "**done**" },
       ],
     };
     openDshCollabRoom({ kind: "joined", roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", gatewayEndpoint: "wss://host.example/collab" });
@@ -96,8 +96,9 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain('data-collab-surface="room"');
     expect(html).toContain('data-collab-mode="participant"');
     expect(html).toContain('data-collab-room-ui="true"');
-    expect(html).toContain("hello");
-    expect(html).toContain("done");
+    expect(html).toContain("**hello**");
+    expect(html).not.toContain("<strong>hello</strong>");
+    expect(html).toContain("<strong>done</strong>");
     expect(html).toContain(">Bob<");
     expect(html).not.toContain(">member-bob<");
     expect(html).not.toContain(">Output</span>");

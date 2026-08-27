@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerTargetForText, createComposerSubmission, insertAgentMention, renderComposer, shouldSuggestAgentMention } from "../../src/ui.js";
+import { composerKeyAction, composerTargetForText, createComposerSubmission, insertAgentMention, renderComposer, shouldSuggestAgentMention } from "../../src/ui.js";
 
 describe("collab composer mentions", () => {
   it("routes only the canonical lowercase @agent mention to the Host Agent", () => {
@@ -38,5 +38,14 @@ describe("collab composer mentions", () => {
 
   it("rejects a steer submission when the caller lacks the capability", () => {
     expect(() => createComposerSubmission({ messageId: "m-3", roomId: "room-1", authorMemberId: "member-1", text: "stop", target: "dsh-steer", canSteer: false })).toThrow("steer");
+  });
+
+  it("matches the native DSH Enter, newline, IME, and repeat behavior", () => {
+    expect(composerKeyAction({ key: "Enter" })).toBe("submit");
+    expect(composerKeyAction({ key: "Enter", shiftKey: true })).toBe("native");
+    expect(composerKeyAction({ key: "Enter", isComposing: true })).toBe("native");
+    expect(composerKeyAction({ key: "Enter", keyCode: 229 })).toBe("native");
+    expect(composerKeyAction({ key: "Enter", repeat: true })).toBe("suppress");
+    expect(composerKeyAction({ key: "a" })).toBe("native");
   });
 });
