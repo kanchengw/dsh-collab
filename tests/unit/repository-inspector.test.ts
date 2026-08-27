@@ -72,6 +72,25 @@ describe("RepositoryInspector", () => {
     await expect(new RepositoryInspector(failed.port).inspect()).rejects.toThrow("unsafe repository");
   });
 
+  it("loads a bounded patch only for a path and layer present in current Git status", async () => {
+    const patch = "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old line\n+new line\n";
+    const source = commandPort({
+      "rev-parse --show-toplevel": { exitCode: 0, stdout: "C:/repo\n" },
+      "--no-optional-locks status --short -z --untracked-files=all": { exitCode: 0, stdout: " M src/app.ts\0" },
+      "diff --no-ext-diff --no-textconv --numstat -z --cached": { exitCode: 0 },
+      "diff --no-ext-diff --no-textconv --numstat -z": { exitCode: 0, stdout: "1\t1\tsrc/app.ts\0" },
+      "diff --no-ext-diff --no-textconv --no-color --unified=0 -- src/app.ts": { exitCode: 0, stdout: patch },
+    });
+    const inspector = new RepositoryInspector(source.port);
+
+    await expect(inspector.diff({ path: "src/app.ts", layer: "unstaged" })).resolves.toEqual({ path: "src/app.ts", layer: "unstaged", patch });
+    await expect(inspector.diff({ path: "../secret", layer: "unstaged" })).rejects.toThrow("current Git changes");
+    await expect(inspector.diff({ path: "src/app.ts", layer: "staged" })).rejects.toThrow("current Git changes");
+    expect(source.calls.filter((argv) => argv.includes("--unified=0"))).toEqual([
+      ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0", "--", "src/app.ts"],
+    ]);
+  });
+
   it("binds DSH subprocess execution to the trusted Host Session cwd", async () => {
     const readFrom = vi.fn(() => ({ text: "ok", nextOffset: 2, lossy: false }));
     const spawn = vi.fn(() => ({

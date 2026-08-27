@@ -59,6 +59,26 @@ describe("real DSH client slot adapter", () => {
     expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
   });
 
+  it("inspects an Owned room repository through the loopback DSH control port", async () => {
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
+      expect(endpoint).toBe("repository/inspect");
+      expect(payload).toEqual({ roomId: "room-owned" });
+      return { ok: true, value: { inspection: { kind: "not-git" } } };
+    }) };
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+
+    await expect(createDshGatewayControlPort(base, rpc).inspectRepository?.("room-owned")).resolves.toEqual({ kind: "not-git" });
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "repository/inspect", { roomId: "room-owned" });
+  });
+
+  it("loads one trusted repository diff layer through the loopback DSH control port", async () => {
+    const rpc = { call: vi.fn(async () => ({ ok: true, value: { diff: { path: "src/app.ts", layer: "unstaged", patch: "-old\n+new\n" } } })) };
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+
+    await expect(createDshGatewayControlPort(base, rpc).inspectRepositoryDiff?.("room-owned", "src/app.ts", "unstaged")).resolves.toEqual({ path: "src/app.ts", layer: "unstaged", patch: "-old\n+new\n" });
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "repository/diff", { roomId: "room-owned", path: "src/app.ts", layer: "unstaged" });
+  });
+
   it("preserves class-backed room actions when adding Gateway controls", async () => {
     class BrowserSettings {
       readonly shared: string[] = [];

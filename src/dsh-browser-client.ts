@@ -5,6 +5,7 @@ import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js"
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
+import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 
 export interface BrowserRequestInit {
   method?: string;
@@ -145,6 +146,54 @@ function roomData(value: unknown): RoomData {
   const data = value as RoomData;
   if (!data.room || !data.member || typeof data.roomToken !== "string") throw new Error("Gateway room response is incomplete");
   return data;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function workspaceSharingState(value: unknown, roomId: string): WorkspaceSharingState {
+  const state = record(value);
+  if (!state || state.roomId !== roomId || typeof state.enabled !== "boolean" || !Number.isSafeInteger(state.revision) || (state.revision as number) < 0) {
+    throw new Error("Gateway Workspace Sharing response is invalid");
+  }
+  if (!state.enabled) return { roomId, enabled: false, revision: state.revision as number };
+  if (typeof state.enabledBy !== "string" || state.enabledBy.trim() === "" || !Number.isSafeInteger(state.enabledAt) || (state.enabledAt as number) < 0) {
+    throw new Error("Gateway Workspace Sharing response is incomplete");
+  }
+  return { roomId, enabled: true, enabledBy: state.enabledBy, enabledAt: state.enabledAt as number, revision: state.revision as number };
+}
+
+function workspaceSnapshot(value: unknown, roomId: string): WorkspaceSnapshotPackage {
+  const snapshot = record(value);
+  if (!snapshot || snapshot.roomId !== roomId || typeof snapshot.snapshotId !== "string" || !/^[a-f0-9]{64}$/.test(snapshot.snapshotId)
+    || typeof snapshot.hostSessionId !== "string" || !Number.isSafeInteger(snapshot.roomEventSeq) || (snapshot.roomEventSeq as number) < 0
+    || typeof snapshot.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(snapshot.manifestHash)
+    || !Array.isArray(snapshot.files) || snapshot.files.length > 10_000
+    || !Number.isSafeInteger(snapshot.createdAt) || (snapshot.createdAt as number) < 0) {
+    throw new Error("Gateway Workspace Snapshot response is invalid");
+  }
+  let totalBytes = 0;
+  const files = snapshot.files.map((value) => {
+    const file = record(value);
+    if (!file || typeof file.path !== "string" || file.path === "" || typeof file.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(file.contentHash)
+      || !Number.isSafeInteger(file.size) || (file.size as number) < 0 || (file.source !== "tracked" && file.source !== "untracked")) {
+      throw new Error("Gateway Workspace Snapshot file is invalid");
+    }
+    totalBytes += file.size as number;
+    if (totalBytes > 256 * 1024 * 1024) throw new Error("Gateway Workspace Snapshot response is invalid");
+    return { path: file.path, contentHash: file.contentHash, size: file.size as number, source: file.source as "tracked" | "untracked" };
+  });
+  return {
+    snapshotId: snapshot.snapshotId,
+    roomId,
+    hostSessionId: snapshot.hostSessionId,
+    roomEventSeq: snapshot.roomEventSeq as number,
+    ...(typeof snapshot.headOid === "string" ? { headOid: snapshot.headOid } : {}),
+    manifestHash: snapshot.manifestHash,
+    files,
+    createdAt: snapshot.createdAt as number,
+  };
 }
 
 export class DshBrowserCollabClient implements DshCollabClientPort {
@@ -353,6 +402,30 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     }, true);
   }
 
+  async getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> {
+    this.assertActiveRoom(roomId);
+    const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-sharing`, undefined, true)) as { state?: unknown };
+    const state = workspaceSharingState(data?.state, roomId);
+    this.snapshot = { ...this.snapshot, workspaceSharing: state };
+    this.emit();
+    return state;
+  }
+
+  async setWorkspaceSharing(roomId: string, enabled: boolean): Promise<WorkspaceSharingState> {
+    this.assertActiveRoom(roomId);
+    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-sharing`, { enabled }, true)) as { state?: unknown };
+    const state = workspaceSharingState(data?.state, roomId);
+    this.snapshot = { ...this.snapshot, workspaceSharing: state };
+    this.emit();
+    return state;
+  }
+
+  async requestWorkspaceSnapshot(roomId: string): Promise<WorkspaceSnapshotPackage> {
+    this.assertActiveRoom(roomId);
+    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-snapshots`, { clientRequestId: randomId("snapshot") }, true)) as { snapshot?: unknown };
+    return workspaceSnapshot(data?.snapshot, roomId);
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -522,7 +595,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       this.emit();
       return;
     }
-    if (frame.kind === "collaboration-event") return;
+    if (frame.kind === "collaboration-event") {
+      if (frame.event.type === "workspace-sharing.changed" && frame.event.state.roomId === this.snapshot.roomId) {
+        this.snapshot = { ...this.snapshot, workspaceSharing: frame.event.state };
+        this.emit();
+      }
+      return;
+    }
     if (frame.kind === "event") {
       const event = frame.event;
       if (this.events.has(event.eventId)) return;
@@ -596,6 +675,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.emit();
   }
 
+  private assertActiveRoom(roomId: string): void {
+    if (roomId !== this.roomId || this.snapshot.roomId !== roomId || !this.token) throw new Error("connect to this collaboration room first");
+  }
+
   private emit(): void { for (const listener of this.listeners) listener(); }
 }
 
@@ -634,6 +717,9 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   disconnectJoinedRoom(): void { this.client.disconnectJoinedRoom(); }
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.forgetJoinedRoom(ref); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
+  getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> { return this.client.getWorkspaceSharing(roomId); }
+  setWorkspaceSharing(roomId: string, enabled: boolean): Promise<WorkspaceSharingState> { return this.client.setWorkspaceSharing(roomId, enabled); }
+  requestWorkspaceSnapshot(roomId: string): Promise<WorkspaceSnapshotPackage> { return this.client.requestWorkspaceSnapshot(roomId); }
 }
 
 export function createDshBrowserCollabClient(options: DshBrowserCollabOptions): DshBrowserCollabClient {

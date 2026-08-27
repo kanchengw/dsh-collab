@@ -12,6 +12,107 @@ function errorResponse(code: string, message: string, status: number): { ok: boo
 }
 
 describe("browser Gateway client", () => {
+  it("rejects oversized or negative Workspace Snapshot metadata", async () => {
+    let snapshot: Record<string, unknown> = {
+      snapshotId: "a".repeat(64), roomId: "room-1", hostSessionId: "session-1", roomEventSeq: -1,
+      manifestHash: "b".repeat(64), files: [], createdAt: 20,
+    };
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/workspace-snapshots")) return response({ snapshot }, 201);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
+    snapshot = {
+      ...snapshot,
+      roomEventSeq: 0,
+      createdAt: -1,
+    };
+    await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
+    snapshot = {
+      ...snapshot,
+      createdAt: 20,
+      files: Array.from({ length: 10_001 }, (_, index) => ({ path: `src/${String(index)}.ts`, contentHash: "c".repeat(64), size: 0, source: "tracked" })),
+    };
+    await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
+    snapshot = {
+      ...snapshot,
+      files: [
+        { path: "src/a.ts", contentHash: "c".repeat(64), size: 128 * 1024 * 1024 + 1, source: "tracked" },
+        { path: "src/b.ts", contentHash: "d".repeat(64), size: 128 * 1024 * 1024, source: "tracked" },
+      ],
+    };
+    await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
+    client.dispose();
+  });
+
+  it("reads, changes and follows Workspace Sharing before loading an immutable snapshot", async () => {
+    let socket: BrowserSocket | undefined;
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/workspace-sharing") && init?.method === "POST") return response({ state: { roomId: "room-1", enabled: true, enabledBy: "host", enabledAt: 10, revision: 1 } });
+      if (url.endsWith("/workspace-sharing")) return response({ state: { roomId: "room-1", enabled: false, revision: 0 } });
+      if (url.endsWith("/workspace-snapshots")) return response({ snapshot: {
+        snapshotId: "a".repeat(64), roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 3,
+        manifestHash: "b".repeat(64), files: [], createdAt: 20,
+      } }, 201);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.getWorkspaceSharing("room-1")).resolves.toEqual({ roomId: "room-1", enabled: false, revision: 0 });
+    await expect(client.setWorkspaceSharing("room-1", true)).resolves.toMatchObject({ enabled: true, revision: 1 });
+    await expect(client.requestWorkspaceSnapshot("room-1")).resolves.toMatchObject({ snapshotId: "a".repeat(64), roomEventSeq: 3 });
+    socket?.onmessage?.({ data: JSON.stringify({
+      protocol: "dsh-collab.v1",
+      type: "collaboration-event",
+      event: { type: "workspace-sharing.changed", state: { roomId: "room-1", enabled: false, revision: 2 } },
+    }) });
+
+    expect(client.getSnapshot().workspaceSharing).toEqual({ roomId: "room-1", enabled: false, revision: 2 });
+    expect(requests.filter(({ init }) => init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toHaveLength(requests.length);
+    expect(requests.filter(({ url }) => url.endsWith("/workspace-snapshots"))[0]?.init?.body).toContain("clientRequestId");
+    client.dispose();
+  });
+
   it("uses live presence instead of persisted memberships for the online count", async () => {
     let socket: BrowserSocket | undefined;
     const fetch: BrowserFetch = async (url) => {

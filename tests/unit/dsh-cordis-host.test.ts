@@ -248,6 +248,62 @@ describe("Cordis Host mount", () => {
     }
   });
 
+  it("inspects only the active Owned room workspace through the loopback control channel", async () => {
+    const disposeEffects: Array<() => void | Promise<void>> = [];
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const outputs: Record<string, string> = {
+      "rev-parse --show-toplevel": "C:/trusted/workspace\n",
+      "--no-optional-locks status --short -z --untracked-files=all": " M src/app.ts\0",
+      "diff --no-ext-diff --no-textconv --numstat -z --cached": "",
+      "diff --no-ext-diff --no-textconv --numstat -z": "3\t1\tsrc/app.ts\0",
+      "diff --no-ext-diff --no-textconv --no-color --unified=0 -- src/app.ts": "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+    };
+    const spawn = vi.fn((spec: { argv: readonly string[]; cwd: string }) => {
+      const output = outputs[spec.argv.slice(1).join(" ")];
+      if (output === undefined) throw new Error(`unexpected git command: ${spec.argv.slice(1).join(" ")}`);
+      return {
+        collected: {
+          stdout: { readFrom: () => ({ text: output, lossy: false }) },
+          stderr: { readFrom: () => ({ text: "", lossy: false }) },
+        },
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+      };
+    });
+    let persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 0, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: { get: (sessionId: string) => sessionId === "session-owned" ? {
+        followup: () => {}, steer: () => {}, cancel: () => {}, session: { events: [], header: { cwd: "C:/trusted/workspace" } },
+      } : undefined },
+      subprocess: { resolveExecutable: vi.fn(async () => "git.exe"), spawn },
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({
+        get: () => persisted,
+        update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; },
+      }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+    apply(context, { roomId: "room-owned", hostId: "host", hostSessionId: "session-owned", title: "Release", hostDisplayName: "Host", stateFile: false });
+
+    await control!("gateway/start", {}, new AbortController().signal);
+    await expect(control!("repository/inspect", { roomId: "room-owned", cwd: "C:/attacker" }, new AbortController().signal)).resolves.toEqual({
+      ok: true,
+      value: { inspection: {
+        kind: "repository",
+        root: "C:/trusted/workspace",
+        files: [{ path: "src/app.ts", unstaged: { kind: "modified", additions: 3, deletions: 1, binary: false } }],
+        summary: { stagedFiles: 0, unstagedFiles: 1, additions: 3, deletions: 1, binaryFiles: 0 },
+      } },
+    });
+    expect(spawn.mock.calls.every(([spec]) => spec.cwd === "C:/trusted/workspace")).toBe(true);
+    await expect(control!("repository/diff", { roomId: "room-owned", path: "src/app.ts", layer: "unstaged", cwd: "C:/attacker" }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: { diff: { path: "src/app.ts", layer: "unstaged", patch: expect.stringContaining("+new") } },
+    });
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+  });
+
   it("does not start the removed local proxy when stale config is present", async () => {
     const targetPort = await freeTcpPort();
     const listenPort = await freeTcpPort();

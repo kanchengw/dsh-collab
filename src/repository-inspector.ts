@@ -14,6 +14,12 @@ export interface RepositoryFileChange {
   unstaged?: RepositoryChange;
 }
 
+export interface RepositoryDiff {
+  path: string;
+  layer: "staged" | "unstaged";
+  patch: string;
+}
+
 export type RepositoryInspection =
   | { kind: "not-git" }
   | {
@@ -160,6 +166,18 @@ export class RepositoryInspector {
         binaryFiles: binaryPaths.size,
       },
     };
+  }
+
+  async diff(input: { path: string; layer: "staged" | "unstaged" }, signal?: AbortSignal): Promise<RepositoryDiff> {
+    const inspection = await this.inspect(signal);
+    const file = inspection.kind === "repository" ? inspection.files.find((candidate) => candidate.path === input.path) : undefined;
+    if (!file?.[input.layer]) throw new Error("requested path and layer are not present in current Git changes");
+    const argv = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0"];
+    if (input.layer === "staged") argv.push("--cached");
+    argv.push("--", input.path);
+    const result = await this.commands.run(argv, signal);
+    if (result.exitCode !== 0) throw failure(input.layer === "staged" ? "diff --cached" : "diff", result);
+    return { path: input.path, layer: input.layer, patch: result.stdout };
   }
 }
 

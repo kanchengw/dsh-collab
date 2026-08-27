@@ -7,7 +7,10 @@ import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDs
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
+import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
+import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -20,6 +23,7 @@ export interface DshCollabClientSnapshot {
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited";
   members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
+  workspaceSharing?: WorkspaceSharingState;
 }
 
 export interface DshCollabClientPort {
@@ -77,6 +81,11 @@ export interface DshCollabSettingsPort {
   getOwnedRooms?(): readonly DshCollabOwnedRoom[];
   subscribeOwnedRooms?(listener: () => void): () => void;
   refreshOwnedRooms?(): Promise<readonly DshCollabOwnedRoom[]>;
+  getWorkspaceSharing?(roomId: string): Promise<WorkspaceSharingState>;
+  setWorkspaceSharing?(roomId: string, enabled: boolean): Promise<WorkspaceSharingState>;
+  requestWorkspaceSnapshot?(roomId: string): Promise<WorkspaceSnapshotPackage>;
+  inspectRepository?(roomId: string): Promise<RepositoryInspection>;
+  inspectRepositoryDiff?(roomId: string, path: string, layer: "staged" | "unstaged"): Promise<RepositoryDiff>;
 }
 
 interface DshClientConnectionRpc {
@@ -231,6 +240,35 @@ function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
   });
 }
 
+function decodeRepositoryInspectionResult(result: unknown): RepositoryInspection {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid repository inspection response");
+  const envelope = result as { ok?: unknown; value?: { inspection?: unknown }; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Unable to inspect repository");
+  const inspection = envelope.value?.inspection;
+  if (!inspection || typeof inspection !== "object" || Array.isArray(inspection)) throw new Error("Invalid repository inspection response");
+  if ((inspection as { kind?: unknown }).kind === "not-git") return { kind: "not-git" };
+  const repository = inspection as Partial<Extract<RepositoryInspection, { kind: "repository" }>>;
+  if (repository.kind !== "repository" || typeof repository.root !== "string" || !Array.isArray(repository.files)
+    || !repository.summary || !Number.isSafeInteger(repository.summary.stagedFiles) || !Number.isSafeInteger(repository.summary.unstagedFiles)
+    || !Number.isSafeInteger(repository.summary.additions) || !Number.isSafeInteger(repository.summary.deletions) || !Number.isSafeInteger(repository.summary.binaryFiles)) {
+    throw new Error("Invalid repository inspection response");
+  }
+  return repository as Extract<RepositoryInspection, { kind: "repository" }>;
+}
+
+function decodeRepositoryDiffResult(result: unknown): RepositoryDiff {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid repository diff response");
+  const envelope = result as { ok?: unknown; value?: { diff?: unknown }; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Unable to load repository diff");
+  const diff = envelope.value?.diff;
+  if (!diff || typeof diff !== "object" || Array.isArray(diff)) throw new Error("Invalid repository diff response");
+  const value = diff as Record<string, unknown>;
+  if (typeof value.path !== "string" || (value.layer !== "staged" && value.layer !== "unstaged") || typeof value.patch !== "string") {
+    throw new Error("Invalid repository diff response");
+  }
+  return { path: value.path, layer: value.layer, patch: value.patch };
+}
+
 export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
   let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
   let ownedRooms: DshCollabOwnedRoom[] = [];
@@ -258,6 +296,8 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     getOwnedRooms: () => ownedRooms,
     subscribeOwnedRooms: (listener: () => void) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
     refreshOwnedRooms,
+    inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
+    inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),
   });
 }
 
@@ -352,6 +392,11 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     getOwnedRooms: actions.getOwnedRooms?.bind(actions),
     subscribeOwnedRooms: actions.subscribeOwnedRooms?.bind(actions),
     refreshOwnedRooms: actions.refreshOwnedRooms?.bind(actions),
+    getWorkspaceSharing: actions.getWorkspaceSharing?.bind(actions),
+    setWorkspaceSharing: actions.setWorkspaceSharing?.bind(actions),
+    requestWorkspaceSnapshot: actions.requestWorkspaceSnapshot?.bind(actions),
+    inspectRepository: actions.inspectRepository?.bind(actions),
+    inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
   };
 }
 
@@ -550,6 +595,8 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
+  const selectedRole = selection?.kind === "owned" ? "host" : "participant";
+  const inspector = useCollabInspector({ roomId: selection?.roomId ?? "", role: selectedRole, sharing: snapshot.workspaceSharing, port: props.settingsPort });
   useEffect(() => {
     setRoomName(selection?.roomTitle ?? "");
     setInvitation("");
@@ -562,7 +609,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   }, [notice]);
   if (!selection) return null;
 
-  const role = selection.kind === "owned" ? "host" : "participant";
+  const role = selectedRole;
   const selected = snapshot.roomId === selection.roomId && snapshot.role === role;
   const active = selected && snapshot.connection !== "offline";
   const view: DshCollabClientSnapshot = selected ? snapshot : {
@@ -627,20 +674,34 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       ),
       createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(view.connection, t), count: view.onlineCount })),
       createElement("div", { className: roomCss.surfaceActions },
+        active ? createElement("button", { type: "button", className: roomCss.toolbarButton, "aria-expanded": inspector.open, onClick: inspector.show }, t("inspector.changes")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.createInvite || gatewayEndpoint === "", onClick: () => { void createInvitation(); } }, t(busy === "invite" ? "share.creating" : "share.createInvitation")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.stopSharing, onClick: () => { void perform("stop", async () => { await props.settingsPort?.stopSharing?.(selection.roomId); }, t("share.stoppedNotice")); } }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")) : null,
         active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { props.settingsPort?.disconnectJoinedRoom?.(); } }, t("joined.disconnect")) : null,
         createElement("button", { type: "button", className: roomCss.closeSurface, "aria-label": t("rooms.backToDsh"), onClick: closeDshCollabRoom }, "×"),
       ),
     ),
-    active ? createElement(DshCollabDock, { port: props.port, fallback: view, showHeader: false, t }) : createElement("section", { className: roomCss.inactiveRoom },
-      createElement("div", { className: roomCss.inactiveMark, "aria-hidden": true }, "@"),
-      createElement("h2", null, view.roomTitle),
-      createElement("p", null, t(role === "host" ? "room.ownerInactive" : participantInactiveKey)),
-      role === "host" ? createElement("form", { className: roomCss.roomSetup, onSubmit: (event: FormEvent<HTMLFormElement>) => { void startSharing(event); } },
-        createElement("label", { className: roomCss.shareField }, t("share.roomName"), createElement("input", { name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) })),
-        createElement("button", { type: "submit", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.shareHostRoom || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : "share.startAndShare")),
-      ) : createElement("button", { type: "button", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.connectJoinedRoom, onClick: () => { void connect(); } }, t(busy === "connect" ? "joined.connecting" : "joined.connect")),
+    createElement("div", { className: roomCss.content },
+      active ? createElement(DshCollabDock, { port: props.port, fallback: view, showHeader: false, t }) : createElement("section", { className: roomCss.inactiveRoom },
+        createElement("div", { className: roomCss.inactiveMark, "aria-hidden": true }, "@"),
+        createElement("h2", null, view.roomTitle),
+        createElement("p", null, t(role === "host" ? "room.ownerInactive" : participantInactiveKey)),
+        role === "host" ? createElement("form", { className: roomCss.roomSetup, onSubmit: (event: FormEvent<HTMLFormElement>) => { void startSharing(event); } },
+          createElement("label", { className: roomCss.shareField }, t("share.roomName"), createElement("input", { name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) })),
+          createElement("button", { type: "submit", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.shareHostRoom || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : "share.startAndShare")),
+        ) : createElement("button", { type: "button", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.connectJoinedRoom, onClick: () => { void connect(); } }, t(busy === "connect" ? "joined.connecting" : "joined.connect")),
+      ),
+      createElement(DshCollabInspector, {
+        open: inspector.open,
+        role,
+        state: inspector.state,
+        onClose: inspector.close,
+        onRefresh: () => { void inspector.refresh(); },
+        onSetSharing: (enabled: boolean) => { void inspector.setSharing(enabled); },
+        onLoadSnapshot: () => { void inspector.loadSnapshot(); },
+        onLoadDiff: (path: string, layer: "staged" | "unstaged") => { void inspector.loadDiff(path, layer); },
+        t,
+      }),
     ),
     invitation ? createElement("section", { className: roomCss.invitationBar },
       createElement("input", { name: "hostInvitationOutput", type: "text", value: invitation, readOnly: true, "aria-label": t("share.invitationAria"), className: roomCss.invitationText }),

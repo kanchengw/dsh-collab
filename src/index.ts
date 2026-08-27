@@ -32,6 +32,7 @@ import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostC
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabStateFile } from "./persistence.js";
+import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -163,8 +164,21 @@ function registerGatewayControl(
       sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
     }));
   };
+  const activeRepository = (payload: unknown): { inspector: RepositoryInspector; input: Record<string, unknown> } => {
+    if (!mounted || !context.subprocess) throw new Error("Host Gateway repository inspection is unavailable");
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { roomId?: unknown }).roomId !== "string") {
+      throw new Error("roomId is required");
+    }
+    const input = payload as Record<string, unknown>;
+    const roomId = (input.roomId as string).trim();
+    if (roomId === "" || !mounted.runtime.activeRooms.isActive(roomId)) throw new Error("Owned room is not being shared");
+    const room = mounted.runtime.rooms.getRoom(roomId);
+    const cwd = context.agents.get(room.hostSessionId)?.session?.header?.cwd;
+    if (!cwd) throw new Error("Host session does not expose a workspace path");
+    return { inspector: new RepositoryInspector(createDshRepositoryCommandPort({ subprocess: context.subprocess, cwd })), input };
+  };
 
-  const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint) => {
+  const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint, payload, signal) => {
     try {
       if (endpoint === "gateway/status") {
         if (starting) return { ok: true, value: { status: "starting" } };
@@ -174,6 +188,17 @@ function registerGatewayControl(
       if (endpoint === "gateway/start") return { ok: true, value: await start() };
       if (endpoint === "gateway/stop") return { ok: true, value: await stop() };
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
+      if (endpoint === "repository/inspect") {
+        const { inspector } = activeRepository(payload);
+        const inspection = await inspector.inspect(signal);
+        return { ok: true, value: { inspection } };
+      }
+      if (endpoint === "repository/diff") {
+        const { inspector, input } = activeRepository(payload);
+        if (typeof input.path !== "string" || (input.layer !== "staged" && input.layer !== "unstaged")) throw new Error("path and layer are required");
+        const diff = await inspector.diff({ path: input.path, layer: input.layer }, signal);
+        return { ok: true, value: { diff } };
+      }
       return { ok: false, error: { code: "bad-request", message: `Unknown dsh-collab control endpoint: ${endpoint}`, details: { issues: [] } } };
     } catch (error) {
       return { ok: false, error: { code: "internal", message: error instanceof Error ? error.message : String(error), details: {} } };

@@ -11,6 +11,7 @@ describe("browser client bundle", () => {
     expect(bundle).toContain('"collab-settings-card"');
     expect(bundle).toContain('"collab-room"');
     expect(bundle).toContain('"collab-rooms"');
-    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(3);
+    expect(bundle).toContain('"collab-inspector"');
+    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(4);
   });
 });
