@@ -423,10 +423,11 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: rea
         "data-kind": item.kind,
         "data-status": item.status,
         "data-state": item.state,
+        "data-streaming": item.streaming ? "true" : undefined,
       },
       createElement("small", { className: roomCss.author }, author),
       createElement("div", { className: roomCss.text }, item.kind === "agent"
-        ? createElement(MarkdownText, { text: timelineLabel(item, props.t) })
+        ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true })
         : createElement(MessageText, { text: timelineLabel(item, props.t) })),
       status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null);
     }),

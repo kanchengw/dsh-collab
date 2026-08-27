@@ -1,4 +1,4 @@
-import type { MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
+import type { AgentOutputFrame, MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
 
 export type ParticipantConnection = "connecting" | "online" | "offline";
 export type ComposerTarget = MessageTarget;
@@ -29,6 +29,7 @@ export interface TimelineItem {
   requestId?: string;
   status?: TimelineAgentStatus;
   state?: string;
+  streaming?: boolean;
 }
 
 export interface HostRoomMemberView {
@@ -144,11 +145,12 @@ function payloadRequestId(payload: Record<string, unknown>): string | undefined 
   return typeof payload.requestId === "string" ? payload.requestId : undefined;
 }
 
-export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
+export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonly AgentOutputFrame[] = []): TimelineItem[] {
   const seen = new Set<string>();
   const items: TimelineItem[] = [];
   const requests = new Map<string, TimelineItem>();
   const outputs = new Map<string, TimelineItem>();
+  const settledRequests = new Set<string>();
   for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
     if (seen.has(event.eventId)) continue;
     seen.add(event.eventId);
@@ -166,6 +168,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
     }
     if (event.type === "agent.state.changed") {
       const requestId = payloadRequestId(payload) ?? "state:" + event.eventId;
+      settledRequests.add(requestId);
       const item = outputs.get(requestId) ?? {
         eventId: event.eventId,
         seq: event.seq,
@@ -176,6 +179,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
       item.seq = event.seq;
       item.state = typeof payload.state === "string" ? payload.state : undefined;
       item.text = payloadText(payload) ?? item.text;
+      item.streaming = false;
       if (!outputs.has(requestId)) {
         outputs.set(requestId, item);
         items.push(item);
@@ -194,6 +198,7 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
     const status = statusByType[event.type];
     if (!status) continue;
     const requestId = payloadRequestId(payload) ?? event.eventId;
+    if (status === "completed" || status === "failed" || status === "cancelled") settledRequests.add(requestId);
     const item = requests.get(requestId) ?? {
       eventId: event.eventId,
       seq: event.seq,
@@ -219,11 +224,29 @@ export function projectTimeline(events: RoomEvent[]): TimelineItem[] {
       failure.seq = event.seq;
       failure.state = "failed";
       failure.text = payload.error;
+      failure.streaming = false;
       if (!outputs.has(failureKey)) {
         outputs.set(failureKey, failure);
         items.push(failure);
       }
     }
+  }
+  let streamSeq = Math.max(0, ...events.map((event) => event.seq));
+  const roomId = events[0]?.roomId;
+  for (const output of activeAgentOutputs) {
+    if (roomId !== undefined && output.roomId !== roomId) continue;
+    if (!output.streaming || settledRequests.has(output.requestId)) continue;
+    streamSeq += 1;
+    items.push({
+      eventId: "stream:" + output.requestId,
+      seq: streamSeq,
+      kind: "agent",
+      authorMemberId: "agent",
+      requestId: output.requestId,
+      state: "output",
+      text: output.text,
+      streaming: true,
+    });
   }
   return items.sort((left, right) => left.seq - right.seq).map((item) => ({ ...item }));
 }

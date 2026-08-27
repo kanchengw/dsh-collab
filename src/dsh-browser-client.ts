@@ -2,8 +2,8 @@ import type { ComposerTarget } from "./ui.js";
 import { projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js";
-import { COLLAB_PROTOCOL, encodeClientStreamFrame } from "./protocol.js";
-import type { RoomEvent } from "./types.js";
+import { COLLAB_PROTOCOL, decodeServerStreamFrame, encodeClientStreamFrame } from "./protocol.js";
+import type { AgentOutputFrame, RoomEvent, StreamFrame } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 
 export interface BrowserRequestInit {
@@ -159,6 +159,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private token: string | undefined;
   private lastEventSeq = 0;
   private readonly events = new Map<string, RoomEvent>();
+  private readonly activeAgentOutputs = new Map<string, AgentOutputFrame>();
   private snapshot: DshCollabClientSnapshot;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private heartbeatAcknowledged = true;
@@ -248,6 +249,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const socket = this.socket;
     this.socket = undefined;
     this.token = undefined;
+    this.activeAgentOutputs.clear();
+    this.snapshot = { ...this.snapshot, timeline: this.projectTimeline() };
     socket?.close(1000, "client_disconnected");
     this.setConnection("offline");
   }
@@ -366,6 +369,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (!this.token) throw new Error("room token is missing");
     const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/snapshot`, undefined, true)) as SnapshotData;
     await this.recoverEvents(snapshot.lastEventSeq);
+    this.activeAgentOutputs.clear();
     this.lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...this.events.values()].map((event) => event.seq));
     this.snapshot = {
       ...this.snapshot,
@@ -376,7 +380,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       members: snapshot.members.flatMap((member) => typeof member.displayName === "string" && member.displayName.trim() !== ""
         ? [{ memberId: member.memberId, displayName: member.displayName }]
         : []),
-      timeline: projectTimeline([...this.events.values()]),
+      timeline: this.projectTimeline(),
     };
     this.emit();
     const previousSocket = this.socket;
@@ -462,7 +466,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   private applyRoom(data: RoomData): void {
     const sameRoom = data.room.roomId === this.snapshot.roomId;
-    if (!sameRoom) this.events.clear();
+    if (!sameRoom) {
+      this.events.clear();
+      this.activeAgentOutputs.clear();
+    }
     this.token = data.roomToken;
     this.snapshot = {
       roomId: data.room.roomId,
@@ -477,25 +484,35 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         : typeof data.member.displayName === "string" && data.member.displayName.trim() !== ""
           ? [{ memberId: data.member.memberId, displayName: data.member.displayName }]
           : [],
-      timeline: projectTimeline([...this.events.values()]),
+      timeline: this.projectTimeline(),
     };
     this.emit();
   }
 
   private applyFrame(raw: string): void {
-    let frame: { type?: string; roomId?: string; onlineMemberCount?: number; event?: { seq: number; type: string; payload?: unknown } };
-    try { frame = JSON.parse(raw) as typeof frame; } catch { return; }
-    const onlineCount = frame.onlineMemberCount;
-    if (frame.type === "presence" && frame.roomId === this.snapshot.roomId && typeof onlineCount === "number" && Number.isSafeInteger(onlineCount) && onlineCount >= 0) {
-      this.snapshot = { ...this.snapshot, onlineCount };
+    let frame: StreamFrame;
+    try { frame = decodeServerStreamFrame(JSON.parse(raw) as unknown); } catch { return; }
+    if (frame.kind === "presence" && frame.roomId === this.snapshot.roomId) {
+      this.snapshot = { ...this.snapshot, onlineCount: frame.onlineMemberCount };
       this.emit();
       return;
     }
-    if (frame.type === "event" && frame.event) {
-      const event = frame.event as RoomEvent;
+    if (frame.kind === "agent-output" && frame.roomId === this.snapshot.roomId) {
+      if (frame.streaming) this.activeAgentOutputs.set(frame.requestId, frame);
+      else this.activeAgentOutputs.delete(frame.requestId);
+      this.snapshot = { ...this.snapshot, timeline: this.projectTimeline() };
+      this.emit();
+      return;
+    }
+    if (frame.kind === "event") {
+      const event = frame.event;
       if (this.events.has(event.eventId)) return;
       this.events.set(event.eventId, event);
       this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
+      if (event.type === "agent.state.changed" || event.type === "agent.request.completed" || event.type === "agent.request.failed" || event.type === "agent.request.rejected" || event.type === "agent.request.cancelled") {
+        const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : undefined;
+        if (typeof payload?.requestId === "string") this.activeAgentOutputs.delete(payload.requestId);
+      }
       let members = this.snapshot.members;
       if (event.type === "member.joined" && event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)) {
         const payload = event.payload as Record<string, unknown>;
@@ -503,9 +520,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
           members = [...(members ?? []).filter((member) => member.memberId !== payload.memberId), { memberId: payload.memberId, displayName: payload.displayName }];
         }
       }
-      this.snapshot = { ...this.snapshot, members, timeline: projectTimeline([...this.events.values()]) };
+      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline() };
       this.emit();
     }
+  }
+
+  private projectTimeline(): DshCollabClientSnapshot["timeline"] {
+    return projectTimeline([...this.events.values()], [...this.activeAgentOutputs.values()]);
   }
 
   private async recoverEvents(untilSeq: number): Promise<void> {

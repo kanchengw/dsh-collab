@@ -37,6 +37,22 @@ describe("collab timeline projection", () => {
     expect(output).toEqual([expect.objectContaining({ kind: "agent", state: "output", text: "done", requestId: "req-1" })]);
   });
 
+  it("projects one replaceable streaming Agent item until durable output arrives", () => {
+    const request = event({ eventId: "request-1", seq: 1, type: "agent.request.created", payload: { requestId: "req-1", text: "@agent reply" } });
+    const active = { kind: "agent-output" as const, roomId: "room-1", requestId: "req-1", text: "partial **answer", streaming: true };
+
+    expect(projectTimeline([request], [active])).toEqual([
+      expect.objectContaining({ kind: "agent-request", requestId: "req-1" }),
+      expect.objectContaining({ eventId: "stream:req-1", kind: "agent", requestId: "req-1", text: "partial **answer", streaming: true }),
+    ]);
+
+    const durable = event({ eventId: "output-1", seq: 2, type: "agent.state.changed", payload: { requestId: "req-1", state: "output", text: "final **answer**" } });
+    const settled = projectTimeline([request, durable], [active]);
+    expect(settled.filter((item) => item.kind === "agent")).toEqual([
+      expect.objectContaining({ eventId: "output-1", text: "final **answer**", streaming: false }),
+    ]);
+  });
+
   it("projects a safe Host Agent failure into the room timeline", () => {
     const failed = projectTimeline([
       event({ eventId: "failed-1", seq: 1, type: "agent.request.failed", payload: { requestId: "req-1", error: "Host Agent failed: MISSING_CREDENTIAL" } }),

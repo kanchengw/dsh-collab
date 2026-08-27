@@ -87,6 +87,7 @@ describe("real DSH client slot adapter", () => {
       timeline: [
         { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "**hello**" },
         { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "**done**" },
+        { eventId: "stream:request-2", seq: 3, kind: "agent", authorMemberId: "member-host", requestId: "request-2", state: "output", text: "**working", streaming: true },
       ],
     };
     openDshCollabRoom({ kind: "joined", roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", gatewayEndpoint: "wss://host.example/collab" });
@@ -99,6 +100,8 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain("**hello**");
     expect(html).not.toContain("<strong>hello</strong>");
     expect(html).toContain("<strong>done</strong>");
+    expect(html).toContain('data-streaming="true"');
+    expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).toContain("streaming: item.streaming === true");
     expect(html).toContain(">Bob<");
     expect(html).not.toContain(">member-bob<");
     expect(html).not.toContain(">Output</span>");

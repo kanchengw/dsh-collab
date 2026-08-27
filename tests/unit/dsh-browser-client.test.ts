@@ -316,15 +316,43 @@ describe("browser Gateway client", () => {
       { kind: "agent", text: "done", state: "output" },
     ]);
 
-    socket?.onmessage?.({ data: JSON.stringify({ type: "event", event: {
-      eventId: "human-2", roomId: "room-1", seq: 3, type: "human.message",
-      actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { text: "live" },
+    socket?.onmessage?.({ data: JSON.stringify({
+      protocol: "dsh-collab.v1",
+      type: "agent-output",
+      roomId: "room-1",
+      requestId: "request-2",
+      text: "partial **answer",
+      streaming: true,
+    }) });
+    expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ eventId: "stream:request-2", kind: "agent", requestId: "request-2", text: "partial **answer", streaming: true });
+
+    socket?.onmessage?.({ data: JSON.stringify({
+      protocol: "dsh-collab.v1",
+      type: "agent-output",
+      roomId: "room-1",
+      requestId: "request-2",
+      text: "partial **answer**",
+      streaming: true,
+    }) });
+    expect(client.getSnapshot().timeline?.filter((item) => item.requestId === "request-2")).toHaveLength(1);
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "agent-2", roomId: "room-1", seq: 3, type: "agent.state.changed",
+      actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { requestId: "request-2", state: "output", text: "final **answer**" },
+    } }) });
+    expect(client.getSnapshot().timeline?.filter((item) => item.requestId === "request-2")).toEqual([
+      expect.objectContaining({ eventId: "agent-2", text: "final **answer**", streaming: false }),
+    ]);
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "human-2", roomId: "room-1", seq: 4, type: "human.message",
+      actor: { memberId: "member-host", principalId: "host" }, createdAt: 4, payload: { text: "live" },
     } }) });
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
 
-    socket?.onmessage?.({ data: JSON.stringify({ type: "event", event: {
-      eventId: "member-joined", roomId: "room-1", seq: 4, type: "member.joined",
-      actor: { memberId: "member-bob", principalId: "bob" }, createdAt: 4,
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "member-joined", roomId: "room-1", seq: 5, type: "member.joined",
+      actor: { memberId: "member-bob", principalId: "bob" }, createdAt: 5,
       payload: { memberId: "member-bob", displayName: "Bob", role: "participant" },
     } }) });
     expect(client.getSnapshot()).toMatchObject({
@@ -333,6 +361,13 @@ describe("browser Gateway client", () => {
         { memberId: "member-bob", displayName: "Bob" },
       ],
     });
+
+    socket?.onmessage?.({ data: JSON.stringify({
+      protocol: "dsh-collab.v1", type: "agent-output", roomId: "room-1",
+      requestId: "request-3", text: "do not retain", streaming: true,
+    }) });
+    client.disconnect();
+    expect(client.getSnapshot().timeline?.some((item) => item.requestId === "request-3")).toBe(false);
   });
 
   it("paginates recovery through the authoritative event sequence", async () => {
