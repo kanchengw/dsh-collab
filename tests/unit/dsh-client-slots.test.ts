@@ -1,15 +1,16 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabDock, DshCollabParticipantOverlay, DshCollabSessionDock, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabRoomSurface, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
+import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
 
 describe("real DSH client slot adapter", () => {
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
-    expect(inject).toEqual(["slots", "settingsScope", "connection", "sessions", "locale"]);
+    expect(inject).toEqual(["slots", "settingsScope", "connection", "locale"]);
   });
 
   it("starts and stops the Host Gateway only through the official Connection RPC", async () => {
@@ -54,17 +55,16 @@ describe("real DSH client slot adapter", () => {
     expect(base.shared).toEqual(["session-current"]);
   });
 
-  it("renders the native conversation dock with role, connection and target controls", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabDock, { fallback: snapshot }));
-    expect(html).toContain('data-collab-mode="host"');
-    expect(html).toContain("Release");
-    expect(html).toContain("Owner");
-    expect(html).toContain("Hosted by Host");
-    expect(html).toContain("Steer Agent");
-    expect(html).toContain('name="collab-target"');
+  it("keeps the native Host conversation to one composer with a header-only Collab action", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSessionAction, { sessionId: "room-1", defaultRoomName: "Release", fallback: snapshot }));
+
+    expect(html).toContain('data-collab-session-action="true"');
+    expect(html).toContain("Open Collab room");
+    expect(html).not.toContain("textarea");
+    expect(html).not.toContain('data-collab-room-ui="true"');
   });
 
-  it("renders a root-scoped Participant room surface without a local DSH session", () => {
+  it("renders the same full room surface for Owner and Participant", () => {
     const participant: DshCollabClientSnapshot = {
       ...snapshot,
       role: "participant",
@@ -74,48 +74,30 @@ describe("real DSH client slot adapter", () => {
         { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "done" },
       ],
     };
-    const html = renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: participant }));
-    expect(html).toContain('data-collab-surface="participant-overlay"');
+    openDshCollabRoom({ kind: "joined", roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", gatewayEndpoint: "wss://host.example/collab" });
+    const html = renderToStaticMarkup(createElement(DshCollabRoomSurface, { fallback: participant }));
+    closeDshCollabRoom();
+
+    expect(html).toContain('data-collab-surface="room"');
+    expect(html).toContain('data-collab-mode="participant"');
     expect(html).toContain('data-collab-room-ui="true"');
     expect(html).toContain("hello");
     expect(html).toContain("done");
     expect(html).toContain('name="collab-text"');
+    expect(html.match(/<textarea/g)).toHaveLength(1);
     expect(html).not.toContain('style="');
-    expect(html).not.toContain("dsh-collab-dock__");
-    expect(renderToStaticMarkup(createElement(DshCollabParticipantOverlay, { fallback: snapshot }))).toBe("");
+    expect(renderToStaticMarkup(createElement(DshCollabRoomSurface, { fallback: snapshot }))).toBe("");
   });
 
-  it("renders session-scoped Room name and share actions before the room is online", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabSessionDock, {
+  it("opens a draft Owner room from the native session header without adding another composer", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSessionAction, {
       sessionId: "session-current",
       defaultRoomName: "Release planning",
       fallback: { ...snapshot, roomId: "", role: "participant", connection: "offline" },
-      settingsPort: { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }), save: vi.fn() },
     }));
 
-    expect(html).toContain('name="roomName"');
-    expect(html).toContain('value="Release planning"');
-    expect(html).toContain('maxLength="80"');
-    expect(html).toContain("Start Gateway and share this session");
-    expect(html).not.toContain("Create invitation");
-  });
-
-  it("shows invitation controls only for the Host room bound to this session", () => {
-    const settingsPort = {
-      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }),
-      save: vi.fn(), createInvite: vi.fn(),
-    };
-    const html = renderToStaticMarkup(createElement(DshCollabSessionDock, {
-      sessionId: "room-1", defaultRoomName: "Release", fallback: snapshot, settingsPort,
-    }));
-    const other = renderToStaticMarkup(createElement(DshCollabSessionDock, {
-      sessionId: "room-2", defaultRoomName: "Other", fallback: snapshot, settingsPort,
-    }));
-
-    expect(html).toContain("Create invitation");
-    expect(html).toContain("Stop sharing");
-    expect(other).toContain("Start Gateway and share this session");
-    expect(other).not.toContain("Create invitation");
+    expect(html).toContain("Share as Collab room");
+    expect(html).not.toContain("textarea");
   });
 
   it("keeps Settings configuration-only", () => {
@@ -153,16 +135,14 @@ describe("real DSH client slot adapter", () => {
       })) } : undefined),
     };
     applyDshCollabClient(context as DshCollabClientContext);
-    const sessionRegistration = registrations.find((entry) => entry.name === "conversation.input.dock")?.options;
-    expect((sessionRegistration?.inject as (sessionId: string) => unknown)("session-current")).toEqual({ collabSessionId: "session-current" });
     expect(registrations).toEqual([
-      { name: "conversation.input.dock", options: expect.objectContaining({ id: "collab", order: 5, locale: "dsh-collab" }) },
+      { name: "conversation.session.header.actions", options: expect.objectContaining({ id: "dsh-collab", order: 30, locale: "dsh-collab" }) },
       { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20, locale: "dsh-collab" }) },
       { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10, locale: "dsh-collab" }) },
-      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-participant", order: 20, locale: "dsh-collab" }) },
+      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-room", order: 20, locale: "dsh-collab" }) },
       { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab", locale: "dsh-collab" }) },
     ]);
-    expect(context.slots.inject).toHaveBeenCalledWith("conversation.input.dock", expect.any(Function));
+    expect(context.slots.inject).toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("sidebar.footer.action", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("shell.overlay", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("settings.plugin.item", expect.any(Function));

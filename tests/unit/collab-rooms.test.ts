@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { DshCollabRoomsLauncher, DshCollabRoomsPanel, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
+import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabRoom, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
 import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
 
 function port(): DshCollabSettingsPort {
@@ -33,7 +33,7 @@ describe("Collab Rooms navigation", () => {
 
   it("shows explicit runtime controls for Owned rooms and Joined rooms", () => {
     setDshCollabRoomsOpen(true);
-    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: port(), openSession: vi.fn() }));
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: port() }));
     setDshCollabRoomsOpen(false);
 
     expect(html).toContain("Gateway");
@@ -42,7 +42,7 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Owned rooms");
     expect(html).toContain("Release planning");
     expect(html).toContain("Not sharing");
-    expect(html).toContain("Open session");
+    expect(html).toContain("Open room");
     expect(html).toContain("Start sharing");
     expect(html).toContain("Joined rooms");
     expect(html).toContain("Design review");
@@ -54,6 +54,17 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain('name="displayName"');
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain("Participating rooms");
+  });
+
+  it("stores Owned and Joined room navigation under the same Collab Rooms entry", () => {
+    openDshCollabRoom({ kind: "owned", roomId: "room-owned", hostSessionId: "session-owned", roomTitle: "Release planning" });
+    expect(getDshCollabRoomSelection()).toEqual(expect.objectContaining({ kind: "owned", roomId: "room-owned" }));
+
+    openDshCollabRoom({ kind: "joined", roomId: "room-joined", gatewayEndpoint: "wss://alice.example/collab", roomTitle: "Design review", hostDisplayName: "Alice" });
+    expect(getDshCollabRoomSelection()).toEqual(expect.objectContaining({ kind: "joined", roomId: "room-joined" }));
+
+    closeDshCollabRoom();
+    expect(getDshCollabRoomSelection()).toBeUndefined();
   });
 
   it("requires disconnecting the active Joined room before connecting another", () => {

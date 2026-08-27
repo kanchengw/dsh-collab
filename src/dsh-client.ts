@@ -2,7 +2,7 @@ import { createElement, useEffect, useState, type ChangeEvent, type FormEvent, t
 import type { ComposerTarget, TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { DshCollabRoomsLauncher, DshCollabRoomsPanel } from "./collab-rooms.js";
+import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
@@ -94,7 +94,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope", "connection", "sessions", "locale"];
+export const inject = ["slots", "settingsScope", "connection", "locale"];
 
 interface DshCollabLocaleService {
   register(namespace: string, dictionaries: { zh: typeof zh; en: typeof en }): () => void;
@@ -427,8 +427,8 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; t: CollabTra
   );
 }
 
-/** Additive composer dock rendered inside DSH's native conversation surface. */
-export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; t?: CollabTranslate }): ReactNode {
+/** Shared timeline and composer rendered inside the Collab room surface. */
+export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const fallback = props.fallback ?? fallbackSnapshot;
   const snapshot = usePortSnapshot(props.port, fallback);
@@ -449,7 +449,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
     }
   };
   return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": t("room.aria") },
-    createElement("div", { className: roomCss.header },
+    props.showHeader === false ? null : createElement("div", { className: roomCss.header },
       createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
       createElement("span", { className: roomCss.badge }, t(snapshot.role === "host" ? "role.owner" : "role.participant")),
       snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: snapshot.hostDisplayName })) : null,
@@ -484,132 +484,121 @@ function useGatewaySnapshot(port: DshCollabSettingsPort | undefined): DshCollabG
   return snapshot;
 }
 
-/** Session-scoped Host controls; the room identity is always the current DSH session. */
-export function DshCollabSessionDock(props: {
+/** Small session-header action; the native conversation keeps its own single composer. */
+export function DshCollabSessionAction(props: {
   sessionId: string;
   defaultRoomName: string;
   port?: DshCollabClientPort;
-  settingsPort?: DshCollabSettingsPort;
   fallback?: DshCollabClientSnapshot;
   t?: CollabTranslate;
 }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
-  const settings = useSettingsSnapshot(props.settingsPort);
-  const gateway = useGatewaySnapshot(props.settingsPort);
-  const [roomName, setRoomName] = useState(props.defaultRoomName);
-  const [invitation, setInvitation] = useState("");
-  const [busy, setBusy] = useState<"share" | "stop" | "invite" | "copy">();
-  const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
-  useEffect(() => {
-    setRoomName(props.defaultRoomName);
-    setInvitation("");
-    setNotice(undefined);
-  }, [props.sessionId]);
-
-  if (snapshot.role === "participant" && snapshot.connection !== "offline") return null;
   const hosted = snapshot.role === "host" && snapshot.roomId === props.sessionId && snapshot.connection !== "offline";
-  const appliedGateway = settings?.appliedGateway ?? settings;
-  const gatewayEndpoint = appliedGateway?.advertisedEndpoint ?? "";
-  const submitShare = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!props.settingsPort?.shareHostRoom || roomName.trim() === "") return;
-    setBusy("share");
-    setNotice(undefined);
-    try {
-      if (gateway.status !== "running") await props.settingsPort.startGateway?.();
-      await props.settingsPort.shareHostRoom({ sessionId: props.sessionId, title: roomName.trim() });
-      setRoomName(roomName.trim());
-      setNotice({ tone: "success", text: t(hosted ? "share.nameUpdatedNotice" : "share.startedNotice") });
-    } catch (cause) {
-      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("share.startError") });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-  const createInvitation = async (): Promise<void> => {
-    if (!props.settingsPort?.createInvite || gatewayEndpoint === "") return;
-    setBusy("invite");
-    setNotice(undefined);
-    try {
-      const created = await props.settingsPort.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, props.sessionId);
-      setInvitation(created.invitation);
-      setNotice({ tone: "success", text: t("share.invitationCreatedNotice") });
-    } catch (cause) {
-      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("share.invitationError") });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-  const stopSharing = async (): Promise<void> => {
-    if (!props.settingsPort?.stopSharing) return;
-    setBusy("stop");
-    setNotice(undefined);
-    try {
-      await props.settingsPort.stopSharing(props.sessionId);
-      setInvitation("");
-      setNotice({ tone: "success", text: t("share.stoppedNotice") });
-    } catch (cause) {
-      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("share.stopError") });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-  const copyInvitation = async (): Promise<void> => {
-    setBusy("copy");
-    setNotice(undefined);
-    try {
-      await navigator.clipboard.writeText(invitation);
-      setNotice({ tone: "success", text: t("share.copiedNotice") });
-    } catch (cause) {
-      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("share.copyError") });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-
-  return createElement("div", { "data-collab-session-id": props.sessionId },
-    createElement("section", { className: roomCss.sharePanel, "aria-label": t("share.aria") },
-      createElement("form", { className: roomCss.shareForm, onSubmit: submitShare },
-        createElement("label", { className: roomCss.shareField, htmlFor: `collab-room-name-${props.sessionId}` },
-          createElement("span", null, t("share.roomName")),
-          createElement("input", { id: `collab-room-name-${props.sessionId}`, name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) }),
-        ),
-        createElement("button", { className: roomCss.shareButton, type: "submit", disabled: !props.settingsPort?.shareHostRoom || busy !== undefined || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : hosted ? "share.updateRoom" : gateway.status === "running" ? "share.shareSession" : "share.startAndShare")),
-      ),
-      hosted ? createElement("div", { className: roomCss.inviteControls },
-        createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void createInvitation(); }, disabled: !props.settingsPort?.createInvite || gatewayEndpoint === "" || busy !== undefined }, t(busy === "invite" ? "share.creating" : "share.createInvitation")),
-        createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void stopSharing(); }, disabled: !props.settingsPort?.stopSharing || busy !== undefined }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")),
-        gatewayEndpoint === "" ? createElement("span", { className: roomCss.shareHint }, t("share.configureEndpoint")) : null,
-        invitation ? createElement("div", { className: roomCss.invitation },
-          createElement("textarea", { name: "hostInvitationOutput", value: invitation, readOnly: true, rows: 3, "aria-label": t("share.invitationAria"), className: roomCss.invitationText }),
-          createElement("button", { className: roomCss.inviteButton, type: "button", onClick: () => { void copyInvitation(); }, disabled: busy !== undefined }, t(busy === "copy" ? "share.copying" : "share.copyInvitation")),
-        ) : null,
-      ) : null,
-      notice ? createElement("p", { className: notice.tone === "error" ? roomCss.error : roomCss.success, role: notice.tone === "error" ? "alert" : "status" }, notice.text) : null,
-    ),
-    hosted ? createElement(DshCollabDock, { port: props.port, fallback: snapshot, t }) : null,
-  );
+  const roomTitle = hosted ? snapshot.roomTitle : props.defaultRoomName;
+  return createElement("button", {
+    type: "button",
+    className: roomCss.sessionAction,
+    "data-collab-session-action": true,
+    onClick: () => { openDshCollabRoom({ kind: "owned", roomId: props.sessionId, hostSessionId: props.sessionId, roomTitle }); },
+  }, t(hosted ? "share.openRoom" : "share.asRoom"));
 }
 
-/** Root-scoped Participant room surface; it does not require a local DSH session. */
-export function DshCollabParticipantOverlay(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; t?: CollabTranslate }): ReactNode {
+/** Full frame-wide room surface shared by Owner and Participant roles. */
+export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settingsPort?: DshCollabSettingsPort; fallback?: DshCollabClientSnapshot; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
+  const selection = useDshCollabRoomSelection();
   const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
-  const [collapsed, setCollapsed] = useState(false);
-  if (snapshot.role !== "participant" || snapshot.connection === "offline") return null;
-  if (collapsed) return createElement("button", {
-    type: "button",
-    onClick: () => setCollapsed(false),
-    "aria-label": t("participant.open"),
-    className: roomCss.collapsed,
-  }, `Collab · ${t(snapshot.connection === "connecting" ? "connection.connecting" : "connection.online")}`);
-  return createElement("aside", { className: roomCss.overlay, "data-collab-room-ui": true, "data-collab-surface": "participant-overlay", "aria-label": t("participant.aria") },
-    createElement("div", { className: roomCss.overlayBar },
-      createElement("span", null, t("participant.remoteRoom")),
-      createElement("button", { type: "button", onClick: () => setCollapsed(true), "aria-label": t("participant.minimizeAria"), className: roomCss.minimize }, t("participant.minimize")),
+  const gateway = useGatewaySnapshot(props.settingsPort);
+  const settings = useSettingsSnapshot(props.settingsPort);
+  const [roomName, setRoomName] = useState(() => selection?.roomTitle ?? "");
+  const [invitation, setInvitation] = useState("");
+  const [busy, setBusy] = useState<string>();
+  const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
+  useEffect(() => {
+    setRoomName(selection?.roomTitle ?? "");
+    setInvitation("");
+    setNotice(undefined);
+  }, [selection?.kind, selection?.roomId]);
+  if (!selection) return null;
+
+  const role = selection.kind === "owned" ? "host" : "participant";
+  const active = snapshot.roomId === selection.roomId && snapshot.role === role && snapshot.connection !== "offline";
+  const view: DshCollabClientSnapshot = active ? snapshot : {
+    ...fallbackSnapshot,
+    roomId: selection.roomId,
+    roomTitle: selection.roomTitle,
+    hostDisplayName: selection.kind === "joined" ? selection.hostDisplayName ?? "" : "",
+    role,
+  };
+  const appliedGateway = settings?.appliedGateway ?? settings;
+  const gatewayEndpoint = appliedGateway?.advertisedEndpoint ?? "";
+  const perform = async (key: string, action: () => Promise<void>, success?: string): Promise<void> => {
+    setBusy(key);
+    setNotice(undefined);
+    try {
+      await action();
+      if (success) setNotice({ tone: "success", text: success });
+    } catch (cause) {
+      setNotice({ tone: "error", text: cause instanceof Error ? cause.message : t("rooms.actionError") });
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  const backToRooms = (): void => { closeDshCollabRoom(); setDshCollabRoomsOpen(true); };
+  const startSharing = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (selection.kind !== "owned" || !props.settingsPort?.shareHostRoom || roomName.trim() === "") return;
+    await perform("share", async () => {
+      if (gateway.status !== "running") await props.settingsPort?.startGateway?.();
+      await props.settingsPort!.shareHostRoom!({ sessionId: selection.hostSessionId, title: roomName.trim() });
+    }, t("share.startedNotice"));
+  };
+  const connect = async (): Promise<void> => {
+    if (selection.kind !== "joined" || !props.settingsPort?.connectJoinedRoom) return;
+    await perform("connect", () => props.settingsPort!.connectJoinedRoom!({ gatewayEndpoint: selection.gatewayEndpoint, roomId: selection.roomId }));
+  };
+  const createInvitation = async (): Promise<void> => {
+    if (selection.kind !== "owned" || !props.settingsPort?.createInvite || gatewayEndpoint === "") return;
+    await perform("invite", async () => {
+      const created = await props.settingsPort!.createInvite!({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, selection.roomId);
+      setInvitation(created.invitation);
+    }, t("share.invitationCreatedNotice"));
+  };
+  const copyInvitation = async (): Promise<void> => {
+    await perform("copy", async () => { await navigator.clipboard.writeText(invitation); }, t("share.copiedNotice"));
+  };
+
+  return createElement("main", { className: roomCss.surface, "data-collab-room-ui": true, "data-collab-surface": "room", "data-collab-mode": role, "aria-label": t("room.aria") },
+    createElement("header", { className: roomCss.surfaceHeader },
+      createElement("button", { type: "button", className: roomCss.backButton, onClick: backToRooms }, t("rooms.title")),
+      createElement("div", { className: roomCss.surfaceIdentity },
+        createElement("strong", null, view.roomTitle),
+        createElement("span", { className: roomCss.badge }, t(role === "host" ? "role.owner" : "role.participant")),
+        view.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: view.hostDisplayName })) : null,
+      ),
+      createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(view.connection, t), count: view.onlineCount })),
+      createElement("div", { className: roomCss.surfaceActions },
+        active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.createInvite || gatewayEndpoint === "", onClick: () => { void createInvitation(); } }, t(busy === "invite" ? "share.creating" : "share.createInvitation")) : null,
+        active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.stopSharing, onClick: () => { void perform("stop", async () => { await props.settingsPort?.stopSharing?.(selection.roomId); }, t("share.stoppedNotice")); } }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")) : null,
+        active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { props.settingsPort?.disconnectJoinedRoom?.(); } }, t("joined.disconnect")) : null,
+        createElement("button", { type: "button", className: roomCss.closeSurface, "aria-label": t("rooms.backToDsh"), onClick: closeDshCollabRoom }, "×"),
+      ),
     ),
-    createElement(DshCollabDock, { port: props.port, fallback: snapshot, t }),
+    active ? createElement(DshCollabDock, { port: props.port, fallback: view, showHeader: false, t }) : createElement("section", { className: roomCss.inactiveRoom },
+      createElement("div", { className: roomCss.inactiveMark, "aria-hidden": true }, "@"),
+      createElement("h2", null, view.roomTitle),
+      createElement("p", null, t(role === "host" ? "room.ownerInactive" : "room.participantInactive")),
+      role === "host" ? createElement("form", { className: roomCss.roomSetup, onSubmit: (event: FormEvent<HTMLFormElement>) => { void startSharing(event); } },
+        createElement("label", { className: roomCss.shareField }, t("share.roomName"), createElement("input", { name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) })),
+        createElement("button", { type: "submit", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.shareHostRoom || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : "share.startAndShare")),
+      ) : createElement("button", { type: "button", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.connectJoinedRoom, onClick: () => { void connect(); } }, t(busy === "connect" ? "joined.connecting" : "joined.connect")),
+    ),
+    invitation ? createElement("section", { className: roomCss.invitationBar },
+      createElement("input", { name: "hostInvitationOutput", type: "text", value: invitation, readOnly: true, "aria-label": t("share.invitationAria"), className: roomCss.invitationText }),
+      createElement("button", { className: roomCss.toolbarButton, type: "button", onClick: () => { void copyInvitation(); }, disabled: busy !== undefined }, t(busy === "copy" ? "share.copying" : "share.copyInvitation")),
+    ) : null,
+    notice ? createElement("p", { className: notice.tone === "error" ? roomCss.surfaceError : roomCss.surfaceNotice, role: notice.tone === "error" ? "alert" : "status" }, notice.text) : null,
   );
 }
 
@@ -639,28 +628,26 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
   const browserSettings = rawBrowserSettings && connection ? createDshGatewayControlPort(rawBrowserSettings, connection.rpc) : rawBrowserSettings;
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
-  const sessions = optionalService<{ open(sessionId: string): void }>(context, "sessions");
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
-  context.slots.inject("conversation.input.dock", () => context.slots.register({
-    name: "conversation.input.dock",
-    id: "collab",
-    order: 5,
+  context.slots.inject("conversation.session.header.actions", () => context.slots.register({
+    name: "conversation.session.header.actions",
+    id: "dsh-collab",
+    order: 30,
     locale: COLLAB_LOCALE_NAMESPACE,
-    inject: (sessionId: string) => ({ collabSessionId: sessionId }),
   }, (props) => {
-    const sessionId = String(props.collabSessionId ?? props.sessionId ?? "");
+    const sessionId = String(props.sessionId ?? "");
     const useSessions = props.useSessions as undefined | (<T>(selector: (state: { byId: Record<string, { displayTitle: string }> }) => T) => T);
     const defaultRoomName = useSessions ? useSessions((state) => state.byId[sessionId]?.displayTitle ?? sessionId) : sessionId;
-    return createElement(DshCollabSessionDock, { key: sessionId, sessionId, defaultRoomName, port: client, settingsPort: settings, t: translationFor(props) });
+    return createElement(DshCollabSessionAction, { key: sessionId, sessionId, defaultRoomName, port: client, t: translationFor(props) });
   }));
   context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, { port: settings, openSession: sessions?.open.bind(sessions), t: translationFor(props) })));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-participant", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabParticipantOverlay, { port: client, t: translationFor(props) })));
+  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, { port: settings, t: translationFor(props) })));
+  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-room", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomSurface, { port: client, settingsPort: settings, t: translationFor(props) })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, { port: settings, t: translationFor(props) })));
 }
 
 /** DSH client runner entry expected by every `dsh.client` bundle. */
 export { applyDshCollabClient as apply };
 export { DshCollabSettingsCard } from "./collab-settings-card.js";
-export { DshCollabRoomsLauncher, DshCollabRoomsPanel, setDshCollabRoomsOpen } from "./collab-rooms.js";
+export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";

@@ -1,144 +1,155 @@
-.dock {
+.sessionAction,
+.toolbarButton,
+.backButton,
+.closeSurface,
+.send,
+.shareButton {
   box-sizing: border-box;
-  width: calc(100% - 32px);
-  max-width: 760px;
-  margin: 0 auto 8px;
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 12px;
-  background: var(--dsw-specific-tip);
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-family);
-}
-
-.sharePanel {
-  box-sizing: border-box;
-  width: calc(100% - 32px);
-  max-width: 760px;
-  margin: 0 auto 8px;
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-family);
-}
-
-.shareForm {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 8px;
-  padding: 8px;
-}
-
-.shareField {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.roomName,
-.invitationText {
-  box-sizing: border-box;
-  width: 100%;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.roomName {
-  height: 32px;
-  padding: 0 9px;
-}
-
-.invitationText {
-  min-height: 64px;
-  padding: 6px 9px;
-  resize: vertical;
-}
-
-.roomName:focus-visible,
-.invitationText:focus-visible {
-  outline: none;
-  border-color: var(--dsw-alias-state-business-primary);
-}
-
-.shareButton,
-.inviteButton {
-  box-sizing: border-box;
-  min-height: 32px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 5px 12px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 18px;
   cursor: pointer;
 }
 
-.shareButton {
-  background: var(--dsw-alias-button-primary-fill);
-  color: var(--dsw-alias-label-primary-inverted);
+.sessionAction {
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
-.inviteButton {
-  border-color: var(--dsw-alias-border-l2);
-  background: transparent;
+.sessionAction:hover,
+.sessionAction:focus-visible {
   color: var(--dsw-alias-label-secondary);
 }
 
-.shareButton:disabled,
-.inviteButton:disabled {
-  cursor: default;
-  opacity: .4;
+.toolbarButton:hover:not(:disabled),
+.backButton:hover,
+.closeSurface:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.shareButton:focus-visible,
-.inviteButton:focus-visible {
+.sessionAction:focus-visible,
+.toolbarButton:focus-visible,
+.backButton:focus-visible,
+.closeSurface:focus-visible,
+.send:focus-visible,
+.shareButton:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
 }
 
-.inviteControls {
+.surface {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-}
-
-.shareHint {
-  align-self: center;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.invitation {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 8px;
-  flex: 1;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
 }
 
-.success {
-  margin: 0;
-  padding: 7px 12px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-  color: var(--dsw-alias-state-success-primary);
+.surfaceHeader {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 58px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.backButton,
+.toolbarButton,
+.closeSurface {
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.backButton {
+  min-height: 32px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.backButton::before {
+  content: '<';
+  margin-right: 6px;
+}
+
+.surfaceIdentity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.surfaceIdentity strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.surfaceActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbarButton {
+  min-height: 30px;
+  padding: 4px 9px;
+  border-radius: 8px;
   font-size: 12px;
-  line-height: 18px;
+  line-height: 20px;
+}
+
+.toolbarButton:disabled,
+.send:disabled,
+.shareButton:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
+.closeSurface {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.dock {
+  box-sizing: border-box;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+}
+
+.surface > .dock {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
 }
 
 .header {
@@ -194,34 +205,43 @@
 .timeline {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 156px;
   overflow-y: auto;
-  padding: 10px 12px;
+}
+
+.surface .timeline {
+  flex: 1;
+  width: min(880px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 34px 0 28px;
+  gap: 18px;
 }
 
 .empty {
   margin: 0;
-  padding: 14px 12px;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 18px;
   text-align: center;
+}
+
+.surface .empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
 }
 
 .message {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr) auto;
+  grid-template-columns: 112px minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 8px;
+  gap: 14px;
   min-width: 0;
 }
 
 .author {
   overflow: hidden;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 24px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -230,14 +250,14 @@
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--dsw-alias-label-primary-dimmed);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 24px;
 }
 
 .status {
   color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 24px;
 }
 
 .message[data-status='failed'] .text,
@@ -246,16 +266,22 @@
 }
 
 .composer {
+  flex: none;
   display: grid;
   grid-template-columns: 116px minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px;
-  padding: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
+  width: min(900px, calc(100% - 48px));
+  margin: 0 auto 22px;
+  padding: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 18px;
   background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv1);
 }
 
-.targetLabel {
+.targetLabel,
+.shareField {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -266,216 +292,219 @@
 
 .select,
 .textarea,
-.send,
-.minimize,
-.collapsed {
+.roomName,
+.invitationText {
   box-sizing: border-box;
-  border-radius: 8px;
-  font: inherit;
-}
-
-.select,
-.textarea {
+  width: 100%;
   border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
+  font: inherit;
   font-size: 12px;
   line-height: 18px;
 }
 
-.select {
-  width: 100%;
-  height: 32px;
-  padding: 0 8px;
+.select,
+.roomName {
+  height: 34px;
+  padding: 0 9px;
 }
 
 .textarea {
-  width: 100%;
-  min-height: 32px;
-  max-height: 92px;
-  padding: 6px 9px;
+  min-height: 34px;
+  max-height: 120px;
+  padding: 7px 9px;
   resize: vertical;
 }
 
+.invitationText {
+  height: 34px;
+  padding: 0 9px;
+}
+
 .select:focus-visible,
-.textarea:focus-visible {
+.textarea:focus-visible,
+.roomName:focus-visible,
+.invitationText:focus-visible {
   outline: none;
   border-color: var(--dsw-alias-state-business-primary);
 }
 
 .send,
-.minimize,
-.collapsed {
-  border: none;
-  cursor: pointer;
-}
-
-.send {
-  min-width: 58px;
-  height: 32px;
-  padding: 0 12px;
+.shareButton {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-label-primary-inverted);
   font-size: 12px;
   font-weight: 500;
 }
 
-.send:hover:not(:disabled) {
+.send:hover:not(:disabled),
+.shareButton:hover:not(:disabled) {
   background: var(--dsw-alias-button-primary-hover);
-}
-
-.send:disabled {
-  cursor: default;
-  opacity: .4;
 }
 
 .error {
   margin: 0;
   padding: 7px 12px;
-  border-top: 1px solid var(--dsw-alias-state-error-secondary);
   color: var(--dsw-alias-state-error-primary);
   font-size: 12px;
   line-height: 18px;
 }
 
-.overlay {
-  position: absolute;
-  right: 20px;
-  bottom: 20px;
-  z-index: 40;
-  width: min(430px, calc(100% - 40px));
-  max-height: calc(100% - 40px);
-  overflow: auto;
-  border: 1px solid var(--dsw-alias-border-inverted);
-  border-radius: 16px;
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
-}
-
-.overlayBar {
+.inactiveRoom {
+  flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px 2px;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
 }
 
-.overlayBar span {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.minimize {
-  height: 28px;
-  padding: 0 9px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-}
-
-.minimize:hover,
-.collapsed:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.overlay .dock {
-  width: auto;
-  max-width: none;
+.inactiveRoom h2,
+.inactiveRoom p {
   margin: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
 }
 
-.overlay .header {
+.inactiveRoom h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.inactiveRoom p {
+  max-width: 440px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.inactiveMark {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 3px 8px;
-}
-
-.overlay .host {
-  grid-column: 1 / 3;
-  grid-row: 2;
-}
-
-.overlay .connection {
-  grid-column: 3;
-  grid-row: 1 / 3;
-  align-self: center;
-  margin-left: 0;
-}
-
-.overlay .timeline {
-  max-height: 280px;
-}
-
-.collapsed {
-  position: absolute;
-  right: 20px;
-  bottom: 20px;
-  z-index: 40;
-  min-height: 36px;
-  padding: 7px 12px;
-  border: 1px solid var(--dsw-alias-border-inverted);
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
   background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.roomSetup {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) auto;
+  align-items: end;
+  gap: 8px;
+  margin-top: 8px;
+  text-align: left;
+}
+
+.invitationBar {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  width: min(900px, calc(100% - 48px));
+  margin: 0 auto 12px;
+}
+
+.surfaceNotice,
+.surfaceError {
+  position: absolute;
+  top: 68px;
+  left: 50%;
+  z-index: 1;
+  max-width: min(560px, calc(100% - 32px));
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
   box-shadow: var(--dsw-shadow-lv2);
-  color: var(--dsw-alias-label-primary);
   font-size: 12px;
+  line-height: 18px;
+  transform: translateX(-50%);
 }
 
-.send:focus-visible,
-.minimize:focus-visible,
-.collapsed:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
-  outline-offset: 1px;
+.surfaceNotice {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-primary);
 }
 
-@media (max-width: 640px) {
-  .dock,
-  .sharePanel {
-    width: calc(100% - 16px);
+.surfaceError {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+@media (max-width: 720px) {
+  .surfaceHeader {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 0 10px;
   }
 
-  .host {
+  .surfaceHeader > .connection {
     display: none;
   }
 
+  .surfaceIdentity .host,
+  .surfaceActions .toolbarButton {
+    display: none;
+  }
+
+  .surface .timeline,
+  .surface .composer,
+  .invitationBar {
+    width: calc(100% - 20px);
+  }
+
+  .surface .timeline {
+    padding-block: 22px;
+  }
+
   .message {
-    grid-template-columns: 68px minmax(0, 1fr);
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 8px;
   }
 
   .status {
     grid-column: 2;
   }
 
-  .composer {
+  .composer,
+  .roomSetup,
+  .invitationBar {
     grid-template-columns: 1fr auto;
-  }
-
-  .shareForm,
-  .invitation {
-    grid-template-columns: 1fr;
-  }
-
-  .inviteControls {
-    align-items: stretch;
-    flex-direction: column;
   }
 
   .targetLabel {
     grid-column: 1 / -1;
   }
+}
 
-  .overlay {
-    right: 8px;
-    bottom: 8px;
-    width: calc(100% - 16px);
-    max-height: calc(100% - 16px);
+@media (max-width: 440px) {
+  .backButton {
+    width: 34px;
+    overflow: hidden;
+    color: transparent;
   }
 
-  .collapsed {
-    right: 8px;
-    bottom: 8px;
+  .backButton::before {
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .surfaceIdentity .badge {
+    display: none;
+  }
+
+  .roomSetup {
+    width: 100%;
+    grid-template-columns: 1fr;
   }
 }

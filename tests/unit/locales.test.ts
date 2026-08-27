@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { DshCollabRoomsPanel, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
-import { applyDshCollabClient, DshCollabSessionDock, type DshCollabClientContext, type DshCollabSettingsPort } from "../../src/dsh-client.js";
+import { applyDshCollabClient, DshCollabSessionAction, type DshCollabClientContext, type DshCollabSettingsPort } from "../../src/dsh-client.js";
 import { COLLAB_LOCALE_NAMESPACE, en, zh, type CollabTranslate } from "../../src/locales.js";
 
 const t: CollabTranslate = (key, params) => {
@@ -62,10 +62,9 @@ describe("dsh-collab locale dictionaries", () => {
     setDshCollabRoomsOpen(true);
     const rooms = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port, t }));
     setDshCollabRoomsOpen(false);
-    const dock = renderToStaticMarkup(createElement(DshCollabSessionDock, {
+    const action = renderToStaticMarkup(createElement(DshCollabSessionAction, {
       sessionId: "session-current",
       defaultRoomName: "Release planning",
-      settingsPort: port,
       fallback: { roomId: "", roomTitle: "", hostDisplayName: "", role: "participant", connection: "offline", onlineCount: 0, canSteer: false },
       t,
     }));
@@ -74,7 +73,6 @@ describe("dsh-collab locale dictionaries", () => {
     expect(rooms).toContain("我创建的房间");
     expect(rooms).toContain("我加入的房间");
     expect(rooms).toContain("启动网关");
-    expect(dock).toContain("房间名称");
-    expect(dock).toContain("启动网关并分享此会话");
+    expect(action).toContain("共享为协作房间");
   });
 });
