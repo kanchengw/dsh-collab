@@ -51,6 +51,12 @@ export interface ReviewPointFile {
   deletions: number;
 }
 
+export interface ReviewPointCreateInput {
+  title: string;
+  focus?: string;
+  files: Array<Pick<ReviewPointFile, "path" | "status" | "additions" | "deletions">>;
+}
+
 export interface ReviewPoint {
   reviewPointId: string;
   roomId: string;
@@ -65,6 +71,17 @@ export interface ReviewPoint {
   headOid: string;
   files: ReviewPointFile[];
   createdAt: number;
+}
+
+export interface ReviewPointProjection {
+  reviewPoint: ReviewPoint;
+  freshness: ReviewFreshness;
+  progress: ReviewProgress;
+}
+
+export interface ReviewPointPage {
+  reviewPoints: ReviewPointProjection[];
+  nextCursor?: string;
 }
 
 export type ReviewFindingLocation =

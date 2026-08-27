@@ -12,6 +12,7 @@ import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { WorkspaceService } from "./workspace-service.js";
+import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
 import type {
   GatewayRequest,
   GatewayResponse,
@@ -47,6 +48,7 @@ interface GatewayOptions {
   ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
   activeRooms?: ActiveRoomRegistry;
   workspace?: WorkspaceService;
+  reviewPoints?: ReviewPointService;
 }
 
 const MAX_ROOM_TITLE_LENGTH = 80;
@@ -89,6 +91,23 @@ function snapshotIdField(value: unknown): string {
   const snapshotId = requiredText(value, "snapshotId");
   if (!/^[a-f0-9]{64}$/.test(snapshotId)) throw invalidInput("snapshotId is invalid", { field: "snapshotId" });
   return snapshotId;
+}
+
+function reviewPointFiles(value: unknown): ReviewPointCreateFile[] {
+  if (!Array.isArray(value)) throw invalidInput("files must be an array", { field: "files" });
+  return value.map((entry) => {
+    const file = objectBody(entry);
+    const status = file.status;
+    if (status !== "added" && status !== "modified" && status !== "deleted" && status !== "renamed") {
+      throw invalidInput("Review Point file status is invalid", { field: "status" });
+    }
+    return {
+      path: requiredText(file.path, "path"),
+      status,
+      additions: numberField(file, "additions"),
+      deletions: numberField(file, "deletions"),
+    };
+  });
 }
 
 function getHeader(request: GatewayRequest, name: string): string | undefined {
@@ -164,10 +183,11 @@ export class CollabGateway {
       const resource = segments[3];
       if (segments.length === 4 && request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
       if (segments.length === 4 && request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
-      if (resource === "workspace-sharing" || resource === "workspace-snapshots") {
+      if (resource === "workspace-sharing" || resource === "workspace-snapshots" || resource === "review-points") {
         const capabilities = decodeCollaborationCapabilities(getHeader(request, COLLAB_CAPABILITY_HEADER));
         if (!this.options.workspace || !capabilities.includes(SIDECAR_REVIEW_CAPABILITY)
-          || (resource === "workspace-snapshots" && !this.options.workspace.snapshotsAvailable)) {
+          || ((resource === "workspace-snapshots" || resource === "review-points") && !this.options.workspace.snapshotsAvailable)
+          || (resource === "review-points" && !this.options.reviewPoints)) {
           return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
         }
       }
@@ -175,6 +195,7 @@ export class CollabGateway {
       this.options.activeRooms?.requireActive(roomId);
       if (segments.length === 4 && resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
       if (resource === "workspace-snapshots") return await this.workspaceSnapshots(roomId, segments.slice(4), url.searchParams, request);
+      if (resource === "review-points") return await this.reviewPoints(roomId, segments.slice(4), url.searchParams, request);
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
@@ -340,6 +361,44 @@ export class CollabGateway {
         data: Buffer.from(bytes).toString("base64"),
         eof: offset + bytes.byteLength === file.size,
       } } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+  }
+
+  private async reviewPoints(roomId: string, tail: string[], query: URLSearchParams, request: GatewayRequest): Promise<GatewayResponse> {
+    const claims = this.claims(roomId, request);
+    const reviewPoints = this.options.reviewPoints!;
+    if (request.method === "GET" && tail.length === 0) {
+      const after = query.get("after") ?? undefined;
+      const limit = query.get("limit") === null ? undefined : this.parseQueryInteger(query.get("limit"), "limit");
+      return { status: 200, body: await reviewPoints.list({ roomId, principalId: claims.principalId, ...(after ? { after } : {}), ...(limit === undefined ? {} : { limit }) }) };
+    }
+    if (request.method === "POST" && (tail.length === 0 || (tail.length === 1 && tail[0] === "refresh"))) {
+      const member = this.options.rooms.authorize(roomId, claims.principalId, "read");
+      if (member.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Host can change Review Points");
+      const body = objectBody(request.body);
+      const clientRequestId = requestIdField(body, "clientRequestId");
+      const snapshot = await this.options.workspace!.captureLatest({
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId,
+        roomEventSeq: this.options.ledger.latestSeq(roomId),
+      });
+      if (tail.length === 1) {
+        reviewPoints.observeSnapshot({ roomId, principalId: claims.principalId, snapshot });
+        return { status: 200, body: { snapshotId: snapshot.snapshotId } };
+      }
+      const focus = body.focus === undefined ? undefined : requiredText(body.focus, "focus");
+      const reviewPoint = reviewPoints.create({
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId,
+        title: requiredText(body.title, "title"),
+        ...(focus ? { focus } : {}),
+        files: reviewPointFiles(body.files),
+        snapshot,
+      });
+      return { status: 201, body: { reviewPoint } };
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
   }

@@ -1,8 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
+import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 
 describe("host runtime factory", () => {
+  it("persists Review Points and their file anchors while Workspace Sharing resets", async () => {
+    const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update("app").digest("hex"), size: 3, source: "tracked" as const }];
+    const stored = new Map<string, WorkspaceSnapshotPackage>();
+    const workspaceSnapshots = {
+      capture: vi.fn(async (input: { roomId: string; hostSessionId: string; roomEventSeq: number; snapshotId: string }) => {
+        const value = { snapshotId: input.snapshotId, roomId: input.roomId, hostSessionId: input.hostSessionId, roomEventSeq: input.roomEventSeq, headOid: "a".repeat(40), manifestHash: createHash("sha256").update(JSON.stringify(files)).digest("hex"), files, createdAt: 10 };
+        stored.set(value.snapshotId, value);
+        return value;
+      }),
+      load: async (snapshotId: string) => stored.get(snapshotId),
+      readChunk: async () => new Uint8Array(),
+    };
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} }, workspaceSnapshots, now: () => 10,
+    };
+    const first = createDshCollabHostRuntime(options);
+    const bootstrap = await first.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = { authorization: `Bearer ${(bootstrap.body as { roomToken: string }).roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    await first.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers, body: { enabled: true } });
+    await expect(first.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points", headers, body: {
+      clientRequestId: "review-1", title: "App review", files: [{ path: "src/app.ts", status: "modified", additions: 1, deletions: 0 }],
+    } })).resolves.toMatchObject({ status: 201 });
+    const snapshot = first.snapshot();
+    expect(snapshot.reviewPoints?.reviewPoints).toHaveLength(1);
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, hostSessionId: "room-2", snapshot });
+    restored.activeRooms.activate("room-1");
+    const shared = await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const restoredHeaders = { authorization: `Bearer ${(shared.body as { roomToken: string }).roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    await expect(restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points", headers: restoredHeaders })).resolves.toMatchObject({
+      status: 200,
+      body: { reviewPoints: [{ reviewPoint: { title: "App review", mainAgentSessionId: "room-1", files: [{ path: "src/app.ts" }] }, freshness: "current" }] },
+    });
+    await expect(restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders })).resolves.toMatchObject({ body: { state: { enabled: false } } });
+    await restored.dispose();
+  });
+
   it("broadcasts Workspace Sharing changes and resets them on stop or restart", async () => {
     const options = {
       roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",

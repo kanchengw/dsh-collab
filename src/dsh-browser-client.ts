@@ -5,7 +5,7 @@ import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js"
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
-import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewPoint, ReviewPointCreateInput, ReviewPointFile, ReviewPointPage, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 
 export interface BrowserRequestInit {
   method?: string;
@@ -193,6 +193,99 @@ function workspaceSnapshot(value: unknown, roomId: string): WorkspaceSnapshotPac
     manifestHash: snapshot.manifestHash,
     files,
     createdAt: snapshot.createdAt as number,
+  };
+}
+
+function safeSnapshotPath(path: string): boolean {
+  const segments = path.split("/");
+  return path !== "" && !path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path) && !path.includes("\\")
+    && segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function reviewPointFile(value: unknown, paths: Set<string>): ReviewPointFile {
+  const file = record(value);
+  if (!file || typeof file.path !== "string" || !safeSnapshotPath(file.path) || paths.has(file.path)
+    || !["added", "modified", "deleted", "renamed"].includes(String(file.status))
+    || !Number.isSafeInteger(file.additions) || (file.additions as number) < 0
+    || !Number.isSafeInteger(file.deletions) || (file.deletions as number) < 0
+    || (file.baseBlobOid !== undefined && (typeof file.baseBlobOid !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(file.baseBlobOid)))
+    || (file.snapshotContentHash !== undefined && (typeof file.snapshotContentHash !== "string" || !/^[a-f0-9]{64}$/.test(file.snapshotContentHash)))
+    || (file.status === "deleted" ? file.snapshotContentHash !== undefined : file.snapshotContentHash === undefined)) {
+    throw new Error("Gateway Review Point file is invalid");
+  }
+  paths.add(file.path);
+  return {
+    path: file.path,
+    status: file.status as ReviewPointFile["status"],
+    ...(typeof file.baseBlobOid === "string" ? { baseBlobOid: file.baseBlobOid } : {}),
+    ...(typeof file.snapshotContentHash === "string" ? { snapshotContentHash: file.snapshotContentHash } : {}),
+    additions: file.additions as number,
+    deletions: file.deletions as number,
+  };
+}
+
+function reviewPoint(value: unknown, roomId: string): ReviewPoint {
+  const point = record(value);
+  if (!point || !/^[a-f0-9]{64}$/.test(String(point.reviewPointId)) || point.roomId !== roomId
+    || typeof point.title !== "string" || point.title.trim() === "" || point.title.length > 120
+    || (point.focus !== undefined && (typeof point.focus !== "string" || point.focus.length > 2_000))
+    || typeof point.createdBy !== "string" || point.createdBy.trim() === ""
+    || !Array.isArray(point.reviewerIds) || point.reviewerIds.some((id) => typeof id !== "string" || id.trim() === "")
+    || new Set(point.reviewerIds).size !== point.reviewerIds.length
+    || !["open", "changes-requested", "approved", "closed"].includes(String(point.lifecycle))
+    || !Number.isSafeInteger(point.roomEventSeq) || (point.roomEventSeq as number) < 0
+    || typeof point.mainAgentSessionId !== "string" || point.mainAgentSessionId.trim() === ""
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(String(point.workspaceSnapshotId))
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(String(point.headOid))
+    || !Array.isArray(point.files) || point.files.length === 0 || point.files.length > 10_000
+    || !Number.isSafeInteger(point.createdAt) || (point.createdAt as number) < 0) {
+    throw new Error("Gateway Review Point response is invalid");
+  }
+  const paths = new Set<string>();
+  return {
+    reviewPointId: point.reviewPointId as string,
+    roomId,
+    title: point.title,
+    ...(typeof point.focus === "string" ? { focus: point.focus } : {}),
+    createdBy: point.createdBy,
+    reviewerIds: [...point.reviewerIds] as string[],
+    lifecycle: point.lifecycle as ReviewPoint["lifecycle"],
+    roomEventSeq: point.roomEventSeq as number,
+    mainAgentSessionId: point.mainAgentSessionId,
+    workspaceSnapshotId: point.workspaceSnapshotId as string,
+    headOid: point.headOid as string,
+    files: point.files.map((file) => reviewPointFile(file, paths)),
+    createdAt: point.createdAt as number,
+  };
+}
+
+function reviewPointProjection(value: unknown, roomId: string): ReviewPointProjection {
+  const projection = record(value);
+  const progress = record(projection?.progress);
+  if (!projection || (projection.freshness !== "current" && projection.freshness !== "stale") || !progress
+    || !Number.isSafeInteger(progress.roomEventDelta) || (progress.roomEventDelta as number) < 0
+    || !Number.isSafeInteger(progress.workspaceChangedFileCount) || (progress.workspaceChangedFileCount as number) < 0) {
+    throw new Error("Gateway Review Point projection is invalid");
+  }
+  return {
+    reviewPoint: reviewPoint(projection.reviewPoint, roomId),
+    freshness: projection.freshness,
+    progress: {
+      roomEventDelta: progress.roomEventDelta as number,
+      workspaceChangedFileCount: progress.workspaceChangedFileCount as number,
+    },
+  };
+}
+
+function reviewPointPage(value: unknown, roomId: string): ReviewPointPage {
+  const page = record(value);
+  if (!page || !Array.isArray(page.reviewPoints) || page.reviewPoints.length > 100
+    || (page.nextCursor !== undefined && (typeof page.nextCursor !== "string" || !/^[a-f0-9]{64}$/.test(page.nextCursor)))) {
+    throw new Error("Gateway Review Point page is invalid");
+  }
+  return {
+    reviewPoints: page.reviewPoints.map((projection) => reviewPointProjection(projection, roomId)),
+    ...(typeof page.nextCursor === "string" ? { nextCursor: page.nextCursor } : {}),
   };
 }
 
@@ -424,6 +517,34 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.assertActiveRoom(roomId);
     const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-snapshots`, { clientRequestId: randomId("snapshot") }, true)) as { snapshot?: unknown };
     return workspaceSnapshot(data?.snapshot, roomId);
+  }
+
+  async createReviewPoint(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint> {
+    this.assertActiveRoom(roomId);
+    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points`, {
+      clientRequestId: randomId("review"),
+      ...input,
+    }, true)) as { reviewPoint?: unknown };
+    return reviewPoint(data?.reviewPoint, roomId);
+  }
+
+  async listReviewPoints(roomId: string, after?: string, limit = 50): Promise<ReviewPointPage> {
+    this.assertActiveRoom(roomId);
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (after !== undefined) query.set("after", after);
+    const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/review-points?${query.toString()}`, undefined, true));
+    return reviewPointPage(data, roomId);
+  }
+
+  async refreshReviewPoints(roomId: string): Promise<string> {
+    this.assertActiveRoom(roomId);
+    const data = record(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/refresh`, {
+      clientRequestId: randomId("review_refresh"),
+    }, true)));
+    if (!data || typeof data.snapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(data.snapshotId)) {
+      throw new Error("Gateway Review Point refresh response is invalid");
+    }
+    return data.snapshotId;
   }
 
   dispose(): void {
@@ -720,6 +841,9 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> { return this.client.getWorkspaceSharing(roomId); }
   setWorkspaceSharing(roomId: string, enabled: boolean): Promise<WorkspaceSharingState> { return this.client.setWorkspaceSharing(roomId, enabled); }
   requestWorkspaceSnapshot(roomId: string): Promise<WorkspaceSnapshotPackage> { return this.client.requestWorkspaceSnapshot(roomId); }
+  createReviewPoint(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint> { return this.client.createReviewPoint(roomId, input); }
+  listReviewPoints(roomId: string, after?: string, limit?: number): Promise<ReviewPointPage> { return this.client.listReviewPoints(roomId, after, limit); }
+  refreshReviewPoints(roomId: string): Promise<string> { return this.client.refreshReviewPoints(roomId); }
 }
 
 export function createDshBrowserCollabClient(options: DshBrowserCollabOptions): DshBrowserCollabClient {

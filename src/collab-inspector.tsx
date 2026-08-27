@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { DiffBlock, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewPointCreateInput, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { DshCollabSettingsPort } from "./dsh-client.js";
 import type { CollabTranslate } from "./locales.js";
 import { defaultCollabTranslate } from "./locales.js";
@@ -13,8 +13,11 @@ export interface CollabInspectorState {
   repository?: RepositoryInspection;
   snapshot?: WorkspaceSnapshotPackage;
   diff?: RepositoryDiff;
+  reviewPoints?: ReviewPointProjection[];
   error?: string;
 }
+
+export type CollabInspectorTab = "changes" | "reviews";
 
 export function inspectorRoomState(roomId: string, sharing?: WorkspaceSharingState): CollabInspectorState {
   return { status: "idle", ...(sharing?.roomId === roomId ? { sharing } : {}) };
@@ -25,6 +28,27 @@ export function beginInspectorRefresh(current: CollabInspectorState): CollabInsp
   return { ...state, status: "loading", error: undefined };
 }
 
+export function reviewPointFilesFromInspection(inspection: RepositoryInspection): ReviewPointCreateInput["files"] {
+  if (inspection.kind !== "repository") return [];
+  return inspection.files.map((file) => {
+    const staged = file.staged;
+    const unstaged = file.unstaged;
+    const status = unstaged?.kind === "deleted" || (staged?.kind === "deleted" && !unstaged)
+      ? "deleted"
+      : staged?.kind === "renamed" || unstaged?.kind === "renamed"
+        ? "renamed"
+        : staged?.kind === "added"
+          ? "added"
+          : "modified";
+    return {
+      path: file.path,
+      status,
+      additions: (staged?.additions ?? 0) + (unstaged?.additions ?? 0),
+      deletions: (staged?.deletions ?? 0) + (unstaged?.deletions ?? 0),
+    };
+  });
+}
+
 export function useCollabInspector(input: {
   roomId: string;
   role: "host" | "participant";
@@ -32,6 +56,7 @@ export function useCollabInspector(input: {
   port?: DshCollabSettingsPort;
 }): {
   open: boolean;
+  activeTab: CollabInspectorTab;
   state: CollabInspectorState;
   show(): void;
   close(): void;
@@ -39,8 +64,13 @@ export function useCollabInspector(input: {
   setSharing(enabled: boolean): Promise<void>;
   loadSnapshot(): Promise<void>;
   loadDiff(path: string, layer: "staged" | "unstaged"): Promise<void>;
+  selectTab(tab: CollabInspectorTab): void;
+  createReviewPoint(input: Pick<ReviewPointCreateInput, "title" | "focus">): Promise<boolean>;
+  reloadReviewPoints(): Promise<void>;
+  refreshReviewPoints(): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<CollabInspectorTab>("changes");
   const [state, setState] = useState<CollabInspectorState>(() => inspectorRoomState(input.roomId, input.sharing));
   const roomIdRef = useRef(input.roomId);
   roomIdRef.current = input.roomId;
@@ -50,6 +80,7 @@ export function useCollabInspector(input: {
 
   useEffect(() => {
     setOpen(false);
+    setActiveTab("changes");
     setState(inspectorRoomState(input.roomId, input.sharing));
   }, [input.roomId, input.role]);
   useEffect(() => {
@@ -110,8 +141,48 @@ export function useCollabInspector(input: {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
   };
+  const reloadReviewPoints = async (): Promise<void> => {
+    if (!input.port?.listReviewPoints || input.roomId === "") return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const page = await input.port.listReviewPoints(roomId);
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", reviewPoints: page.reviewPoints, error: undefined }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+  const createReviewPoint = async (review: Pick<ReviewPointCreateInput, "title" | "focus">): Promise<boolean> => {
+    if (!input.port?.createReviewPoint || input.roomId === "") return false;
+    const files = reviewPointFilesFromInspection(state.repository ?? { kind: "not-git" });
+    if (files.length === 0) return false;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      await input.port.createReviewPoint(roomId, { ...review, files });
+      const page = await input.port.listReviewPoints?.(roomId);
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints } : {}), error: undefined }));
+      return true;
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+      return false;
+    }
+  };
+  const refreshReviewPoints = async (): Promise<void> => {
+    if (!input.port?.refreshReviewPoints || input.roomId === "") return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      await input.port.refreshReviewPoints(roomId);
+      const page = await input.port.listReviewPoints?.(roomId);
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints } : {}), error: undefined }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
   return {
     open,
+    activeTab,
     state,
     show: () => { setOpen(true); void refresh(); },
     close: () => { setOpen(false); },
@@ -119,6 +190,10 @@ export function useCollabInspector(input: {
     setSharing,
     loadSnapshot,
     loadDiff,
+    selectTab: (tab) => { setActiveTab(tab); if (tab === "reviews") void reloadReviewPoints(); },
+    createReviewPoint,
+    reloadReviewPoints,
+    refreshReviewPoints,
   };
 }
 
@@ -192,8 +267,25 @@ function SnapshotFiles({ snapshot, t }: { snapshot: WorkspaceSnapshotPackage; t:
   </section>;
 }
 
+function ReviewPoints(props: { points: readonly ReviewPointProjection[]; t: CollabTranslate }): ReactNode {
+  if (props.points.length === 0) return <div className={css.empty}><strong>{props.t("inspector.noReviews")}</strong><p>{props.t("inspector.noReviewsHint")}</p></div>;
+  return <ul className={css.reviewList}>{props.points.map(({ reviewPoint, freshness, progress }) => <li key={reviewPoint.reviewPointId} className={css.reviewCard}>
+    <div className={css.reviewHeading}><div><strong>{reviewPoint.title}</strong>{reviewPoint.focus ? <p>{reviewPoint.focus}</p> : null}</div><span>{props.t(`inspector.lifecycle.${reviewPoint.lifecycle}`)}</span></div>
+    <div className={css.reviewStatus}>
+      <span data-freshness={freshness}>{props.t(`inspector.freshness.${freshness}`)}</span>
+      <span>{props.t("inspector.reviewFiles", { count: reviewPoint.files.length })}</span>
+    </div>
+    <div className={css.reviewProgress} aria-label={props.t("inspector.progress")}>
+      <span>{props.t("inspector.roomEventDelta", { count: progress.roomEventDelta })}</span>
+      <span>{props.t("inspector.workspaceChangedFiles", { count: progress.workspaceChangedFileCount })}</span>
+    </div>
+    <ul className={css.reviewFiles}>{reviewPoint.files.map((file) => <li key={file.path}><span>{file.path}</span><small><i className={css.additions}>+{file.additions}</i> <i className={css.deletions}>-{file.deletions}</i></small></li>)}</ul>
+  </li>)}</ul>;
+}
+
 export function DshCollabInspector(props: {
   open: boolean;
+  roomId: string;
   role: "host" | "participant";
   state: CollabInspectorState;
   onClose(): void;
@@ -201,24 +293,45 @@ export function DshCollabInspector(props: {
   onSetSharing(enabled: boolean): void;
   onLoadSnapshot(): void;
   onLoadDiff(path: string, layer: "staged" | "unstaged"): void;
+  activeTab: CollabInspectorTab;
+  onSelectTab(tab: CollabInspectorTab): void;
+  onCreateReviewPoint(input: Pick<ReviewPointCreateInput, "title" | "focus">): Promise<boolean>;
+  onReloadReviewPoints(): void;
+  onRefreshReviewPoints(): void;
   t?: CollabTranslate;
 }): ReactNode {
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [reviewFocus, setReviewFocus] = useState("");
+  useEffect(() => { setReviewTitle(""); setReviewFocus(""); }, [props.roomId]);
   if (!props.open) return null;
   const t = props.t ?? defaultCollabTranslate;
   const busy = props.state.status === "loading";
   const enabled = props.state.sharing?.enabled === true;
-  return <aside className={css.inspector} data-collab-inspector="changes" aria-labelledby="collab-changes-title">
+  const reviewFiles = reviewPointFilesFromInspection(props.state.repository ?? { kind: "not-git" });
+  const createReview = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (reviewTitle.trim() === "" || reviewFiles.length === 0) return;
+    const created = await props.onCreateReviewPoint({ title: reviewTitle.trim(), ...(reviewFocus.trim() ? { focus: reviewFocus.trim() } : {}) });
+    if (!created) return;
+    setReviewTitle("");
+    setReviewFocus("");
+  };
+  return <aside className={css.inspector} data-collab-inspector={props.activeTab} aria-labelledby="collab-inspector-title">
     <header className={css.header}>
-      <div><h2 id="collab-changes-title">{t("inspector.changes")}</h2><p>{t("inspector.description")}</p></div>
+      <div><h2 id="collab-inspector-title">{t("inspector.title")}</h2><p>{t("inspector.description")}</p></div>
       <button type="button" className={css.close} aria-label={t("inspector.close")} onClick={props.onClose}>×</button>
     </header>
+    <div className={css.tabs} role="tablist" aria-label={t("inspector.title")}>
+      {(["changes", "reviews"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={props.activeTab === tab} onClick={() => { props.onSelectTab(tab); }}>{t(`inspector.${tab}`)}</button>)}
+    </div>
     <div className={css.body}>
+      {props.state.error ? <p className={css.error} role="alert">{props.state.error}</p> : null}
+      {props.activeTab === "changes" ? <>
       <section className={css.sharing} aria-labelledby="collab-workspace-sharing-title">
         <div><h3 id="collab-workspace-sharing-title">{t("inspector.workspaceSharing")}</h3><p>{t(props.role === "host" ? "inspector.hostSharingHint" : "inspector.participantSharingHint")}</p></div>
         {props.role === "host" ? <button type="button" className={css.switch} role="switch" aria-checked={enabled} disabled={busy} onClick={() => { props.onSetSharing(!enabled); }}><span /></button> : <span className={enabled ? css.shared : css.notShared}>{t(props.state.sharing === undefined ? "inspector.loading" : enabled ? "inspector.shared" : "inspector.notShared")}</span>}
       </section>
 
-      {props.state.error ? <p className={css.error} role="alert">{props.state.error}</p> : null}
       {props.role === "host" ? <section className={css.changes} aria-labelledby="collab-current-changes-title">
         <div className={css.sectionHeading}><div><h3 id="collab-current-changes-title">{t("inspector.currentChanges")}</h3><p>{t("inspector.currentChangesHint")}</p></div><button type="button" className={css.action} disabled={busy} onClick={props.onRefresh}>{t(busy ? "inspector.loading" : "inspector.refresh")}</button></div>
         {props.state.repository ? <RepositoryChanges inspection={props.state.repository} diff={props.state.diff} onLoadDiff={props.onLoadDiff} t={t} /> : <p className={css.emptyText}>{t(busy ? "inspector.loading" : "inspector.openToLoad")}</p>}
@@ -226,6 +339,19 @@ export function DshCollabInspector(props: {
         <div><strong>{t("inspector.snapshotAccess")}</strong><p>{t("inspector.snapshotAccessHint")}</p></div>
         <button type="button" className={css.primaryAction} disabled={busy} onClick={props.onLoadSnapshot}>{t(busy ? "inspector.loading" : "inspector.loadSnapshot")}</button>
         {props.state.snapshot ? <SnapshotFiles snapshot={props.state.snapshot} t={t} /> : null}
+      </section>}
+      </> : <section className={css.reviews} aria-labelledby="collab-review-points-title">
+        <div className={css.sectionHeading}><div><h3 id="collab-review-points-title">{t("inspector.reviewPoints")}</h3><p>{t("inspector.reviewPointsHint")}</p></div><button type="button" className={css.action} disabled={busy} onClick={props.onReloadReviewPoints}>{t(busy ? "inspector.loading" : "inspector.reloadReviews")}</button></div>
+        {props.role === "host" ? <>
+          <form className={css.reviewForm} onSubmit={(event) => { void createReview(event); }}>
+            <label>{t("inspector.reviewTitle")}<input value={reviewTitle} maxLength={120} onChange={(event) => { setReviewTitle(event.target.value); }} /></label>
+            <label>{t("inspector.reviewFocus")}<textarea value={reviewFocus} maxLength={2_000} rows={2} onChange={(event) => { setReviewFocus(event.target.value); }} /></label>
+            <div className={css.reviewActions}><span>{t("inspector.reviewSelection", { count: reviewFiles.length })}</span><button type="submit" className={css.primaryAction} disabled={busy || !enabled || reviewTitle.trim() === "" || reviewFiles.length === 0}>{t("inspector.createReview")}</button></div>
+          </form>
+          <button type="button" className={css.secondaryAction} disabled={busy || !enabled || !props.state.reviewPoints?.length} onClick={props.onRefreshReviewPoints}>{t("inspector.refreshComparison")}</button>
+          {!enabled ? <p className={css.reviewHint}>{t("inspector.reviewSharingRequired")}</p> : null}
+        </> : null}
+        <ReviewPoints points={props.state.reviewPoints ?? []} t={t} />
       </section>}
     </div>
   </aside>;

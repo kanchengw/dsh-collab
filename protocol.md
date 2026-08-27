@@ -104,6 +104,9 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/workspace-snapshots` | Active member captures the current immutable Host workspace; requires `sidecar-review.v1` and enabled Workspace Sharing |
 | `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId` | Active member reads one snapshot manifest under the same sharing gate |
 | `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId/files/:fileIndex?offset=&limit=` | Active member reads an authenticated, bounded content chunk; `limit` is at most 262144 bytes |
+| `GET` | `/collab/v1/rooms/:roomId/review-points?after=&limit=` | Active member reads persisted Review Point projections; defaults to 50 and caps at 100 |
+| `POST` | `/collab/v1/rooms/:roomId/review-points` | Host captures the current workspace and creates one immutable Review Point |
+| `POST` | `/collab/v1/rooms/:roomId/review-points/refresh` | Host captures a new comparison snapshot used for freshness and workspace progress |
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -174,6 +177,33 @@ bounded to 10,000 files, 64 MiB per file and 256 MiB total; Participant download
 is independently bounded to 10,000 files and 256 MiB total. Disabling Workspace
 Sharing rejects every new manifest or chunk request, but already materialized
 local content remains readable without the Host.
+
+Review Point creation accepts `{ clientRequestId, title, focus?, files }`.
+`clientRequestId` is at most 128 characters and makes creation idempotent across
+lost responses and Host restarts. `files` is the Host UI's current changed-file
+projection and contains only `{ path, status, additions, deletions }`; the server
+copies content hashes from the snapshot it captures and rejects non-deleted paths
+that are absent from that snapshot. CM-U08 creates points with an empty
+`reviewerIds` list; assignment and findings are introduced by the next Unit. A
+Review Point requires a Git `HEAD`; an unborn repository is rejected rather than
+inventing a commit identity.
+
+The list response is `{ reviewPoints, nextCursor? }`, where each item contains
+the immutable `reviewPoint` plus three independent projections:
+
+- `lifecycle` remains part of the Review Point and starts as `open`;
+- `freshness` is exactly `current` or `stale`, based only on hashes for paths in
+  `reviewPoint.files`;
+- `progress` contains the live `roomEventDelta` and the number of paths whose
+  hashes differ between the Review Point snapshot and the latest Host comparison
+  snapshot.
+
+Changing only chat history or a non-reviewed file never creates a third
+freshness state. It updates progress while freshness remains `current`. Refresh
+accepts `{ clientRequestId }`; it is Host-only because it captures the current
+Host workspace. Active Participants read the most recently persisted comparison
+result and may explicitly reload the list. CM-U08 adds no Review WebSocket frame,
+so old clients and the existing durable room cursor remain unchanged.
 
 ## HTTP responses
 

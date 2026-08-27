@@ -73,6 +73,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   };
   const unsubscribeLedger = persistence ? runtime.ledger.subscribe(save) : undefined;
   const unsubscribeRooms = persistence ? runtime.rooms.subscribe(save) : undefined;
+  const unsubscribeReviewPoints = persistence ? runtime.reviewPoints.subscribe(save) : undefined;
   const ready = runtime.http.listen();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
   void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
@@ -83,6 +84,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
       await ready.catch(() => undefined);
       unsubscribeLedger?.();
       unsubscribeRooms?.();
+      unsubscribeReviewPoints?.();
       await persistence?.save(runtime.snapshot());
       try {
         await runtime.dispose();

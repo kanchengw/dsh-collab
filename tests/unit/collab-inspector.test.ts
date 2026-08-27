@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { beginInspectorRefresh, DshCollabInspector, inspectorRoomState, type CollabInspectorState } from "../../src/collab-inspector.js";
+import { beginInspectorRefresh, DshCollabInspector, inspectorRoomState, reviewPointFilesFromInspection, type CollabInspectorState } from "../../src/collab-inspector.js";
 import type { DshCollabClientSnapshot } from "../../src/dsh-client.js";
 
 const room: DshCollabClientSnapshot = {
@@ -16,9 +16,10 @@ const room: DshCollabClientSnapshot = {
   canSteer: true,
 };
 
-function render(state: CollabInspectorState, role: "host" | "participant" = "host"): string {
+function render(state: CollabInspectorState, role: "host" | "participant" = "host", activeTab: "changes" | "reviews" = "changes"): string {
   return renderToStaticMarkup(createElement(DshCollabInspector, {
     open: true,
+    roomId: room.roomId,
     role,
     state,
     onClose: vi.fn(),
@@ -26,6 +27,11 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
     onSetSharing: vi.fn(),
     onLoadSnapshot: vi.fn(),
     onLoadDiff: vi.fn(),
+    activeTab,
+    onSelectTab: vi.fn(),
+    onCreateReviewPoint: vi.fn(async () => true),
+    onReloadReviewPoints: vi.fn(),
+    onRefreshReviewPoints: vi.fn(),
   }));
 }
 
@@ -109,6 +115,52 @@ describe("Collab Changes Inspector", () => {
     expect(loaded).toContain("src/changed.ts");
     expect(loaded).toContain("42 B");
     expect(loaded).not.toContain("session-private");
+  });
+
+  it("maps the current repository projection into one Review Point file per path", () => {
+    expect(reviewPointFilesFromInspection({
+      kind: "repository",
+      root: "C:/private/repository",
+      files: [
+        { path: "src/new.ts", staged: { kind: "added", additions: 4, deletions: 0 }, unstaged: { kind: "modified", additions: 1, deletions: 1 } },
+        { path: "src/old.ts", unstaged: { kind: "deleted", additions: 0, deletions: 6 } },
+        { path: "src/conflict.ts", unstaged: { kind: "unmerged" } },
+      ],
+      summary: { stagedFiles: 1, unstagedFiles: 3, additions: 5, deletions: 7, binaryFiles: 0 },
+    })).toEqual([
+      { path: "src/new.ts", status: "added", additions: 5, deletions: 1 },
+      { path: "src/old.ts", status: "deleted", additions: 0, deletions: 6 },
+      { path: "src/conflict.ts", status: "modified", additions: 0, deletions: 0 },
+    ]);
+  });
+
+  it("renders Review Point lifecycle, freshness and progress as independent status", () => {
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), roomId: room.roomId, title: "Parser review", focus: "Check recovery", createdBy: "host", reviewerIds: [], lifecycle: "open" as const,
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified" as const, snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const state: CollabInspectorState = {
+      status: "ready",
+      sharing: { roomId: room.roomId, enabled: true, enabledBy: "host", enabledAt: 10, revision: 1 },
+      repository: { kind: "repository", root: "C:/private/repository", files: [], summary: { stagedFiles: 0, unstagedFiles: 0, additions: 0, deletions: 0, binaryFiles: 0 } },
+      reviewPoints: [{ reviewPoint, freshness: "stale", progress: { roomEventDelta: 5, workspaceChangedFileCount: 2 } }],
+    };
+    const host = render(state, "host", "reviews");
+    expect(host).toContain("Create review point");
+    expect(host).toContain("Parser review");
+    expect(host).toContain("Open");
+    expect(host).toContain("Stale");
+    expect(host).toContain("5 room events since capture");
+    expect(host).toContain("2 workspace files changed");
+    expect(host).not.toContain("C:/private/repository");
+
+    const participant = render(state, "participant", "reviews");
+    expect(participant).toContain("Reload reviews");
+    expect(participant).not.toContain("Create review point");
+    expect(participant).not.toContain("Refresh comparison");
+
+    expect(render({ ...state, status: "error", error: "Review failed" }, "host", "reviews")).toContain("Review failed");
   });
 
   it("uses a room drawer at narrow widths instead of a floating window", () => {

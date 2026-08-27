@@ -7,7 +7,7 @@ import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDs
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
-import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewPoint, ReviewPointCreateInput, ReviewPointPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
@@ -84,6 +84,9 @@ export interface DshCollabSettingsPort {
   getWorkspaceSharing?(roomId: string): Promise<WorkspaceSharingState>;
   setWorkspaceSharing?(roomId: string, enabled: boolean): Promise<WorkspaceSharingState>;
   requestWorkspaceSnapshot?(roomId: string): Promise<WorkspaceSnapshotPackage>;
+  createReviewPoint?(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint>;
+  listReviewPoints?(roomId: string, after?: string, limit?: number): Promise<ReviewPointPage>;
+  refreshReviewPoints?(roomId: string): Promise<string>;
   inspectRepository?(roomId: string): Promise<RepositoryInspection>;
   inspectRepositoryDiff?(roomId: string, path: string, layer: "staged" | "unstaged"): Promise<RepositoryDiff>;
 }
@@ -395,6 +398,9 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     getWorkspaceSharing: actions.getWorkspaceSharing?.bind(actions),
     setWorkspaceSharing: actions.setWorkspaceSharing?.bind(actions),
     requestWorkspaceSnapshot: actions.requestWorkspaceSnapshot?.bind(actions),
+    createReviewPoint: actions.createReviewPoint?.bind(actions),
+    listReviewPoints: actions.listReviewPoints?.bind(actions),
+    refreshReviewPoints: actions.refreshReviewPoints?.bind(actions),
     inspectRepository: actions.inspectRepository?.bind(actions),
     inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
   };
@@ -693,6 +699,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       ),
       createElement(DshCollabInspector, {
         open: inspector.open,
+        roomId: selection.roomId,
         role,
         state: inspector.state,
         onClose: inspector.close,
@@ -700,6 +707,11 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         onSetSharing: (enabled: boolean) => { void inspector.setSharing(enabled); },
         onLoadSnapshot: () => { void inspector.loadSnapshot(); },
         onLoadDiff: (path: string, layer: "staged" | "unstaged") => { void inspector.loadDiff(path, layer); },
+        activeTab: inspector.activeTab,
+        onSelectTab: inspector.selectTab,
+        onCreateReviewPoint: inspector.createReviewPoint,
+        onReloadReviewPoints: () => { void inspector.reloadReviewPoints(); },
+        onRefreshReviewPoints: () => { void inspector.refreshReviewPoints(); },
         t,
       }),
     ),

@@ -1,4 +1,5 @@
 import { createConnection, createServer as createTcpServer } from "node:net";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -177,6 +178,36 @@ describe("Cordis Host mount", () => {
       await second.ready;
       expect(second.runtime.rooms.listMembers("room-1")).toContainEqual(expect.objectContaining({ memberId: "member-bob" }));
       expect(second.runtime.ledger.readAfter("room-1", 0)).toContainEqual(expect.objectContaining({ eventId: "event-1" }));
+      await second.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists Review Point metadata through the Host state file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-review-points-"));
+    const stateFile = join(dir, "state.json");
+    const config = { roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0, stateFile };
+    const context = { agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) } };
+    const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update("app").digest("hex"), size: 3, source: "tracked" as const }];
+    const snapshot = {
+      snapshotId: "snapshot-1", roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 0, headOid: "a".repeat(40),
+      manifestHash: createHash("sha256").update(JSON.stringify(files)).digest("hex"), files, createdAt: 10,
+    };
+    try {
+      const first = mountDshCollabCordisHost(context, config);
+      if (!first) throw new Error("first Gateway did not mount");
+      await first.ready;
+      first.runtime.reviewPoints.create({
+        roomId: "room-1", principalId: "host", clientRequestId: "review-1", title: "App review", snapshot,
+        files: [{ path: "src/app.ts", status: "modified", additions: 1, deletions: 0 }],
+      });
+      await first.dispose();
+
+      const second = mountDshCollabCordisHost(context, config);
+      if (!second) throw new Error("second Gateway did not mount");
+      await second.ready;
+      expect(second.runtime.snapshot().reviewPoints?.reviewPoints).toContainEqual(expect.objectContaining({ title: "App review", workspaceSnapshotId: "snapshot-1" }));
       await second.dispose();
     } finally {
       await rm(dir, { recursive: true, force: true });

@@ -18,6 +18,7 @@ export * from "./participant.js";
 export * from "./persistence.js";
 export * from "./resume-credentials.js";
 export * from "./repository-inspector.js";
+export * from "./review-points.js";
 export * from "./role.js";
 export * from "./runtime.js";
 export * from "./settings.js";

@@ -10,6 +10,7 @@ import { EventLedger } from "../../src/events.js";
 import { CollabGateway } from "../../src/gateway.js";
 import { InviteStore } from "../../src/invites.js";
 import { RoomStore } from "../../src/room.js";
+import { ReviewPointService } from "../../src/review-points.js";
 import { SnapshotWorkspaceMaterializer } from "../../src/snapshot-workspace.js";
 import type { GatewayResponse } from "../../src/types.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "../../src/workspace-service.js";
@@ -60,17 +61,20 @@ function gatewaySetup() {
   };
   const registry = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, registry, snapshots, now: () => 10 });
+  const ledger = new EventLedger();
+  const reviewPoints = new ReviewPointService({ rooms, ledger, snapshots, now: () => 20 });
   const gateway = new CollabGateway({
     rooms,
-    ledger: new EventLedger(),
+    ledger,
     invites: new InviteStore(rooms),
     agent: { followup() {}, steer() {}, cancel() {} },
     tokenFactory: () => "room-token",
     now: () => 20,
     activeRooms,
     workspace,
+    reviewPoints,
   });
-  return { gateway, registry, rooms, snapshots };
+  return { gateway, registry, rooms, snapshots, ledger, reviewPoints };
 }
 
 const capabilityHeaders = {
@@ -79,6 +83,39 @@ const capabilityHeaders = {
 };
 
 describe("Workspace Snapshot transport", () => {
+  it("creates, lists and refreshes persisted Review Points through Host-only capability-gated routes", async () => {
+    const { gateway, registry, ledger } = gatewaySetup();
+    const host = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const hostHeaders = { authorization: `Bearer ${(host.body as { roomToken: string }).roomToken}`, "x-dsh-collab-capabilities": "sidecar-review.v1" };
+    registry.set("room-1", true, "member-host", 10);
+
+    await expect(gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points", headers: { authorization: hostHeaders.authorization } }))
+      .resolves.toMatchObject({ status: 404 });
+    const created = await gateway.handle({
+      method: "POST",
+      path: "/v1/rooms/room-1/review-points",
+      headers: hostHeaders,
+      body: { clientRequestId: "review-1", title: "Value review", focus: "Correctness", files: [{ path: "src/value.ts", status: "modified", additions: 1, deletions: 0 }] },
+    });
+    expect(created).toMatchObject({ status: 201, body: { reviewPoint: { title: "Value review", workspaceSnapshotId: expect.any(String), lifecycle: "open" } } });
+    ledger.append({ eventId: "event-1", roomId: "room-1", type: "human.message", actor: { memberId: "member-host", principalId: "host" }, payload: { text: "continue" } });
+
+    await expect(gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points?limit=10", headers: hostHeaders })).resolves.toMatchObject({
+      status: 200,
+      body: { reviewPoints: [{ freshness: "current", progress: { roomEventDelta: 1, workspaceChangedFileCount: 0 } }] },
+    });
+    await expect(gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points?limit=0", headers: hostHeaders }))
+      .resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    await expect(gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points/refresh", headers: hostHeaders, body: { clientRequestId: "refresh-1" } }))
+      .resolves.toMatchObject({ status: 200, body: { snapshotId: expect.any(String) } });
+
+    const participant = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
+    const participantHeaders = { authorization: `Bearer ${(participant.body as { roomToken: string }).roomToken}`, "x-dsh-collab-capabilities": "sidecar-review.v1" };
+    await expect(gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points", headers: participantHeaders })).resolves.toMatchObject({ status: 200 });
+    await expect(gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points/refresh", headers: participantHeaders, body: { clientRequestId: "forbidden" } }))
+      .resolves.toMatchObject({ status: 403, body: { error: { code: "ACTION_FORBIDDEN" } } });
+  });
+
   it("captures idempotently and serves authenticated content chunks only while Workspace Sharing is enabled", async () => {
     const { gateway, registry, rooms, snapshots } = gatewaySetup();
     await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });

@@ -13,6 +13,7 @@ import { ResumeCredentialStore, type ResumeCredentialStoreSnapshot } from "./res
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-service.js";
+import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-points.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -43,6 +44,7 @@ export interface DshCollabHostRuntimeOptions {
 
 export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   resumes?: ResumeCredentialStoreSnapshot;
+  reviewPoints?: ReviewPointServiceSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -55,6 +57,7 @@ export interface DshCollabHostRuntime {
   readonly http: CollabHttpServer;
   readonly activeRooms: ActiveRoomRegistry;
   readonly workspace: WorkspaceService;
+  readonly reviewPoints: ReviewPointService;
   snapshot(): DshCollabHostRuntimeSnapshot;
   dispose(): Promise<void>;
 }
@@ -98,6 +101,15 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const activeRooms = new ActiveRoomRegistry();
   const workspaceSharing = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
+  const reviewPointOptions = {
+    rooms,
+    ledger,
+    snapshots: options.workspaceSnapshots ?? { load: async () => undefined },
+    now: options.now,
+  };
+  const reviewPoints = snapshot?.reviewPoints
+    ? ReviewPointService.fromSnapshot(reviewPointOptions, snapshot.reviewPoints)
+    : new ReviewPointService(reviewPointOptions);
   if (!snapshot && options.roomId && options.hostSessionId && options.title) activeRooms.activate(options.roomId);
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
@@ -121,6 +133,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
     activeRooms,
     workspace,
+    ...(options.workspaceSnapshots ? { reviewPoints } : {}),
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
@@ -149,8 +162,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace,
-    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot() }),
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, reviewPoints,
+    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
       unsubscribeWorkspaceSharing();

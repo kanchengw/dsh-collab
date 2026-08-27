@@ -12,6 +12,89 @@ function errorResponse(code: string, message: string, status: number): { ok: boo
 }
 
 describe("browser Gateway client", () => {
+  it("creates, lists and refreshes Review Points through the active room token", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", focus: "Correctness", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified", snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/review-points/refresh")) return response({ snapshotId: "e".repeat(64) });
+      if (url.endsWith("/review-points") && init?.method === "POST") return response({ reviewPoint }, 201);
+      if (url.includes("/review-points?")) return response({ reviewPoints: [{ reviewPoint, freshness: "current", progress: { roomEventDelta: 2, workspaceChangedFileCount: 1 } }] });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.createReviewPoint("room-1", { title: "Parser review", focus: "Correctness", files: [{ path: "src/parser.ts", status: "modified", additions: 4, deletions: 1 }] })).resolves.toEqual(reviewPoint);
+    await expect(client.listReviewPoints("room-1")).resolves.toMatchObject({ reviewPoints: [{ freshness: "current", progress: { roomEventDelta: 2, workspaceChangedFileCount: 1 } }] });
+    await expect(client.refreshReviewPoints("room-1")).resolves.toBe("e".repeat(64));
+    expect(requests.filter(({ url }) => url.includes("review-points"))).toHaveLength(3);
+    expect(requests.filter(({ url, init }) => url.includes("review-points") && init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toHaveLength(3);
+    client.dispose();
+  });
+
+  it("rejects malformed Review Point pages at the browser boundary", async () => {
+    const point = {
+      reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified", snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    let page: unknown = { reviewPoints: [] };
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.includes("/review-points?")) return response(page);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    const projection = { reviewPoint: point, freshness: "current", progress: { roomEventDelta: 0, workspaceChangedFileCount: 0 } };
+    const malformed = [
+      { reviewPoints: [{ ...projection, progress: { ...projection.progress, roomEventDelta: -1 } }] },
+      { reviewPoints: [{ ...projection, reviewPoint: { ...point, lifecycle: "pending" } }] },
+      { reviewPoints: [{ ...projection, reviewPoint: { ...point, files: [{ ...point.files[0], path: "../secret" }] } }] },
+      { reviewPoints: [{ ...projection, reviewPoint: { ...point, files: [point.files[0], point.files[0]] } }] },
+      { reviewPoints: [{ ...projection, reviewPoint: { ...point, workspaceSnapshotId: "bad/id" } }] },
+      { reviewPoints: [{ ...projection, reviewPoint: { ...point, headOid: "not-an-oid" } }] },
+      { reviewPoints: Array.from({ length: 101 }, () => projection) },
+      { reviewPoints: [], nextCursor: "bad-cursor" },
+    ];
+    for (const value of malformed) {
+      page = value;
+      await expect(client.listReviewPoints("room-1")).rejects.toThrow("invalid");
+    }
+    client.dispose();
+  });
+
   it("rejects oversized or negative Workspace Snapshot metadata", async () => {
     let snapshot: Record<string, unknown> = {
       snapshotId: "a".repeat(64), roomId: "room-1", hostSessionId: "session-1", roomEventSeq: -1,
