@@ -122,13 +122,34 @@ an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`
 `roomId` must equal `hostSessionId`, the title is trimmed and limited to 80
 characters, and the Host session service must prove that the current DSH
 runtime owns that session. A successful response issues the Host's initial room
-token. `join` authenticates with the one-time invitation, while `resume`
-authenticates with the durable Participant resume credential.
+token. `join` authenticates with the one-time invitation and accepts an optional
+client-generated `resumeCredential`, while `resume` authenticates with that
+durable Participant credential.
 
 A successful `join` response includes both a short-lived `roomToken` and a
-durable `resumeCredential`. The raw resume credential is returned only once
-and must be stored on the Participant's own DSH host; the room owner stores
-only its SHA-256 digest. A later resume request uses this body:
+durable `resumeCredential`. Current clients generate a cryptographically random
+credential, save the provisional room/member binding on the Participant's own
+DSH host, and include it in the Join body before sending the request:
+
+```json
+{
+  "inviteId": "invite-1",
+  "token": "opaque-one-time-invite-token",
+  "memberId": "member-1",
+  "displayName": "Alice",
+  "resumeCredential": "opaque-participant-resume-secret"
+}
+```
+
+The room owner stores only the credential's SHA-256 digest. The same invitation,
+member binding, display name and resume credential may be retried exactly when a
+response or persistence acknowledgement is lost; it returns the existing member
+without adding another member, event or credential. A different binding or
+credential cannot reuse an accepted invite. The Gateway waits for its configured
+critical-state persistence barrier after the member, credential digest and joined
+event mutations before returning success. Older clients may omit
+`resumeCredential`; the Gateway continues to issue one for compatibility. A later
+resume request uses this body:
 
 ```json
 { "credential": "opaque-participant-resume-secret" }

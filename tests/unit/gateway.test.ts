@@ -9,8 +9,9 @@ import { ActiveRoomRegistry } from "../../src/active-rooms.js";
 import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
 import { WorkspaceService } from "../../src/workspace-service.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
+import { ResourceLimiter } from "../../src/limits.js";
 
-function setup(agentOverride?: HostAgentPort, withApprovals = false) {
+function setup(agentOverride?: HostAgentPort, withApprovals = false, commitCriticalState?: () => Promise<void>, limits?: ResourceLimiter) {
   const rooms = new RoomStore();
   rooms.createRoom({
     roomId: "room-1",
@@ -57,6 +58,8 @@ function setup(agentOverride?: HostAgentPort, withApprovals = false) {
     ownsHostSession: (sessionId) => sessionId !== "session-missing",
     activeRooms,
     workspace,
+    ...(commitCriticalState ? { commitCriticalState } : {}),
+    ...(limits ? { limits } : {}),
   });
   return { gateway, calls, rooms, ledger, workspaceSharing, activeRooms };
 }
@@ -360,6 +363,57 @@ describe("CollabGateway route contract", () => {
     });
     expect(crossRoom.status).toBe(403);
     expect(crossRoom.body).toMatchObject({ error: { code: "TOKEN_SCOPE" } });
+  });
+
+  it("persists a client-owned resume credential before completing an exact Join retry", async () => {
+    let persistenceFails = true;
+    const commitCriticalState = vi.fn(async () => {
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const { gateway, rooms, ledger } = setup(undefined, false, commitCriticalState, new ResourceLimiter({ maxMembersPerRoom: 3 }));
+    const created = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/invites",
+      auth: { principalId: "host" },
+      body: { inviteId: "invite-retry", expiresAt: 100 },
+    });
+    const join = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/join",
+      body: {
+        inviteId: "invite-retry",
+        token: (created.body as { token: string }).token,
+        memberId: "member-retry",
+        displayName: "Retry User",
+        resumeCredential: "client-owned-resume-secret",
+      },
+    };
+
+    expect(await request(gateway, join)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    expect(rooms.listMembers("room-1").filter((member) => member.memberId === "member-retry")).toHaveLength(1);
+    expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.joined")).toHaveLength(1);
+
+    persistenceFails = false;
+    const retried = await request(gateway, join);
+    expect(retried).toMatchObject({
+      status: 201,
+      body: { member: { memberId: "member-retry" }, resumeCredential: "client-owned-resume-secret" },
+    });
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(rooms.listMembers("room-1").filter((member) => member.memberId === "member-retry")).toHaveLength(1);
+    expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.joined")).toHaveLength(1);
+
+    expect(await request(gateway, {
+      ...join,
+      body: { ...join.body, resumeCredential: "different-resume-secret" },
+    })).toMatchObject({ status: 409, body: { error: { code: "REQUEST_CONFLICT" } } });
+
+    const resumed = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/resume",
+      body: { credential: "client-owned-resume-secret" },
+    });
+    expect(resumed).toMatchObject({ status: 200, body: { member: { memberId: "member-retry" } } });
   });
 
   it("does not let a room-scoped token act on requests or approvals from another owned room", async () => {

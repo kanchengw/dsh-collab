@@ -55,6 +55,31 @@ export class ResumeCredentialStore {
     return { credential };
   }
 
+  issueForJoin(input: { roomId: string; memberId: string; principalId: string; credential: string; now?: number }): IssuedResumeCredential {
+    const roomId = requiredText(input.roomId, "roomId");
+    const memberId = requiredText(input.memberId, "memberId");
+    const principalId = requiredText(input.principalId, "principalId");
+    const credential = requiredText(input.credential, "credential");
+    const member = this.rooms.authorize(roomId, principalId, "read");
+    if (member.memberId !== memberId) throw new CollabError("AUTH_INVALID", "resume credential member binding is invalid");
+    const now = input.now ?? Date.now();
+    if (!validTime(now)) throw invalidInput("now must be a non-negative integer", { now });
+    const credentialDigest = digest(credential);
+    const existing = this.records.get(credentialDigest);
+    if (existing) {
+      if (existing.revokedAt !== undefined || existing.roomId !== roomId || existing.memberId !== memberId || existing.principalId !== principalId) {
+        throw new CollabError("REQUEST_CONFLICT", "Join resume credential conflicts with an existing credential");
+      }
+      return { credential };
+    }
+    if ([...this.records.values()].some((record) => record.revokedAt === undefined
+      && record.roomId === roomId && record.memberId === memberId && record.principalId === principalId)) {
+      throw new CollabError("REQUEST_CONFLICT", "Join resume credential conflicts with an existing credential");
+    }
+    this.records.set(credentialDigest, { digest: credentialDigest, roomId, memberId, principalId, createdAt: now });
+    return { credential };
+  }
+
   verify(input: { roomId: string; credential: string }): Omit<ResumeCredentialRecord, "digest"> {
     const roomId = requiredText(input.roomId, "roomId");
     const record = this.records.get(digest(requiredText(input.credential, "credential")));

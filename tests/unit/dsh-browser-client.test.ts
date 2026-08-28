@@ -659,6 +659,49 @@ describe("browser Gateway client", () => {
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");
   });
 
+  it("persists the generated Join binding before a response can be lost", async () => {
+    let persisted: ParticipantResumeState | undefined;
+    let joinBody: Record<string, unknown> | undefined;
+    const client = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab",
+      roomId: "room-1",
+      fetch: async (_url, init) => {
+        joinBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        throw new TypeError("network response was lost");
+      },
+      WebSocket: class {} as never,
+      participantPersistence: {
+        load: () => persisted,
+        save: async (state) => { persisted = state; },
+      },
+    });
+
+    await expect(client.join({
+      invitation: JSON.stringify({
+        protocol: "dsh-collab.v1",
+        type: "invite",
+        gatewayEndpoint: "wss://collab.example/collab",
+        roomId: "room-2",
+        inviteId: "invite-retry",
+        token: "invite-token",
+        expiresAt: 100,
+      }),
+      displayName: "Retry User",
+    })).rejects.toThrow("Gateway is unreachable");
+
+    expect(persisted).toMatchObject({
+      gatewayEndpoint: "wss://collab.example/collab",
+      roomId: "room-2",
+      memberId: expect.any(String),
+      credential: expect.any(String),
+    });
+    expect(joinBody).toMatchObject({
+      memberId: persisted?.memberId,
+      resumeCredential: persisted?.credential,
+    });
+    client.dispose();
+  });
+
   it("keeps the current room transport unchanged when joining an invitation fails", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const fetch: BrowserFetch = async (url, init) => {

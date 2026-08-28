@@ -118,6 +118,12 @@ function randomId(prefix: string): string {
   return `${prefix}_${crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 }
 
+function randomCredential(): string {
+  const crypto = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (!crypto?.randomUUID) throw new Error("Secure random generation is unavailable");
+  return `resume_${crypto.randomUUID()}_${crypto.randomUUID()}`;
+}
+
 function defaultFetch(): BrowserFetch {
   const fetch = (globalThis as unknown as { fetch?: BrowserFetch }).fetch;
   if (!fetch) throw new Error("browser fetch is unavailable");
@@ -450,6 +456,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private manuallyDisconnected = false;
   private participantRef: JoinedRoomRef | undefined;
   private readonly pendingCommandIds = new Map<string, string>();
+  private readonly pendingJoins = new Map<string, { memberId: string; credential: string }>();
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -541,27 +548,49 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const invitation = decodeCollabInvitation(input.invitation);
     const nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
     const nextRoomId = invitation.roomId;
-    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(nextRoomId)}/join`, {
-      inviteId: invitation.inviteId,
-      token: invitation.token,
+    const ref = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
+    const pendingKey = JSON.stringify({ ...ref, inviteId: invitation.inviteId, memberId: input.memberId?.trim(), displayName: input.displayName.trim() });
+    const saved = this.options.participantPersistence?.load(ref);
+    const binding = saved ?? this.pendingJoins.get(pendingKey) ?? {
       memberId: input.memberId?.trim() || randomId("member"),
-      displayName: input.displayName,
-    }, false, nextBase)), nextRoomId);
+      credential: randomCredential(),
+    };
+    this.pendingJoins.set(pendingKey, binding);
+    if (!saved && this.options.participantPersistence) {
+      await this.options.participantPersistence.save({ ...ref, memberId: binding.memberId, credential: binding.credential });
+    }
+    let data: RoomData;
+    try {
+      data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(nextRoomId)}/join`, {
+        inviteId: invitation.inviteId,
+        token: invitation.token,
+        memberId: binding.memberId,
+        displayName: input.displayName,
+        resumeCredential: binding.credential,
+      }, false, nextBase)), nextRoomId);
+    } catch (error) {
+      if (!saved && error instanceof GatewayRequestError && error.status >= 400 && error.status < 500) {
+        if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
+        else await this.options.participantPersistence?.clear?.();
+        this.pendingJoins.delete(pendingKey);
+      }
+      throw error;
+    }
     if (this.options.participantPersistence) {
       if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
       await this.options.participantPersistence.save({
-        gatewayEndpoint: invitation.gatewayEndpoint,
-        roomId: invitation.roomId,
+        ...ref,
         memberId: data.member.memberId,
         credential: data.resumeCredential,
         roomTitle: data.room.title,
         ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
       });
     }
+    this.pendingJoins.delete(pendingKey);
     await this.connect({
       base: nextBase,
       roomId: nextRoomId,
-      participantRef: { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId },
+      participantRef: ref,
       data,
     });
   }

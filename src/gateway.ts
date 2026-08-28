@@ -282,7 +282,7 @@ export class CollabGateway {
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
-      if (request.method === "POST" && resource === "join") return this.join(roomId, request);
+      if (request.method === "POST" && resource === "join") return await this.join(roomId, request);
       if (request.method === "POST" && resource === "resume") return this.resume(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
@@ -322,10 +322,15 @@ export class CollabGateway {
     };
   }
 
-  private join(roomId: string, request: GatewayRequest): GatewayResponse {
+  private async join(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const body = objectBody(request.body);
     const inviteId = requiredText(body.inviteId, "inviteId");
-    this.options.limits?.checkMembers(roomId, this.options.rooms.listMembers(roomId).length + 1);
+    const requestedResumeCredential = body.resumeCredential === undefined
+      ? undefined
+      : requiredText(body.resumeCredential, "resumeCredential");
+    if (this.options.invites.getInvite(inviteId)?.state !== "accepted") {
+      this.options.limits?.checkMembers(roomId, this.options.rooms.listMembers(roomId).length + 1);
+    }
     const member = this.options.invites.acceptInvite({
       roomId,
       inviteId,
@@ -336,7 +341,9 @@ export class CollabGateway {
       now: this.now(),
     });
     const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
-    const resumeCredential = this.resumes.issue({ roomId, memberId: member.memberId, principalId: member.principalId, now: this.now() });
+    const resumeCredential = requestedResumeCredential === undefined
+      ? this.resumes.issue({ roomId, memberId: member.memberId, principalId: member.principalId, now: this.now() })
+      : this.resumes.issueForJoin({ roomId, memberId: member.memberId, principalId: member.principalId, credential: requestedResumeCredential, now: this.now() });
     const event = this.options.ledger.append({
       eventId: roomId + ":member.joined:" + member.memberId,
       roomId,
@@ -345,6 +352,7 @@ export class CollabGateway {
       createdAt: this.now(),
       payload: { memberId: member.memberId, principalId: member.principalId, displayName: member.displayName, role: member.role },
     });
+    await this.options.commitCriticalState?.();
     return { status: 201, body: { room: this.options.rooms.getRoom(roomId), member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt, resumeCredential: resumeCredential.credential, event } };
   }
 

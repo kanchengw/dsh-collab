@@ -91,6 +91,8 @@ export class InviteStore {
     const inviteId = requiredText(input.inviteId, "inviteId");
     const token = requiredText(input.token, "token");
     const principalId = requiredText(input.principalId, "principalId");
+    const memberId = requiredText(input.memberId, "memberId");
+    const displayName = requiredText(input.displayName, "displayName");
     const room = this.rooms.getRoom(roomId);
     const record = this.recordForRoom(inviteId, roomId);
     if (record.hostId !== room.hostId) {
@@ -100,17 +102,25 @@ export class InviteStore {
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
     this.refreshExpiry(record, now);
+    if (record.state === "accepted") {
+      if (!sameToken(token, record.tokenDigest)) throw new CollabError("INVITE_INVALID", "invite token is invalid");
+      const member = this.rooms.listMembers(roomId).find((candidate) => candidate.memberId === record.acceptedMemberId);
+      if (!member || record.acceptedPrincipalId !== principalId || member.memberId !== memberId
+        || member.principalId !== principalId || member.displayName !== displayName) {
+        throw new CollabError("INVITE_USED", "invite has already been accepted", { inviteId });
+      }
+      return member;
+    }
     if (record.state === "expired") throw new CollabError("INVITE_EXPIRED", "invite has expired", { inviteId });
     if (record.state === "revoked") throw new CollabError("INVITE_REVOKED", "invite has been revoked", { inviteId });
-    if (record.state === "accepted") throw new CollabError("INVITE_USED", "invite has already been accepted", { inviteId });
     if (!sameToken(token, record.tokenDigest)) {
       throw new CollabError("INVITE_INVALID", "invite token is invalid");
     }
 
     const member = this.rooms.addMember(roomId, {
-      memberId: input.memberId,
+      memberId,
       principalId,
-      displayName: input.displayName,
+      displayName,
       now,
     });
     record.state = "accepted";
