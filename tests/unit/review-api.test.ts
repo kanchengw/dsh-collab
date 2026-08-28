@@ -152,6 +152,79 @@ describe("Human Review API", () => {
     expect(statesAtCommit.slice(4).map((state) => state.lifecycle)).toEqual(Array(4).fill("changes-requested"));
     await runtime.dispose();
   });
+
+  it("confirms Review findings and publications in persistent state before reporting success", async () => {
+    const content = Buffer.from("line 1\nline 2\n");
+    const files = [{ path: "src/parser.ts", contentHash: hash(content), size: content.byteLength, source: "tracked" as const }];
+    const snapshot: WorkspaceSnapshotPackage = {
+      snapshotId: "snapshot-review-content", roomId: "room-1", hostSessionId: "room-1", roomEventSeq: 0,
+      headOid: "a".repeat(40), manifestHash: hash(JSON.stringify(files)), files, createdAt: 10,
+    };
+    let persistenceFails = true;
+    let runtime: ReturnType<typeof createDshCollabHostRuntime> | undefined;
+    const stateAtCommit: Array<{ findingCount: number; publicationCount: number }> = [];
+    const commitCriticalState = vi.fn(async () => {
+      const state = runtime?.reviews.snapshot();
+      stateAtCommit.push({ findingCount: state?.findings.length ?? 0, publicationCount: state?.publications?.length ?? 0 });
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    runtime = createDshCollabHostRuntime({
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Release", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+      workspaceSnapshots: {
+        capture: async () => snapshot,
+        load: async (snapshotId) => snapshotId === snapshot.snapshotId ? snapshot : undefined,
+        readChunk: async (_snapshotId, _path, offset, length) => content.subarray(offset, offset + length),
+      },
+      commitCriticalState,
+      now: () => 30,
+    });
+    runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 2 });
+    const point = runtime.reviewPoints.create({
+      roomId: "room-1", principalId: "host", clientRequestId: "point-content", title: "Parser review", snapshot,
+      files: [{ path: "src/parser.ts", status: "modified", additions: 2, deletions: 1 }],
+      diffs: [{ path: "src/parser.ts", kind: "text", oldText: "line 1\n", newText: "line 1\nline 2\n" }],
+    });
+    const host = await runtime.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const bob = await runtime.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "bob" } });
+    const headers = (token: string) => ({ authorization: `Bearer ${token}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY });
+    const hostHeaders = headers((host.body as { roomToken: string }).roomToken);
+    const bobHeaders = headers((bob.body as { roomToken: string }).roomToken);
+    const findingPath = `/v1/rooms/room-1/review-points/${point.reviewPointId}/findings`;
+    const createFinding = {
+      method: "POST" as const, path: findingPath, headers: bobHeaders,
+      body: { clientRequestId: "finding-persist", severity: "high", location: { kind: "line", path: "src/parser.ts", line: 2 }, body: "Recovery skips the token." },
+    };
+
+    expect(await runtime.gateway.handle(createFinding)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    const created = await runtime.gateway.handle(createFinding);
+    expect(created).toMatchObject({ status: 201, body: { finding: { state: "open" } } });
+    const findingId = (created.body as { finding: { findingId: string } }).finding.findingId;
+
+    persistenceFails = true;
+    const decide = { method: "PUT" as const, path: `${findingPath}/${findingId}/state`, headers: hostHeaders, body: { state: "accepted" } };
+    expect(await runtime.gateway.handle(decide)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await runtime.gateway.handle(decide)).toMatchObject({ status: 200, body: { finding: { state: "accepted" } } });
+
+    persistenceFails = true;
+    const publish = {
+      method: "POST" as const, path: `/v1/rooms/room-1/review-points/${point.reviewPointId}/publications`, headers: bobHeaders,
+      body: {
+        taskId: "task-persist", workspaceSnapshotId: snapshot.snapshotId, summary: "One issue found.",
+        findings: [{ severity: "medium", location: { kind: "file", path: "src/parser.ts" }, body: "Check recovery boundaries." }],
+      },
+    };
+    expect(await runtime.gateway.handle(publish)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await runtime.gateway.handle(publish)).toMatchObject({ status: 201, body: { publication: { state: "published" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(6);
+    expect(stateAtCommit.map((state) => state.findingCount)).toEqual([1, 1, 1, 1, 2, 2]);
+    expect(stateAtCommit.map((state) => state.publicationCount)).toEqual([0, 0, 0, 0, 1, 1]);
+    await runtime.dispose();
+  });
 });
 
 describe("SideTask publication API", () => {
@@ -163,7 +236,7 @@ describe("SideTask publication API", () => {
       headOid: "a".repeat(40), manifestHash: hash(JSON.stringify(files)), files, createdAt: 10,
     };
     const deliveries: Array<{ requestId: string; text: string; contextRefs?: string[] }> = [];
-    let persistenceFails = true;
+    let persistenceFails = false;
     const commitCriticalState = vi.fn(async () => {
       if (persistenceFails) throw new Error("state write failed");
     });
@@ -259,10 +332,11 @@ describe("SideTask publication API", () => {
       .toMatchObject({ status: 200, body: { publications: [{ publicationId, state: "published" }] } });
     await runtime.gateway.dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "queue-blocker", keepInbox: true });
 
+    persistenceFails = true;
     expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } }))
       .toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
     expect(deliveries).toEqual([]);
-    expect(commitCriticalState).toHaveBeenCalledOnce();
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
     await runtime.gateway.dispatcher.processQueue();
     expect(deliveries).toEqual([]);
     persistenceFails = false;

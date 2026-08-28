@@ -482,6 +482,7 @@ export class CollabGateway {
           summary: requiredText(body.summary, "summary"),
           findings: reviewPublicationFindings(body.findings),
         });
+        await this.options.commitCriticalState?.();
         return { status: 201, body: { publication } };
       }
     }
@@ -559,6 +560,7 @@ export class CollabGateway {
           location: reviewFindingLocation(body.location),
           body: requiredText(body.body, "body"),
         });
+        await this.options.commitCriticalState?.();
         return { status: 201, body: { finding } };
       }
     }
@@ -594,6 +596,7 @@ export class CollabGateway {
         findingId: hashIdField(tail[2], "findingId"),
         state,
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { finding } };
     }
     if (request.method === "GET" && tail.length === 0) {

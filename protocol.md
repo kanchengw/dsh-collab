@@ -325,6 +325,14 @@ New reviewer assignments, lifecycle transitions and finding decisions require
 both the room and Review Point to remain writable. Exact retries of an already
 applied PUT remain idempotent after either one closes.
 
+Finding creation/decision and SideTask publication wait for critical-state
+persistence before returning `201`/`200`. A failed write returns `500` while
+retaining the in-process result. Exact retries reuse the existing finding by
+`clientRequestId`, the existing decision by target state, or the existing
+publication by `taskId` and normalized payload; they do not append duplicate
+findings or publications. Mainline acceptance remains a separate Host-only
+mutation with its own combined publication/Dispatcher barrier.
+
 Findings remain publishable after Workspace Sharing is disabled because they
 contain review metadata rather than a new code read. Reading the historical diff
 remains under the room-level Workspace Sharing gate. No Review/finding WebSocket
