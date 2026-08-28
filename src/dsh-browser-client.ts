@@ -534,14 +534,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
     const invitation = decodeCollabInvitation(input.invitation);
-    this.base = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
-    this.roomId = invitation.roomId;
-    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/join`, {
+    const nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
+    const nextRoomId = invitation.roomId;
+    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(nextRoomId)}/join`, {
       inviteId: invitation.inviteId,
       token: invitation.token,
       memberId: input.memberId?.trim() || randomId("member"),
       displayName: input.displayName,
-    }, false)));
+    }, false, nextBase)));
     if (this.options.participantPersistence) {
       if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
       await this.options.participantPersistence.save({
@@ -553,6 +553,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
       });
     }
+    this.base = nextBase;
+    this.roomId = nextRoomId;
     this.participantRef = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
     this.applyRoom(data);
     await this.connect();

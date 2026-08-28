@@ -654,6 +654,43 @@ describe("browser Gateway client", () => {
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");
   });
 
+  it("keeps the current room transport unchanged when joining an invitation fails", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Local" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Local" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/join")) return errorResponse("AUTH_INVALID", "invitation rejected", 401);
+      if (url.endsWith("/messages")) return response({ request: { requestId: "request-1" } }, 202);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.join({
+      invitation: JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100 }),
+      displayName: "Host",
+    })).rejects.toThrow("invitation rejected");
+    await client.send({ text: "still local", target: "room" });
+
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
+    expect(requests.at(-1)?.url).toBe("http://127.0.0.1:4310/collab/v1/rooms/room-1/messages");
+    expect(requests.at(-1)?.init?.headers?.authorization).toBe("Bearer host-token");
+    expect(requests.filter(({ url }) => url.startsWith("http://10.0.0.2:4312")))
+      .toEqual([expect.objectContaining({ init: expect.objectContaining({ headers: expect.not.objectContaining({ authorization: expect.anything() }) }) })]);
+    client.dispose();
+  });
+
   it("recovers room events and projects live human and Agent output into the timeline", async () => {
     const requests: string[] = [];
     let socket: BrowserSocket | undefined;
