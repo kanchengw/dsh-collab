@@ -60,7 +60,7 @@ export function reviewPointFilesFromInspection(inspection: RepositoryInspection)
       ? "deleted"
       : staged?.kind === "renamed" || unstaged?.kind === "renamed"
         ? "renamed"
-        : staged?.kind === "added"
+        : staged?.kind === "added" || unstaged?.kind === "added"
           ? "added"
           : "modified";
     return {
@@ -890,7 +890,7 @@ export function DshCollabInspector(props: {
       {props.activeTab === "changes" ? <>
       <section className={css.sharing} aria-labelledby="collab-workspace-sharing-title">
         <div><h3 id="collab-workspace-sharing-title">{t("inspector.workspaceSharing")}</h3><p>{t(props.role === "host" ? "inspector.hostSharingHint" : "inspector.participantSharingHint")}</p></div>
-        {props.role === "host" ? <button type="button" className={css.switch} role="switch" aria-checked={enabled} disabled={busy} onClick={() => { props.onSetSharing(!enabled); }}><span /></button> : <span className={enabled ? css.shared : css.notShared}>{t(props.state.sharing === undefined ? "inspector.loading" : enabled ? "inspector.shared" : "inspector.notShared")}</span>}
+        {props.role === "host" ? <button type="button" className={css.switch} role="switch" aria-labelledby="collab-workspace-sharing-title" aria-checked={enabled} disabled={busy} onClick={() => { props.onSetSharing(!enabled); }}><span /></button> : <span className={enabled ? css.shared : css.notShared}>{t(props.state.sharing === undefined ? "inspector.loading" : enabled ? "inspector.shared" : "inspector.notShared")}</span>}
       </section>
 
       {props.role === "host" ? <section className={css.changes} aria-labelledby="collab-current-changes-title">

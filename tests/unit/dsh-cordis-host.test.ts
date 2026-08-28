@@ -288,7 +288,7 @@ describe("Cordis Host mount", () => {
         get: vi.fn(() => undefined),
         create: vi.fn(async (input: { sessionId: string; setup?: (agentContext: object) => Promise<void> | void }) => {
           sidecarSessionId = input.sessionId;
-          await input.setup?.({});
+          await input.setup?.({ on: () => () => {} });
           return {
             agent: {
               followup(message: { id: string; content: [{ text: string }] }) {
@@ -302,6 +302,7 @@ describe("Cordis Host mount", () => {
           };
         }),
       },
+      agentDefaultModel: { currentSelection: () => ({ provider: "local-provider", model: "local-model" }) },
       agentPresets: { mount: vi.fn(async () => {}) },
       on: (_event: "session/event", listener: (session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) => {
         sessionListeners.add(listener);

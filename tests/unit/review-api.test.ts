@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
+import { classifyMessage } from "../../src/messages.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 const hash = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
@@ -86,6 +87,7 @@ describe("SideTask publication API", () => {
         load: async (snapshotId: string) => snapshotId === snapshot.snapshotId ? snapshot : undefined,
         readChunk: async (_snapshotId: string, _path: string, offset: number, length: number) => content.subarray(offset, offset + length),
       },
+      maxQueue: 1,
       now: () => 30,
     });
     runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 2 });
@@ -116,6 +118,16 @@ describe("SideTask publication API", () => {
 
     const acceptPath = `${path}/${publicationId}/state`;
     expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: bobHeaders, body: { state: "accepted" } })).toMatchObject({ status: 403 });
+    const hostMemberId = runtime.rooms.listMembers("room-1").find((member) => member.principalId === "host")!.memberId;
+    const blocker = classifyMessage({ messageId: "queue-blocker", roomId: "room-1", authorMemberId: hostMemberId, text: "Wait", target: "dsh" });
+    if (blocker.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
+    await runtime.gateway.dispatcher.submit({ principalId: "host", message: blocker });
+
+    expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } })).toMatchObject({ status: 429 });
+    expect(await runtime.gateway.handle({ method: "GET", path, headers: hostHeaders }))
+      .toMatchObject({ status: 200, body: { publications: [{ publicationId, state: "published" }] } });
+    await runtime.gateway.dispatcher.cancel({ principalId: "host", requestId: "queue-blocker", keepInbox: true });
+
     const accepted = await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } });
     expect(accepted).toMatchObject({
       status: 200,

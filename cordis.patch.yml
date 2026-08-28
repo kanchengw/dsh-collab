@@ -4,7 +4,7 @@
 - insert:
     - id: collab-host
       name: dsh-collab
-      inject: [agents, agentPresets, settings, connection, fs, subprocess]
+      inject: [agentDefaultModel, agents, agentPresets, settings, connection, fs, subprocess]
       config:
         roomId: dsh-room
         hostId: local-host

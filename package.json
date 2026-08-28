@@ -58,9 +58,11 @@
     "node": ">=22"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-agent": ">=0.1.1-rc.2 <0.2.0",
     "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.1-rc.2 <0.2.0"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
     "@types/node": "^24.0.0",
     "@types/react": "18.3.12",

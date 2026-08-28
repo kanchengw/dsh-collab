@@ -467,11 +467,17 @@ export class CollabGateway {
     }
     if (request.method === "PUT" && reviewPointId && tail[1] === "publications" && tail.length === 4 && tail[3] === "state" && reviews) {
       if (objectBody(request.body).state !== "accepted") throw invalidInput("Review publication state is invalid", { field: "state" });
+      const publicationId = hashIdField(tail[2], "publicationId");
+      const current = reviews.listPublications({ roomId, principalId: claims.principalId, reviewPointId }).publications
+        .find((publication) => publication.publicationId === publicationId);
+      if (current && (current.state !== "accepted" || !this.dispatcher.get(current.integrationRequestId!))) {
+        this.checkQueue(roomId);
+      }
       const accepted = reviews.acceptSideTaskPublication({
         roomId,
         principalId: claims.principalId,
         reviewPointId,
-        publicationId: hashIdField(tail[2], "publicationId"),
+        publicationId,
       });
       const requestId = accepted.publication.integrationRequestId!;
       const message = classifyMessage({
@@ -671,12 +677,17 @@ export class CollabGateway {
       return copy(response);
     }
     message.requestId = requestId;
-    this.options.limits?.checkQueue(roomId, this.dispatcher.queued().length + 1);
+    this.checkQueue(roomId);
     const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
     const response = { status: 202, body: { request: record } };
     this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });
     void this.dispatcher.processQueue();
     return copy(response);
+  }
+
+  private checkQueue(roomId: string): void {
+    const roomDepth = this.dispatcher.queued().filter((record) => record.roomId === roomId).length;
+    this.options.limits?.checkQueue(roomId, roomDepth + 1);
   }
 
   private listApprovals(roomId: string, request: GatewayRequest): GatewayResponse {

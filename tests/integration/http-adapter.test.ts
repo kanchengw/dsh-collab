@@ -1,5 +1,5 @@
 import { createServer as createTcpServer, type Server } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
@@ -146,6 +146,25 @@ describe("localhost HTTP adapter", () => {
     expect(blocked.status).toBe(401);
     const allowed = await fetch(`${base}/collab/v1/rooms/room-1/bootstrap`, { headers: { origin } });
     expect(allowed.status).toBe(200);
+  });
+
+  it("forwards PUT requests and their JSON body to the gateway", async () => {
+    const gateway = setup();
+    const handle = vi.spyOn(gateway, "handle").mockResolvedValue({ status: 200, body: { accepted: true } });
+    server = createCollabHttpServer({ gateway, port: 0 });
+    const port = await server.listen();
+
+    const response = await fetch(`http://127.0.0.1:${String(port)}/collab/v1/rooms/room-1/review-points/review/publications/publication/state`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: "accepted" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(handle).toHaveBeenCalledWith(expect.objectContaining({
+      method: "PUT",
+      body: { state: "accepted" },
+    }));
   });
 
   it("returns protocol errors for malformed JSON and unknown public paths", async () => {

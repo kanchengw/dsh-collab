@@ -23,6 +23,14 @@ export function openDshCollabRoom(selection: DshCollabRoomSelection): void {
   for (const listener of roomSelectionListeners) listener();
 }
 
+export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: DshCollabOwnedRoom): Promise<void> {
+  if (room.sharing) {
+    if (!port.bootstrap) throw new Error("Owned room connection is unavailable");
+    await port.bootstrap(room.roomId);
+  }
+  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title });
+}
+
 export function closeDshCollabRoom(): void {
   if (!roomSelection) return;
   roomSelection = undefined;
@@ -211,7 +219,7 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>
               <div className={css.roomHead}><div><strong>{room.title}</strong><span>{room.hostSessionId}</span></div><Status tone={room.sharing ? "active" : "neutral"}>{t(room.sharing ? "owned.sharing" : "owned.notSharing")}</Status></div>
               <div className={css.actions}>
-                <Action disabled={busy !== undefined} onClick={() => { openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title }); }}>{t("owned.openRoom")}</Action>
+                <Action disabled={busy !== undefined} onClick={() => { if (port) void perform(`open:${room.roomId}`, () => openDshCollabOwnedRoom(port, room)); }}>{t("owned.openRoom")}</Action>
                 {room.sharing
                   ? <Action disabled={!stopSharing || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, async () => { await stopSharing?.(room.roomId); }, t("owned.stoppedNotice")); }}>{t("owned.stopSharing")}</Action>
                   : <Action primary disabled={!port?.shareHostRoom || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, () => startSharing(room), t("owned.startedNotice")); }}>{t("owned.startSharing")}</Action>}

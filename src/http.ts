@@ -180,12 +180,12 @@ export function createCollabHttpHandler(options: CollabHttpOptions): (request: I
         response.end();
         return;
       }
-      if (path === undefined || (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE")) {
+      if (path === undefined || (request.method !== "GET" && request.method !== "POST" && request.method !== "PUT" && request.method !== "DELETE")) {
         writeResponse(response, id, notFound(), origin);
         return;
       }
       const auth = await options.authenticate?.({ method: request.method, path, headers, remoteAddress: request.socket.remoteAddress });
-      const body = request.method === "POST" ? await readJsonBody(request, maxBodyBytes) : undefined;
+      const body = request.method === "POST" || request.method === "PUT" ? await readJsonBody(request, maxBodyBytes) : undefined;
       const result = await options.gateway.handle({
         method: request.method,
         path,

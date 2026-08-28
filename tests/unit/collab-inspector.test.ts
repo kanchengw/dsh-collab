@@ -92,7 +92,7 @@ describe("Collab Changes Inspector", () => {
 
     expect(html).toContain('data-collab-inspector="changes"');
     expect(html).toContain("Workspace sharing");
-    expect(html).toContain('role="switch"');
+    expect(html).toContain('role="switch" aria-labelledby="collab-workspace-sharing-title"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain("2 files");
     expect(html).toContain("+6");
@@ -140,12 +140,14 @@ describe("Collab Changes Inspector", () => {
       root: "C:/private/repository",
       files: [
         { path: "src/new.ts", staged: { kind: "added", additions: 4, deletions: 0 }, unstaged: { kind: "modified", additions: 1, deletions: 1 } },
+        { path: "src/untracked.ts", unstaged: { kind: "added" } },
         { path: "src/old.ts", unstaged: { kind: "deleted", additions: 0, deletions: 6 } },
         { path: "src/conflict.ts", unstaged: { kind: "unmerged" } },
       ],
       summary: { stagedFiles: 1, unstagedFiles: 3, additions: 5, deletions: 7, binaryFiles: 0 },
     })).toEqual([
       { path: "src/new.ts", status: "added", additions: 5, deletions: 1 },
+      { path: "src/untracked.ts", status: "added", additions: 0, deletions: 0 },
       { path: "src/old.ts", status: "deleted", additions: 0, deletions: 6 },
       { path: "src/conflict.ts", status: "modified", additions: 0, deletions: 0 },
     ]);

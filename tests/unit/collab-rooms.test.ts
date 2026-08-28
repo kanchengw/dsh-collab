@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabRoom, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
+import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
 import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
 
 function port(): DshCollabSettingsPort {
@@ -65,6 +65,23 @@ describe("Collab Rooms navigation", () => {
 
     closeDshCollabRoom();
     expect(getDshCollabRoomSelection()).toBeUndefined();
+  });
+
+  it("reconnects the browser projection before opening an Owned room that is already shared", async () => {
+    const activePort = port();
+    activePort.bootstrap = vi.fn(async () => {});
+    const room = { roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true };
+
+    await openDshCollabOwnedRoom(activePort, room);
+
+    expect(activePort.bootstrap).toHaveBeenCalledWith("room-owned");
+    expect(getDshCollabRoomSelection()).toEqual({
+      kind: "owned",
+      roomId: "room-owned",
+      hostSessionId: "session-owned",
+      roomTitle: "Release planning",
+    });
+    closeDshCollabRoom();
   });
 
   it("requires disconnecting the active Joined room before connecting another", () => {

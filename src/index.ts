@@ -38,6 +38,7 @@ import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./end
 import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
+import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskInput } from "./local-sidecar.js";
 import { LocalSideTaskFile } from "./local-sidecar-store.js";
 import { DshLocalSidecarWorkspace } from "./local-sidecar-workspace.js";
@@ -61,6 +62,7 @@ interface DshConnectionRpc {
 
 export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agents"> {
   agents: DshCordisHostContext["agents"] & Partial<DshLocalAgentContext["agents"]>;
+  agentDefaultModel?: DshLocalAgentContext["agentDefaultModel"];
   agentPresets?: DshLocalAgentContext["agentPresets"];
   connection?: { rpc: DshConnectionRpc };
   effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
@@ -132,8 +134,12 @@ function registerGatewayControl(
   const sideTaskPersistence = config.sideTaskFile === false || (config.sideTaskFile === undefined && config.stateFile === false)
     ? undefined
     : new LocalSideTaskFile(config.sideTaskFile ?? resolveDefaultCollabSideTaskFile());
-  const sidecar = context.agentPresets && context.on && createLocalAgent
+  const sidecar = context.agentDefaultModel && context.agentPresets && context.on && createLocalAgent
     ? new LocalSidecarService(createDshLocalAgentSessionPort({
+        agentDefaultModel: context.agentDefaultModel,
+        installModelSelection: (agentContext, selection) => {
+          installModelSelection(agentContext as Parameters<typeof installModelSelection>[0], selection);
+        },
         agents: { create: (input) => createLocalAgent.call(context.agents, input) },
         agentPresets: context.agentPresets,
         on: (event, listener) => context.on!(event, listener),

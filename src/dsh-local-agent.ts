@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { ModelSelection, ModelSelectionRef } from "@deepseek-ai/dsh-agent";
 
 export type LocalAgentFrame =
   | { kind: "output"; text: string }
@@ -39,9 +40,14 @@ export interface DshLocalAgentSessionEvent {
 }
 
 export interface DshLocalAgentContext {
+  agentDefaultModel: {
+    currentSelection(): ModelSelection;
+  };
+  installModelSelection(agentContext: object, selection: ModelSelectionRef): void;
   agents: {
     create(input: {
       sessionId: string;
+      agentOptions: ModelSelection;
       meta?: { cwd?: string };
       setup?: (agentContext: object) => Promise<void> | void;
     }): Promise<DshLocalAgentHandle>;
@@ -99,6 +105,13 @@ function userMessage(prompt: string): DshLocalAgentMessage {
   };
 }
 
+function localAgentError(reason: Record<string, unknown>): string {
+  const code = record(reason.error)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)
+    ? `Local Agent failed: ${code}`
+    : "Local Agent request failed";
+}
+
 /** Adapt DSH's public Agent registry, preset, and session-event services to local SideTasks. */
 export function createDshLocalAgentSessionPort(
   context: DshLocalAgentContext,
@@ -121,10 +134,13 @@ export function createDshLocalAgentSessionPort(
     async start(input) {
       const sessionId = nextSessionId();
       if (sessions.has(sessionId)) throw new Error(`Local Agent session already exists: ${sessionId}`);
+      const selection = context.agentDefaultModel.currentSelection();
       const handle = await context.agents.create({
         sessionId,
+        agentOptions: selection,
         ...(input.cwd === undefined ? {} : { meta: { cwd: input.cwd } }),
         setup: async (agentContext) => {
+          context.installModelSelection(agentContext, { current: selection, assembled: undefined });
           await context.agentPresets.mount(agentContext);
           if (input.readOnlyRoot === undefined) return;
           const tools = (agentContext as DshLocalAgentToolContext).tools;
@@ -163,7 +179,7 @@ export function createDshLocalAgentSessionPort(
         session.terminal = true;
         const reason = record(record(event.data)?.reason);
         if (reason?.kind === "aborted") append(session, { kind: "cancelled" });
-        else if (reason?.kind === "error") append(session, { kind: "failed", error: "Local Agent request failed" });
+        else if (reason?.kind === "error") append(session, { kind: "failed", error: localAgentError(reason) });
         else append(session, { kind: "completed", text: session.output });
       });
       try {

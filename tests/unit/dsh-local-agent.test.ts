@@ -18,11 +18,18 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
   const cancellations: Array<{ cause: { kind: "user" }; keepInbox: boolean | undefined }> = [];
   const restrictions: Array<{ allow?: string[]; deny?: string[] }> = [];
   const guards: Array<(exec: { name: string; arguments: unknown }) => string | undefined> = [];
+  const installedSelections: unknown[] = [];
 
   const emit = (sessionId: string, event: DshLocalAgentSessionEvent): void => {
     for (const listener of listeners) listener({ id: sessionId }, event);
   };
   const context: DshLocalAgentContext = {
+    agentDefaultModel: {
+      currentSelection: () => ({ provider: "local-provider", model: "local-model" }),
+    },
+    installModelSelection(_agentContext, selection) {
+      installedSelections.push(selection);
+    },
     agents: {
       async create(input) {
         createCalls.push(input as unknown as Record<string, unknown>);
@@ -63,7 +70,7 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
     },
   };
 
-  return { agents, cancellations, context, createCalls, emit, guards, handles, messages, mountedContexts, prompts, restrictions };
+  return { agents, cancellations, context, createCalls, emit, guards, handles, installedSelections, messages, mountedContexts, prompts, restrictions };
 }
 
 describe("DSH local Agent session adapter", () => {
@@ -74,8 +81,17 @@ describe("DSH local Agent session adapter", () => {
     await expect(port.start({ cwd: "C:\\workspace", prompt: "Review this change" })).resolves.toEqual({ sessionId: "sidecar-1" });
 
     expect(runtime.createCalls).toEqual([
-      expect.objectContaining({ sessionId: "sidecar-1", meta: { cwd: "C:\\workspace" }, setup: expect.any(Function) }),
+      expect.objectContaining({
+        sessionId: "sidecar-1",
+        agentOptions: { provider: "local-provider", model: "local-model" },
+        meta: { cwd: "C:\\workspace" },
+        setup: expect.any(Function),
+      }),
     ]);
+    expect(runtime.installedSelections).toEqual([{
+      current: { provider: "local-provider", model: "local-model" },
+      assembled: undefined,
+    }]);
     expect(runtime.mountedContexts).toHaveLength(1);
     expect(runtime.prompts).toEqual(["Review this change"]);
   });
@@ -92,6 +108,23 @@ describe("DSH local Agent session adapter", () => {
       { kind: "output", text: "Hello world" },
       { kind: "completed", text: "Hello world" },
     ]);
+  });
+
+  it("reports only a safe provider error code when a local turn fails", async () => {
+    const runtime = harness();
+    const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-error" });
+    const { sessionId } = await port.start({ prompt: "Review" });
+    const frames: LocalAgentFrame[] = [];
+    port.subscribe(sessionId, (frame) => { frames.push(frame); });
+
+    runtime.emit(sessionId, { seq: 1, type: "user/message", data: runtime.messages[0] });
+    runtime.emit(sessionId, {
+      seq: 2,
+      type: "turn/end",
+      data: { reason: { kind: "error", error: { code: "MODEL_UNAVAILABLE", message: "secret provider detail" } } },
+    });
+
+    expect(frames).toEqual([{ kind: "failed", error: "Local Agent failed: MODEL_UNAVAILABLE" }]);
   });
 
   it("limits a review Agent to reads contained by its materialized snapshot workspace", async () => {
