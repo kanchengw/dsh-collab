@@ -43,7 +43,7 @@ describe("security regression", () => {
     expect(steer.status).toBe(403);
     const approvals = new ApprovalStore({ rooms, ledger, answerer: {} });
     approvals.request({ approvalId: "approval-1", roomId: "room-1", requesterPrincipalId: "host", toolName: "bash", reason: "release", expiresAt: 100, now: 10 });
-    expect(() => approvals.decide({ approvalId: "approval-1", principalId: "invite:invite-1", outcome: "allowed-once", now: 11 })).toThrow("not allowed");
+    expect(() => approvals.decide({ approvalId: "approval-1", roomId: "room-1", principalId: "invite:invite-1", outcome: "allowed-once", now: 11 })).toThrow("not allowed");
   });
 
   it("bounds context references before mapping untrusted input", () => {

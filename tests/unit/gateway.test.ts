@@ -362,6 +362,60 @@ describe("CollabGateway route contract", () => {
     expect(crossRoom.body).toMatchObject({ error: { code: "TOKEN_SCOPE" } });
   });
 
+  it("does not let a room-scoped token act on requests or approvals from another owned room", async () => {
+    const { gateway, rooms, activeRooms } = setup(undefined, true);
+    rooms.createRoom({
+      roomId: "room-3",
+      hostId: "host",
+      hostSessionId: "session-host-3",
+      title: "Other owned room",
+      hostDisplayName: "Host",
+      now: 1,
+    });
+    activeRooms.activate("room-3");
+    const roomOneBootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const roomThreeBootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-3/bootstrap", auth: { principalId: "host" } });
+    const roomOneToken = (roomOneBootstrap.body as { roomToken: string }).roomToken;
+    const roomThreeToken = (roomThreeBootstrap.body as { roomToken: string }).roomToken;
+    await gateway.dispatcher.submit({
+      principalId: "host",
+      message: { kind: "agent-request", messageId: "message-room-3", requestId: "request-room-3", roomId: "room-3", authorMemberId: "member-host", text: "room three", target: "dsh", deliveryMode: "followup" },
+    });
+    const approval = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-3/approvals",
+      headers: bearer(roomThreeToken),
+      body: { approvalId: "approval-room-3", toolName: "shell", reason: "room three", expiresAt: 100 },
+    });
+    expect(approval.status).toBe(201);
+
+    const crossRoomCancel = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(roomOneToken),
+      body: { action: "cancel", requestId: "request-room-3", keepInbox: true },
+    });
+    expect(crossRoomCancel.status).toBe(403);
+    expect(crossRoomCancel.body).toMatchObject({ error: { code: "TOKEN_SCOPE" } });
+    expect(gateway.dispatcher.get("request-room-3")).toMatchObject({ status: "queued", roomId: "room-3" });
+
+    const crossRoomApproval = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer(roomOneToken),
+      body: { action: "decideApproval", approvalId: "approval-room-3", outcome: "allowed-once" },
+    });
+    expect(crossRoomApproval.status).toBe(403);
+    expect(crossRoomApproval.body).toMatchObject({ error: { code: "TOKEN_SCOPE" } });
+    const correctlyScopedDecision = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-3/actions",
+      headers: bearer(roomThreeToken),
+      body: { action: "decideApproval", approvalId: "approval-room-3", outcome: "allowed-once" },
+    });
+    expect(correctlyScopedDecision.status).toBe(200);
+  });
+
   it("exposes Host-only actions, member management and approval decisions", async () => {
     const { gateway } = setup(undefined, true);
     const bootstrapped = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });

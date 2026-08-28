@@ -259,10 +259,13 @@ export class AgentDispatcher {
     return copy(entry.record);
   }
 
-  async cancel(input: { principalId: string; requestId: string; keepInbox: boolean }): Promise<QueueRecord> {
+  async cancel(input: { roomId: string; principalId: string; requestId: string; keepInbox: boolean }): Promise<QueueRecord> {
     const entry = this.records.get(input.requestId);
     if (!entry) {
       throw new CollabError("REQUEST_NOT_FOUND", "request does not exist", { requestId: input.requestId });
+    }
+    if (entry.record.roomId !== input.roomId) {
+      throw new CollabError("TOKEN_SCOPE", "request is scoped to another room", { roomId: input.roomId });
     }
     const member = this.options.rooms.authorize(entry.record.roomId, input.principalId, "cancel");
     if (entry.record.status === "completed" || entry.record.status === "failed" || entry.record.status === "cancelled") {

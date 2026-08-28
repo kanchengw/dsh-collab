@@ -78,7 +78,7 @@ describe("AgentDispatcher control", () => {
     await dispatcher.submit({ principalId: "alice", message: request("message-2", "Second", "member-alice", "dsh") });
     await dispatcher.drainOne();
 
-    const cancelled = await dispatcher.cancel({ principalId: "host", requestId: "message-1", keepInbox: true });
+    const cancelled = await dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "message-1", keepInbox: true });
     expect(cancelled).toMatchObject({ requestId: "message-1", status: "cancelled" });
     expect(dispatcher.get("message-2")).toMatchObject({ status: "queued" });
     expect(dispatcher.queued()).toHaveLength(1);
@@ -91,7 +91,7 @@ describe("AgentDispatcher control", () => {
     await dispatcher.submit({ principalId: "alice", message: request("message-2", "Second", "member-alice", "dsh") });
     await dispatcher.drainOne();
 
-    await dispatcher.cancel({ principalId: "host", requestId: "message-1", keepInbox: false });
+    await dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "message-1", keepInbox: false });
 
     expect(dispatcher.get("message-1")).toMatchObject({ status: "cancelled" });
     expect(dispatcher.get("message-2")).toMatchObject({ status: "cancelled" });
@@ -103,7 +103,7 @@ describe("AgentDispatcher control", () => {
     await dispatcher.submit({ principalId: "alice", message: request("message-1", "First", "member-alice", "dsh") });
     await dispatcher.drainOne();
 
-    await expect(dispatcher.cancel({ principalId: "alice", requestId: "message-1", keepInbox: true }))
+    await expect(dispatcher.cancel({ roomId: "room-1", principalId: "alice", requestId: "message-1", keepInbox: true }))
       .rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
     expect(dispatcher.get("message-1")).toMatchObject({ status: "running" });
   });

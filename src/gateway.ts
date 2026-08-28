@@ -719,6 +719,7 @@ export class CollabGateway {
     const action = requiredText(body.action, "action");
     if (action === "cancel") {
       const record = await this.dispatcher.cancel({
+        roomId,
         principalId: claims.principalId,
         requestId: requiredText(body.requestId, "requestId"),
         keepInbox: body.keepInbox === true,
@@ -760,6 +761,7 @@ export class CollabGateway {
       if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
       const approval = this.approvals.decide({
         approvalId: requiredText(body.approvalId, "approvalId"),
+        roomId,
         principalId: claims.principalId,
         outcome: requiredText(body.outcome, "outcome") as "allowed-once" | "allowed-always" | "rejected" | "cancelled" | "unavailable",
         now: this.now(),

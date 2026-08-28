@@ -126,7 +126,7 @@ describe("SideTask publication API", () => {
     expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } })).toMatchObject({ status: 429 });
     expect(await runtime.gateway.handle({ method: "GET", path, headers: hostHeaders }))
       .toMatchObject({ status: 200, body: { publications: [{ publicationId, state: "published" }] } });
-    await runtime.gateway.dispatcher.cancel({ principalId: "host", requestId: "queue-blocker", keepInbox: true });
+    await runtime.gateway.dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "queue-blocker", keepInbox: true });
 
     const accepted = await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } });
     expect(accepted).toMatchObject({

@@ -38,6 +38,7 @@ export interface ApprovalRequestInput {
 
 export interface ApprovalDecisionInput {
   approvalId: string;
+  roomId: string;
   principalId: string;
   outcome: ApprovalOutcome;
   now?: number;
@@ -124,7 +125,9 @@ export class ApprovalStore {
     const approvalId = text(input.approvalId, "approvalId");
     const entry = this.records.get(approvalId);
     if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "approval does not exist", { approvalId });
-    const member = this.options.rooms.authorize(entry.view.roomId, text(input.principalId, "principalId"), "approval");
+    const roomId = text(input.roomId, "roomId");
+    if (entry.view.roomId !== roomId) throw new CollabError("TOKEN_SCOPE", "approval is scoped to another room", { roomId });
+    const member = this.options.rooms.authorize(roomId, text(input.principalId, "principalId"), "approval");
     const now = time(input.now, "now");
     this.expire(entry.view, now);
     if (entry.view.state === "expired") throw new CollabError("REQUEST_STATE", "approval has expired", { approvalId });
