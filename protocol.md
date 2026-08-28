@@ -140,6 +140,14 @@ DSH's hidden `dsh-collab-participant` settings namespace, not browser storage
 or the Host configuration namespace. Suspending or removing the member
 invalidates all of that member's resume credentials.
 
+Event pages are cursor-continuous. A non-empty response starts at `after + 1`,
+contains consecutive `seq` values, and sets `nextSeq` to the last returned
+event. A client recovering a snapshot must reach at least the snapshot's
+`lastEventSeq` before opening the stream and must reject a skipped sequence or
+a disagreeing `nextSeq`. A page may advance beyond the snapshot cursor when a
+new event is appended concurrently; those events remain valid only when the
+sequence is continuous.
+
 The current implementation exposes the following explicit v1 actions:
 
 ```json
@@ -387,10 +395,12 @@ opted-in client receives accumulated, transient snapshots:
 
 `agent-output` is not assigned an event sequence and is not written to the
 room ledger. A later snapshot for the same request replaces the earlier text.
-The durable `agent.state.changed`, `agent.request.failed`, or
-`agent.request.cancelled` event ends the transient projection and remains the
-authoritative history. A connection opened during generation receives the
-latest accumulated snapshot after normal event replay.
+Only `streaming: true` output is retained for a later connection. A
+`streaming: false` frame or durable `agent.state.changed`,
+`agent.request.completed`, `agent.request.failed`, `agent.request.rejected`, or
+`agent.request.cancelled` event ends the transient projection; durable events
+remain the authoritative history. A connection opened during generation
+receives the latest accumulated snapshot after complete normal event replay.
 
 Clients that declare `sidecar-review.v1` may also receive collaboration event
 frames. The first additive event reports the runtime-only Workspace Sharing
@@ -449,7 +459,10 @@ The client may send only these control frames in v1:
 Unknown protocol versions, frame types, negative cursors, and malformed event
 actors are rejected. Event `seq` is assigned by the Host ledger; clients
 cannot choose or advance it. Reconnection starts with the last confirmed
-cursor and uses exclusive replay, with event ID de-duplication at the client.
+cursor and uses exclusive replay. The Host replays all remaining ledger pages,
+not only the first page. A client ignores an already-seen event ID, but any
+other live event must be exactly `lastEventSeq + 1`; a gap closes that stream
+without rendering the event and reconnects from the last confirmed cursor.
 Transient Agent output never advances that cursor.
 
 ## Compatibility rules

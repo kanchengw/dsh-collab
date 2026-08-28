@@ -97,7 +97,11 @@ export class RoomStreamHub {
       };
       this.connections.set(connectionId, record);
       this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
-      for (const event of this.options.ledger.readAfter(roomId, afterSeq, 500)) this.publishTo(record, event);
+      while (true) {
+        const events = this.options.ledger.readAfter(roomId, record.lastEventSeq, 500);
+        if (events.length === 0) break;
+        for (const event of events) this.publishTo(record, event);
+      }
       for (const frame of this.activeAgentOutputs.values()) {
         if (record.agentOutput && frame.roomId === roomId) this.emit(record, frame);
       }
@@ -132,7 +136,9 @@ export class RoomStreamHub {
   publishAgentOutput(frame: Omit<AgentOutputFrame, "kind">): void {
     if (this.options.activeRooms && !this.options.activeRooms.isActive(frame.roomId)) return;
     const output: AgentOutputFrame = { kind: "agent-output", ...frame };
-    this.activeAgentOutputs.set(frame.roomId + ":" + frame.requestId, output);
+    const outputKey = frame.roomId + ":" + frame.requestId;
+    if (frame.streaming) this.activeAgentOutputs.set(outputKey, output);
+    else this.activeAgentOutputs.delete(outputKey);
     for (const record of [...this.connections.values()]) {
       if (record.roomId !== frame.roomId || !record.agentOutput) continue;
       try {
@@ -187,7 +193,7 @@ export class RoomStreamHub {
   }
 
   private publish(event: RoomEvent): void {
-    if (event.type === "agent.state.changed" || event.type === "agent.request.failed" || event.type === "agent.request.cancelled") {
+    if (event.type === "agent.state.changed" || event.type === "agent.request.completed" || event.type === "agent.request.failed" || event.type === "agent.request.rejected" || event.type === "agent.request.cancelled") {
       const requestId = recordText(event.payload, "requestId");
       if (requestId) this.activeAgentOutputs.delete(event.roomId + ":" + requestId);
     }

@@ -947,8 +947,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       const event = frame.event;
       if (event.roomId !== this.roomId) return;
       if (this.events.has(event.eventId)) return;
+      if (event.seq !== this.lastEventSeq + 1) {
+        const socket = this.socket;
+        this.socket = undefined;
+        this.clearHeartbeat();
+        this.setConnection("offline");
+        this.scheduleReconnect();
+        socket?.close(4001, "event_sequence_gap");
+        return;
+      }
       this.events.set(event.eventId, event);
-      this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
+      this.lastEventSeq = event.seq;
       if (event.type === "agent.state.changed" || event.type === "agent.request.completed" || event.type === "agent.request.failed" || event.type === "agent.request.rejected" || event.type === "agent.request.cancelled") {
         const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : undefined;
         if (typeof payload?.requestId === "string") this.activeAgentOutputs.delete(payload.requestId);
@@ -981,12 +990,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       if (!Array.isArray(data.events) || data.events.length === 0) break;
       for (const event of data.events) {
         if (event.roomId !== roomId) throw new Error("Gateway room events do not match the requested room");
+        if (event.seq !== after + 1) throw new Error(`Gateway event sequence is not contiguous: expected ${String(after + 1)}, received ${String(event.seq)}`);
         events.set(event.eventId, event);
+        after = event.seq;
       }
-      const next = data.nextSeq ?? data.events.at(-1)?.seq ?? after;
-      if (next <= after) break;
-      after = next;
+      const next = data.nextSeq ?? after;
+      if (next !== after) throw new Error(`Gateway event sequence cursor does not match the last event: expected ${String(after)}, received ${String(next)}`);
     }
+    if (after < untilSeq) throw new Error(`Gateway event sequence stopped before snapshot cursor ${String(untilSeq)}`);
     return events;
   }
 

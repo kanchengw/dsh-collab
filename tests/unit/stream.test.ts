@@ -74,6 +74,18 @@ describe("RoomStreamHub", () => {
     expect(framesB[1]).toMatchObject({ kind: "presence", onlineMemberCount: 1 });
   });
 
+  it("replays every event when the connection gap exceeds one ledger page", () => {
+    const { hub, ledger, token1 } = setup();
+    for (let seq = 1; seq <= 501; seq += 1) ledger.append(event("room-1", `event-${String(seq)}`, seq));
+    const frames: StreamFrame[] = [];
+
+    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, afterSeq: 0, onFrame: (frame) => frames.push(frame) });
+
+    const replayed = frames.filter((frame): frame is Extract<StreamFrame, { kind: "event" }> => frame.kind === "event");
+    expect(replayed).toHaveLength(501);
+    expect(replayed.at(-1)?.event.seq).toBe(501);
+  });
+
   it("sends heartbeat frames and closes a connection when membership is revoked", () => {
     const { hub, rooms, token1 } = setup();
     const frames: StreamFrame[] = [];
@@ -149,6 +161,34 @@ describe("RoomStreamHub", () => {
     const thirdFrames: StreamFrame[] = [];
     hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => thirdFrames.push(frame) });
     expect(thirdFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
+  });
+
+  it("does not replay transient Agent output after a terminal frame or event", () => {
+    const { hub, ledger, token1 } = setup();
+    hub.publishAgentOutput({ roomId: "room-1", requestId: "request-finished", text: "done", streaming: false });
+    hub.publishAgentOutput({ roomId: "room-1", requestId: "request-completed", text: "partial", streaming: true });
+    hub.publishAgentOutput({ roomId: "room-1", requestId: "request-rejected", text: "partial", streaming: true });
+    ledger.append({
+      eventId: "request-completed:completed",
+      roomId: "room-1",
+      type: "agent.request.completed",
+      actor: { memberId: "member-host", principalId: "host" },
+      createdAt: 21,
+      payload: { requestId: "request-completed" },
+    });
+    ledger.append({
+      eventId: "request-rejected:rejected",
+      roomId: "room-1",
+      type: "agent.request.rejected",
+      actor: { memberId: "member-host", principalId: "host" },
+      createdAt: 22,
+      payload: { requestId: "request-rejected" },
+    });
+    const frames: StreamFrame[] = [];
+
+    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => frames.push(frame) });
+
+    expect(frames.some((frame) => frame.kind === "agent-output")).toBe(false);
   });
 
   it("sends collaboration events only to clients that declared the capability", () => {

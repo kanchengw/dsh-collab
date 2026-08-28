@@ -938,6 +938,96 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
+  it("rejects an HTTP recovery page that skips the next event sequence", async () => {
+    let socketCount = 0;
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-room-token",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 2 });
+      return response({ events: [
+        { eventId: "event-2", roomId: "room-1", seq: 2, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: 2, payload: { text: "gap" } },
+      ], nextSeq: 2 });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { socketCount += 1; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+
+    await expect(client.bootstrap()).rejects.toThrow("sequence");
+    expect(socketCount).toBe(0);
+    client.dispose();
+  });
+
+  it("rejects an HTTP recovery cursor that disagrees with its last event", async () => {
+    let socketCount = 0;
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-room-token",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 1 });
+      return response({ events: [
+        { eventId: "event-1", roomId: "room-1", seq: 1, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: 1, payload: { text: "first" } },
+      ], nextSeq: 2 });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { socketCount += 1; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+
+    await expect(client.bootstrap()).rejects.toThrow("sequence");
+    expect(socketCount).toBe(0);
+    client.dispose();
+  });
+
+  it("does not advance the live cursor across a missing event", async () => {
+    let socket: BrowserSocket | undefined;
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-room-token",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 1 });
+      return response({ events: [
+        { eventId: "event-1", roomId: "room-1", seq: 1, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: 1, payload: { text: "first" } },
+      ], nextSeq: 1 });
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; this.onclose?.(); }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "event-3", roomId: "room-1", seq: 3, type: "human.message",
+      actor: { memberId: "member-host", principalId: "host" }, createdAt: 3, payload: { text: "must wait" },
+    } }) });
+
+    expect(client.getSnapshot().timeline).toMatchObject([{ text: "first" }]);
+    expect(client.getSnapshot().connection).toBe("offline");
+    client.dispose();
+  });
+
   it("persists join credentials in the Participant DSH and resumes without reusing the invite", async () => {
     let persisted: ParticipantResumeState | undefined;
     const urls: string[] = [];
