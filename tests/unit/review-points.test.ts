@@ -125,4 +125,25 @@ describe("ReviewPointService", () => {
     expect(() => service.observeSnapshot({ roomId: "room-1", principalId: "bob", snapshot: original })).toThrow("Host");
     await expect(service.list({ roomId: "room-1", principalId: "bob" })).resolves.toEqual({ reviewPoints: [] });
   });
+
+  it("rejects malformed reviewer and file collections during restore", () => {
+    const { rooms, ledger, service, snapshots } = fixture();
+    const original = snapshot("snapshot-1", 0, [{ path: "src/a.ts", content: "a1" }]);
+    snapshots.set(original.snapshotId, original);
+    const point = service.create({
+      roomId: "room-1", principalId: "host", clientRequestId: "create-1", title: "Parser review", snapshot: original,
+      files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+    });
+    const options = { rooms, ledger, snapshots: { load: async (snapshotId: string) => snapshots.get(snapshotId) } };
+    const base = service.snapshot();
+
+    expect(() => ReviewPointService.fromSnapshot(options, {
+      ...base,
+      reviewPoints: [{ ...point, reviewerIds: ["member-bob", "member-bob"] }],
+    })).toThrow("invalid");
+    expect(() => ReviewPointService.fromSnapshot(options, {
+      ...base,
+      reviewPoints: [{ ...point, files: [] }],
+    })).toThrow("invalid");
+  });
 });

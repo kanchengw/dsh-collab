@@ -51,7 +51,7 @@ export class HostSnapshotFile {
 
   save(snapshot: DshCollabHostRuntimeSnapshot): Promise<void> {
     const serialized = JSON.stringify(snapshot, null, 2) + "\n";
-    this.writes = this.writes.then(async () => {
+    this.writes = this.writes.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const temporary = this.path + ".tmp";
       await writeFile(temporary, serialized, { encoding: "utf8", mode: 0o600 });

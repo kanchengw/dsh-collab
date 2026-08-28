@@ -11,6 +11,8 @@ export interface WorkspaceSnapshotProvider {
   readChunk(snapshotId: string, path: string, offset: number, length: number): Promise<Uint8Array>;
 }
 
+export type WorkspaceSnapshotPurpose = "workspace-snapshot" | "review-point" | "review-refresh";
+
 export class WorkspaceService {
   private readonly now: () => number;
 
@@ -52,11 +54,11 @@ export class WorkspaceService {
     return this.options.snapshots !== undefined;
   }
 
-  async captureLatest(input: { roomId: string; principalId: string; clientRequestId: string; roomEventSeq: number; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage> {
+  async captureLatest(input: { roomId: string; principalId: string; clientRequestId: string; purpose: WorkspaceSnapshotPurpose; roomEventSeq: number; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage> {
     this.requireWorkspaceRead(input);
     const provider = this.requireSnapshots();
     const room = this.options.rooms.getRoom(input.roomId);
-    const snapshotId = createHash("sha256").update(`${input.roomId}\0${input.principalId}\0${input.clientRequestId}`).digest("hex");
+    const snapshotId = createHash("sha256").update(`${input.roomId}\0${input.principalId}\0${input.purpose}\0${input.clientRequestId}`).digest("hex");
     const existing = await provider.load(snapshotId);
     if (existing) return this.assertRoomSnapshot(existing, room.roomId, room.hostSessionId);
     try {
@@ -84,7 +86,7 @@ export class WorkspaceService {
     const room = this.options.rooms.getRoom(input.roomId);
     const snapshot = await this.requireSnapshots().load(input.snapshotId);
     if (!snapshot) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot does not exist");
-    return this.assertRoomSnapshot(snapshot, room.roomId, room.hostSessionId);
+    return this.assertRoomSnapshot(snapshot, room.roomId);
   }
 
   async readSnapshotChunk(input: { roomId: string; principalId: string; snapshotId: string; fileIndex: number; offset: number; length: number }): Promise<{ snapshot: WorkspaceSnapshotPackage; bytes: Uint8Array }> {
@@ -99,8 +101,8 @@ export class WorkspaceService {
     return this.options.snapshots;
   }
 
-  private assertRoomSnapshot(snapshot: WorkspaceSnapshotPackage, roomId: string, hostSessionId: string): WorkspaceSnapshotPackage {
-    if (snapshot.roomId !== roomId || snapshot.hostSessionId !== hostSessionId) {
+  private assertRoomSnapshot(snapshot: WorkspaceSnapshotPackage, roomId: string, hostSessionId?: string): WorkspaceSnapshotPackage {
+    if (snapshot.roomId !== roomId || (hostSessionId !== undefined && snapshot.hostSessionId !== hostSessionId)) {
       throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot does not belong to this room");
     }
     return structuredClone(snapshot);

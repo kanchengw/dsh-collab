@@ -139,7 +139,7 @@ describe("Workspace Snapshot transport", () => {
     expect(repeated.body).toEqual(capture.body);
     expect(snapshots.capture).toHaveBeenCalledTimes(1);
     const restoredService = new WorkspaceService({ rooms, registry, snapshots });
-    await expect(restoredService.captureLatest({ roomId: "room-1", principalId: "alice", clientRequestId: "capture-1", roomEventSeq: 99 }))
+    await expect(restoredService.captureLatest({ roomId: "room-1", principalId: "alice", clientRequestId: "capture-1", purpose: "workspace-snapshot", roomEventSeq: 99 }))
       .resolves.toEqual(captured);
     expect(snapshots.capture).toHaveBeenCalledTimes(1);
 
@@ -176,6 +176,27 @@ describe("Workspace Snapshot transport", () => {
       path: "/v1/rooms/room-1/workspace-snapshots/not-a-snapshot",
       headers: capabilityHeaders,
     })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+  });
+
+  it("isolates idempotency keys between snapshot, Review Point and refresh commands", async () => {
+    const { gateway, registry, snapshots } = gatewaySetup();
+    const host = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = { authorization: `Bearer ${(host.body as { roomToken: string }).roomToken}`, "x-dsh-collab-capabilities": "sidecar-review.v1" };
+    registry.set("room-1", true, "member-host", 10);
+
+    const latest = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-snapshots", headers, body: { clientRequestId: "same-id" } });
+    const review = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points", headers, body: {
+      clientRequestId: "same-id", title: "Value review", files: [{ path: "src/value.ts", status: "modified", additions: 1, deletions: 0 }],
+    } });
+    const refresh = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points/refresh", headers, body: { clientRequestId: "same-id" } });
+
+    const ids = [
+      (latest.body as { snapshot: WorkspaceSnapshotPackage }).snapshot.snapshotId,
+      (review.body as { reviewPoint: { workspaceSnapshotId: string } }).reviewPoint.workspaceSnapshotId,
+      (refresh.body as { snapshotId: string }).snapshotId,
+    ];
+    expect(new Set(ids)).toHaveLength(3);
+    expect(snapshots.capture).toHaveBeenCalledTimes(3);
   });
 
   it("returns stable public errors instead of leaking Host capture failures", async () => {

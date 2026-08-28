@@ -67,15 +67,9 @@ function validateSnapshotForRoom(snapshot: WorkspaceSnapshotPackage, roomId: str
 }
 
 function createFiles(input: readonly ReviewPointCreateFile[], snapshot: WorkspaceSnapshotPackage): ReviewPointFile[] {
-  if (!Array.isArray(input) || input.length === 0 || input.length > 10_000) throw invalidInput("Review Point files are invalid");
+  const files = validateCreateFiles(input);
   const manifest = new Map(snapshot.files.map((file) => [file.path, file]));
-  const paths = new Set<string>();
-  return input.map((file) => {
-    if (!file || typeof file.path !== "string" || !isSafeWorkspaceSnapshotPath(file.path) || paths.has(file.path)
-      || !["added", "modified", "deleted", "renamed"].includes(file.status)) {
-      throw invalidInput("Review Point file is invalid");
-    }
-    paths.add(file.path);
+  return files.map((file) => {
     const snapshotFile = manifest.get(file.path);
     if (file.status === "deleted" ? snapshotFile !== undefined : snapshotFile === undefined) {
       throw invalidInput("Review Point file does not match the captured Workspace Snapshot", { path: file.path });
@@ -84,6 +78,24 @@ function createFiles(input: readonly ReviewPointCreateFile[], snapshot: Workspac
       path: file.path,
       status: file.status,
       ...(snapshotFile ? { snapshotContentHash: snapshotFile.contentHash } : {}),
+      additions: file.additions,
+      deletions: file.deletions,
+    };
+  });
+}
+
+function validateCreateFiles(input: readonly ReviewPointCreateFile[]): ReviewPointCreateFile[] {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 10_000) throw invalidInput("Review Point files are invalid");
+  const paths = new Set<string>();
+  return input.map((file) => {
+    if (!file || typeof file.path !== "string" || !isSafeWorkspaceSnapshotPath(file.path) || paths.has(file.path)
+      || !["added", "modified", "deleted", "renamed"].includes(file.status)) {
+      throw invalidInput("Review Point file is invalid");
+    }
+    paths.add(file.path);
+    return {
+      path: file.path,
+      status: file.status,
       additions: nonNegativeInteger(file.additions, "additions"),
       deletions: nonNegativeInteger(file.deletions, "deletions"),
     };
@@ -93,10 +105,11 @@ function createFiles(input: readonly ReviewPointCreateFile[], snapshot: Workspac
 function validateRestoredPoint(value: ReviewPoint, rooms: RoomStore): ReviewPoint {
   if (!value || !/^[a-f0-9]{64}$/.test(value.reviewPointId) || typeof value.roomId !== "string"
     || typeof value.createdBy !== "string" || !Array.isArray(value.reviewerIds) || value.reviewerIds.some((id) => typeof id !== "string" || id === "")
+    || new Set(value.reviewerIds).size !== value.reviewerIds.length
     || !["open", "changes-requested", "approved", "closed"].includes(value.lifecycle)
     || !Number.isSafeInteger(value.roomEventSeq) || value.roomEventSeq < 0 || typeof value.mainAgentSessionId !== "string"
     || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.workspaceSnapshotId) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.headOid)
-    || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0 || !Array.isArray(value.files)) {
+    || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0 || !Array.isArray(value.files) || value.files.length === 0 || value.files.length > 10_000) {
     throw new CollabError("SNAPSHOT_INVALID", "Review Point snapshot is invalid");
   }
   rooms.getRoom(value.roomId);
@@ -129,6 +142,7 @@ function freshness(point: ReviewPoint, current: WorkspaceSnapshotPackage): Revie
 export class ReviewPointService {
   private readonly points: ReviewPoint[] = [];
   private readonly byId = new Map<string, ReviewPoint>();
+  private readonly byRoom = new Map<string, ReviewPoint[]>();
   private readonly comparisonSnapshots = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
   private readonly now: () => number;
@@ -147,6 +161,7 @@ export class ReviewPointService {
       if (service.byId.has(point.reviewPointId)) throw new CollabError("SNAPSHOT_INVALID", "Review Point snapshot contains duplicate IDs");
       service.points.push(point);
       service.byId.set(point.reviewPointId, point);
+      service.indexRoom(point);
     }
     for (const entry of snapshot.comparisonSnapshots) {
       if (!entry || typeof entry.roomId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.snapshotId)
@@ -203,9 +218,36 @@ export class ReviewPointService {
     }
     this.points.push(point);
     this.byId.set(point.reviewPointId, point);
+    this.indexRoom(point);
     this.comparisonSnapshots.set(room.roomId, captured.snapshotId);
     this.emit();
     return structuredClone(point);
+  }
+
+  findCreated(input: {
+    roomId: string;
+    principalId: string;
+    clientRequestId: string;
+    title: string;
+    focus?: string;
+    files: readonly ReviewPointCreateFile[];
+  }): ReviewPoint | undefined {
+    const member = this.options.rooms.authorize(input.roomId, input.principalId, "read");
+    if (member.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Host can create a Review Point");
+    const id = reviewPointId(input.roomId, input.principalId, requiredText(input.clientRequestId, "clientRequestId", 128));
+    const existing = this.byId.get(id);
+    if (!existing) return undefined;
+    const title = requiredText(input.title, "title", 120);
+    const focus = optionalText(input.focus, "focus", 2_000);
+    const files = validateCreateFiles(input.files);
+    const matches = existing.title === title && existing.focus === focus && existing.files.length === files.length
+      && files.every((file, index) => {
+        const stored = existing.files[index];
+        return stored?.path === file.path && stored.status === file.status
+          && stored.additions === file.additions && stored.deletions === file.deletions;
+      });
+    if (!matches) throw new CollabError("REQUEST_CONFLICT", "Review Point request conflicts with an existing request");
+    return structuredClone(existing);
   }
 
   observeSnapshot(input: { roomId: string; principalId: string; snapshot: WorkspaceSnapshotPackage }): void {
@@ -222,35 +264,36 @@ export class ReviewPointService {
     this.options.rooms.authorize(input.roomId, input.principalId, "read");
     const limit = input.limit ?? DEFAULT_PAGE_SIZE;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) throw invalidInput("limit must be between 1 and 100");
-    const ordered = this.points.filter((point) => point.roomId === input.roomId).reverse();
+    const ordered = [...(this.byRoom.get(input.roomId) ?? [])].reverse();
     const start = input.after === undefined ? 0 : ordered.findIndex((point) => point.reviewPointId === input.after) + 1;
     if (input.after !== undefined && start === 0) throw invalidInput("Review Point cursor is invalid");
     const page = ordered.slice(start, start + limit);
     const comparisonId = this.comparisonSnapshots.get(input.roomId);
-    const cache = new Map<string, WorkspaceSnapshotPackage>();
+    const cache = new Map<string, Promise<WorkspaceSnapshotPackage>>();
     const load = async (snapshotId: string): Promise<WorkspaceSnapshotPackage> => {
       const cached = cache.get(snapshotId);
-      if (cached) return cached;
-      const value = await this.options.snapshots.load(snapshotId);
-      if (!value) throw new CollabError("SNAPSHOT_NOT_FOUND", "Review Point Workspace Snapshot does not exist");
-      const validated = validateSnapshotForRoom(value, input.roomId);
-      cache.set(snapshotId, validated);
-      return validated;
+      if (cached) return await cached;
+      const loading = this.options.snapshots.load(snapshotId).then((value) => {
+        if (!value) throw new CollabError("SNAPSHOT_NOT_FOUND", "Review Point Workspace Snapshot does not exist");
+        return validateSnapshotForRoom(value, input.roomId);
+      });
+      cache.set(snapshotId, loading);
+      return await loading;
     };
-    const reviewPoints: ReviewPointProjection[] = [];
-    for (const point of page) {
+    const current = comparisonId ? await load(comparisonId) : undefined;
+    const reviewPoints = await Promise.all(page.map(async (point): Promise<ReviewPointProjection> => {
       const original = await load(point.workspaceSnapshotId);
       if (original.hostSessionId !== point.mainAgentSessionId) throw new CollabError("SNAPSHOT_INVALID", "Review Point Workspace Snapshot Host Session is invalid");
-      const current = comparisonId ? await load(comparisonId) : original;
-      reviewPoints.push({
+      const comparison = current ?? original;
+      return {
         reviewPoint: structuredClone(point),
-        freshness: freshness(point, current),
+        freshness: freshness(point, comparison),
         progress: {
           roomEventDelta: Math.max(0, this.options.ledger.latestSeq(point.roomId) - point.roomEventSeq),
-          workspaceChangedFileCount: changedFileCount(original, current),
+          workspaceChangedFileCount: changedFileCount(original, comparison),
         },
-      });
-    }
+      };
+    }));
     const nextCursor = start + page.length < ordered.length ? page.at(-1)?.reviewPointId : undefined;
     return { reviewPoints, ...(nextCursor ? { nextCursor } : {}) };
   }
@@ -265,5 +308,11 @@ export class ReviewPointService {
 
   private emit(): void {
     for (const listener of this.listeners) listener();
+  }
+
+  private indexRoom(point: ReviewPoint): void {
+    const points = this.byRoom.get(point.roomId) ?? [];
+    points.push(point);
+    this.byRoom.set(point.roomId, points);
   }
 }

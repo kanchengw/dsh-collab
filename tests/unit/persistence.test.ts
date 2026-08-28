@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -54,5 +54,21 @@ describe("Host snapshot file", () => {
     const second = { ...snapshot(), dispatcher: { ...snapshot().dispatcher, nextQueueSeq: 2 } };
     await Promise.all([store.save(first), store.save(second)]);
     expect(await store.load()).toEqual(second);
+  });
+
+  it("recovers the write queue after a transient filesystem failure", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-state-"));
+    dirs.push(dir);
+    const blocker = join(dir, "blocked");
+    const path = join(blocker, "state.json");
+    const store = new HostSnapshotFile(path);
+    await writeFile(blocker, "not a directory", "utf8");
+
+    await expect(store.save(snapshot())).rejects.toBeDefined();
+    await rm(blocker);
+    await mkdir(blocker);
+
+    await expect(store.save(snapshot())).resolves.toBeUndefined();
+    await expect(store.load()).resolves.toEqual(snapshot());
   });
 });

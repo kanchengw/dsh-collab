@@ -330,6 +330,7 @@ export class CollabGateway {
         roomId,
         principalId: claims.principalId,
         clientRequestId: requestIdField(objectBody(request.body), "clientRequestId"),
+        purpose: "workspace-snapshot",
         roomEventSeq: this.options.ledger.latestSeq(roomId),
       });
       return { status: 201, body: { snapshot } };
@@ -378,24 +379,29 @@ export class CollabGateway {
       if (member.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Host can change Review Points");
       const body = objectBody(request.body);
       const clientRequestId = requestIdField(body, "clientRequestId");
+      const createInput = tail.length === 0 ? {
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId,
+        title: requiredText(body.title, "title"),
+        ...(body.focus === undefined ? {} : { focus: requiredText(body.focus, "focus") }),
+        files: reviewPointFiles(body.files),
+      } : undefined;
+      const existing = createInput ? reviewPoints.findCreated(createInput) : undefined;
+      if (existing) return { status: 201, body: { reviewPoint: existing } };
       const snapshot = await this.options.workspace!.captureLatest({
         roomId,
         principalId: claims.principalId,
         clientRequestId,
+        purpose: tail.length === 1 ? "review-refresh" : "review-point",
         roomEventSeq: this.options.ledger.latestSeq(roomId),
       });
       if (tail.length === 1) {
         reviewPoints.observeSnapshot({ roomId, principalId: claims.principalId, snapshot });
         return { status: 200, body: { snapshotId: snapshot.snapshotId } };
       }
-      const focus = body.focus === undefined ? undefined : requiredText(body.focus, "focus");
       const reviewPoint = reviewPoints.create({
-        roomId,
-        principalId: claims.principalId,
-        clientRequestId,
-        title: requiredText(body.title, "title"),
-        ...(focus ? { focus } : {}),
-        files: reviewPointFiles(body.files),
+        ...createInput!,
         snapshot,
       });
       return { status: 201, body: { reviewPoint } };

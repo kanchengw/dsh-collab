@@ -162,9 +162,12 @@ sharing stops or the Host runtime restarts. A later workspace read while the
 switch is off returns `409 WORKSPACE_SHARING_DISABLED`.
 
 Snapshot capture accepts `{ "clientRequestId": "..." }`. The Gateway derives a
-stable snapshot ID from the verified room principal and that request ID, so a
-retry after a lost response or Host restart returns the same immutable artifact
-instead of capturing a second version. The client cannot supply a workspace
+stable snapshot ID from the verified room principal, the resource purpose and
+that request ID, so a retry of the same command after a lost response or Host
+restart returns the same immutable artifact instead of capturing a second
+version. Ordinary snapshot capture, Review Point creation and comparison refresh use
+separate purpose namespaces, so reusing a request ID across resources cannot
+reuse the wrong artifact. The client cannot supply a workspace
 path, Host Session ID, file path, or snapshot ID. A manifest contains only
 repository-relative paths, content hashes, byte sizes and snapshot metadata;
 content is fetched by numeric `fileIndex` so untrusted paths never enter the

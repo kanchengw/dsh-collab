@@ -1,6 +1,6 @@
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -158,6 +158,28 @@ describe("Cordis Host mount", () => {
     await mounted.dispose();
     const port = await ready;
     expect(await canConnect(port)).toBe(false);
+  });
+
+  it("closes the Gateway even when the final persistence write fails", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-dispose-"));
+    const blocker = join(dir, "blocked");
+    await writeFile(blocker, "not a directory", "utf8");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const mounted = mountDshCollabCordisHost({
+        agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+      }, {
+        roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
+        stateFile: join(blocker, "state.json"),
+      });
+      if (!mounted) throw new Error("Gateway was not mounted");
+      const port = await mounted.ready;
+      await expect(mounted.dispose()).rejects.toBeDefined();
+      expect(await canConnect(port)).toBe(false);
+    } finally {
+      warn.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("restores Host room members and timeline from its state file after restart", async () => {

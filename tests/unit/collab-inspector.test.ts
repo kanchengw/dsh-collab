@@ -31,6 +31,7 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
     onSelectTab: vi.fn(),
     onCreateReviewPoint: vi.fn(async () => true),
     onReloadReviewPoints: vi.fn(),
+    onLoadMoreReviewPoints: vi.fn(),
     onRefreshReviewPoints: vi.fn(),
   }));
 }
@@ -161,6 +162,11 @@ describe("Collab Changes Inspector", () => {
     expect(participant).not.toContain("Refresh comparison");
 
     expect(render({ ...state, status: "error", error: "Review failed" }, "host", "reviews")).toContain("Review failed");
+  });
+
+  it("keeps older Review Points reachable when the list has another page", () => {
+    const html = render({ status: "ready", reviewPoints: [], reviewNextCursor: "d".repeat(64) }, "participant", "reviews");
+    expect(html).toContain("Load older reviews");
   });
 
   it("uses a room drawer at narrow widths instead of a floating window", () => {

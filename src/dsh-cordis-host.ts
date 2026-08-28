@@ -85,11 +85,14 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
       unsubscribeLedger?.();
       unsubscribeRooms?.();
       unsubscribeReviewPoints?.();
-      await persistence?.save(runtime.snapshot());
       try {
-        await runtime.dispose();
+        await persistence?.save(runtime.snapshot());
       } finally {
-        sessions.dispose?.();
+        try {
+          await runtime.dispose();
+        } finally {
+          sessions.dispose?.();
+        }
       }
     },
   };

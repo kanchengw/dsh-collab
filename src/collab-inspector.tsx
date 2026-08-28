@@ -14,6 +14,7 @@ export interface CollabInspectorState {
   snapshot?: WorkspaceSnapshotPackage;
   diff?: RepositoryDiff;
   reviewPoints?: ReviewPointProjection[];
+  reviewNextCursor?: string;
   error?: string;
 }
 
@@ -67,6 +68,7 @@ export function useCollabInspector(input: {
   selectTab(tab: CollabInspectorTab): void;
   createReviewPoint(input: Pick<ReviewPointCreateInput, "title" | "focus">): Promise<boolean>;
   reloadReviewPoints(): Promise<void>;
+  loadMoreReviewPoints(): Promise<void>;
   refreshReviewPoints(): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
@@ -147,7 +149,7 @@ export function useCollabInspector(input: {
     setState((current) => ({ ...current, status: "loading", error: undefined }));
     try {
       const page = await input.port.listReviewPoints(roomId);
-      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", reviewPoints: page.reviewPoints, error: undefined }));
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", reviewPoints: page.reviewPoints, reviewNextCursor: page.nextCursor, error: undefined }));
     } catch (cause) {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
@@ -161,11 +163,32 @@ export function useCollabInspector(input: {
     try {
       await input.port.createReviewPoint(roomId, { ...review, files });
       const page = await input.port.listReviewPoints?.(roomId);
-      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints } : {}), error: undefined }));
-      return true;
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints, reviewNextCursor: page.nextCursor } : {}), error: undefined }));
+      return roomIdRef.current === roomId;
     } catch (cause) {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
       return false;
+    }
+  };
+  const loadMoreReviewPoints = async (): Promise<void> => {
+    const cursor = state.reviewNextCursor;
+    if (!input.port?.listReviewPoints || input.roomId === "" || !cursor) return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const page = await input.port.listReviewPoints(roomId, cursor);
+      updateCurrentRoom(roomId, (current) => {
+        const points = [...(current.reviewPoints ?? []), ...page.reviewPoints];
+        return {
+          ...current,
+          status: "ready",
+          reviewPoints: [...new Map(points.map((point) => [point.reviewPoint.reviewPointId, point])).values()],
+          reviewNextCursor: page.nextCursor,
+          error: undefined,
+        };
+      });
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
   };
   const refreshReviewPoints = async (): Promise<void> => {
@@ -175,7 +198,7 @@ export function useCollabInspector(input: {
     try {
       await input.port.refreshReviewPoints(roomId);
       const page = await input.port.listReviewPoints?.(roomId);
-      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints } : {}), error: undefined }));
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", ...(page ? { reviewPoints: page.reviewPoints, reviewNextCursor: page.nextCursor } : {}), error: undefined }));
     } catch (cause) {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
@@ -193,6 +216,7 @@ export function useCollabInspector(input: {
     selectTab: (tab) => { setActiveTab(tab); if (tab === "reviews") void reloadReviewPoints(); },
     createReviewPoint,
     reloadReviewPoints,
+    loadMoreReviewPoints,
     refreshReviewPoints,
   };
 }
@@ -297,6 +321,7 @@ export function DshCollabInspector(props: {
   onSelectTab(tab: CollabInspectorTab): void;
   onCreateReviewPoint(input: Pick<ReviewPointCreateInput, "title" | "focus">): Promise<boolean>;
   onReloadReviewPoints(): void;
+  onLoadMoreReviewPoints(): void;
   onRefreshReviewPoints(): void;
   t?: CollabTranslate;
 }): ReactNode {
@@ -352,6 +377,7 @@ export function DshCollabInspector(props: {
           {!enabled ? <p className={css.reviewHint}>{t("inspector.reviewSharingRequired")}</p> : null}
         </> : null}
         <ReviewPoints points={props.state.reviewPoints ?? []} t={t} />
+        {props.state.reviewNextCursor ? <button type="button" className={css.secondaryAction} disabled={busy} onClick={props.onLoadMoreReviewPoints}>{t("inspector.loadOlderReviews")}</button> : null}
       </section>}
     </div>
   </aside>;

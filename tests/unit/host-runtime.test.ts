@@ -41,6 +41,13 @@ describe("host runtime factory", () => {
       body: { reviewPoints: [{ reviewPoint: { title: "App review", mainAgentSessionId: "room-1", files: [{ path: "src/app.ts" }] }, freshness: "current" }] },
     });
     await expect(restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders })).resolves.toMatchObject({ body: { state: { enabled: false } } });
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders, body: { enabled: true } });
+    const historicalSnapshotId = snapshot.reviewPoints!.reviewPoints[0]!.workspaceSnapshotId;
+    await expect(restored.gateway.handle({ method: "GET", path: `/v1/rooms/room-1/workspace-snapshots/${historicalSnapshotId}`, headers: restoredHeaders }))
+      .resolves.toMatchObject({ status: 200, body: { snapshot: { hostSessionId: "room-1" } } });
+    await expect(restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points", headers: restoredHeaders, body: {
+      clientRequestId: "review-1", title: "App review", files: [{ path: "src/app.ts", status: "modified", additions: 1, deletions: 0 }],
+    } })).resolves.toMatchObject({ status: 201, body: { reviewPoint: { workspaceSnapshotId: historicalSnapshotId } } });
     await restored.dispose();
   });
 

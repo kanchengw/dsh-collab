@@ -310,6 +310,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private disposed = false;
   private manuallyDisconnected = false;
   private participantRef: JoinedRoomRef | undefined;
+  private readonly pendingCommandIds = new Map<string, string>();
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -499,8 +500,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.assertActiveRoom(roomId);
     const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-sharing`, undefined, true)) as { state?: unknown };
     const state = workspaceSharingState(data?.state, roomId);
-    this.snapshot = { ...this.snapshot, workspaceSharing: state };
-    this.emit();
+    this.applyWorkspaceSharing(state);
     return state;
   }
 
@@ -508,8 +508,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.assertActiveRoom(roomId);
     const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/workspace-sharing`, { enabled }, true)) as { state?: unknown };
     const state = workspaceSharingState(data?.state, roomId);
-    this.snapshot = { ...this.snapshot, workspaceSharing: state };
-    this.emit();
+    this.applyWorkspaceSharing(state);
     return state;
   }
 
@@ -521,11 +520,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async createReviewPoint(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint> {
     this.assertActiveRoom(roomId);
+    const commandKey = JSON.stringify({ resource: "review-point", roomId, input });
+    const clientRequestId = this.pendingCommandIds.get(commandKey) ?? randomId("review");
+    this.pendingCommandIds.set(commandKey, clientRequestId);
     const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points`, {
-      clientRequestId: randomId("review"),
+      clientRequestId,
       ...input,
     }, true)) as { reviewPoint?: unknown };
-    return reviewPoint(data?.reviewPoint, roomId);
+    const point = reviewPoint(data?.reviewPoint, roomId);
+    this.pendingCommandIds.delete(commandKey);
+    return point;
   }
 
   async listReviewPoints(roomId: string, after?: string, limit = 50): Promise<ReviewPointPage> {
@@ -717,10 +721,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       return;
     }
     if (frame.kind === "collaboration-event") {
-      if (frame.event.type === "workspace-sharing.changed" && frame.event.state.roomId === this.snapshot.roomId) {
-        this.snapshot = { ...this.snapshot, workspaceSharing: frame.event.state };
-        this.emit();
-      }
+      if (frame.event.type === "workspace-sharing.changed") this.applyWorkspaceSharing(frame.event.state);
       return;
     }
     if (frame.kind === "event") {
@@ -763,6 +764,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private setConnection(connection: DshCollabClientSnapshot["connection"]): void {
     if (this.snapshot.connection === connection) return;
     this.snapshot = { ...this.snapshot, connection, ...(connection === "offline" ? { onlineCount: 0 } : {}) };
+    this.emit();
+  }
+
+  private applyWorkspaceSharing(state: WorkspaceSharingState): void {
+    if (state.roomId !== this.snapshot.roomId || (this.snapshot.workspaceSharing?.revision ?? -1) > state.revision) return;
+    this.snapshot = { ...this.snapshot, workspaceSharing: state };
     this.emit();
   }
 

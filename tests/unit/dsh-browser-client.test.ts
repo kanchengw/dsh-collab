@@ -50,6 +50,41 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
+  it("reuses a Review Point command ID after a lost response", async () => {
+    const bodies: string[] = [];
+    let attempts = 0;
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified", snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const fetch: BrowserFetch = async (url, init) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/review-points")) {
+        bodies.push(String(init?.body));
+        attempts += 1;
+        if (attempts === 1) throw new Error("response lost");
+        return response({ reviewPoint }, 201);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+    const input = { title: "Parser review", files: [{ path: "src/parser.ts", status: "modified" as const, additions: 4, deletions: 1 }] };
+
+    await expect(client.createReviewPoint("room-1", input)).rejects.toThrow("Gateway");
+    await expect(client.createReviewPoint("room-1", input)).resolves.toEqual(reviewPoint);
+    expect(JSON.parse(bodies[0]!).clientRequestId).toBe(JSON.parse(bodies[1]!).clientRequestId);
+    client.dispose();
+  });
+
   it("rejects malformed Review Point pages at the browser boundary", async () => {
     const point = {
       reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
@@ -193,6 +228,35 @@ describe("browser Gateway client", () => {
     expect(client.getSnapshot().workspaceSharing).toEqual({ roomId: "room-1", enabled: false, revision: 2 });
     expect(requests.filter(({ init }) => init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toHaveLength(requests.length);
     expect(requests.filter(({ url }) => url.endsWith("/workspace-snapshots"))[0]?.init?.body).toContain("clientRequestId");
+    client.dispose();
+  });
+
+  it("does not let a delayed Workspace Sharing response overwrite a newer stream revision", async () => {
+    let socket: BrowserSocket | undefined;
+    let resolveSharing: ((value: ReturnType<typeof response>) => void) | undefined;
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/workspace-sharing")) return await new Promise((resolve) => { resolveSharing = resolve; });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+    const pending = client.getWorkspaceSharing("room-1");
+    socket?.onmessage?.({ data: JSON.stringify({
+      protocol: "dsh-collab.v1", type: "collaboration-event",
+      event: { type: "workspace-sharing.changed", state: { roomId: "room-1", enabled: true, enabledBy: "host", enabledAt: 20, revision: 2 } },
+    }) });
+    resolveSharing?.(response({ state: { roomId: "room-1", enabled: false, revision: 1 } }));
+
+    await expect(pending).resolves.toMatchObject({ revision: 1 });
+    expect(client.getSnapshot().workspaceSharing).toMatchObject({ enabled: true, revision: 2 });
     client.dispose();
   });
 

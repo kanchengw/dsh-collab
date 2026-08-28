@@ -711,6 +711,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         onSelectTab: inspector.selectTab,
         onCreateReviewPoint: inspector.createReviewPoint,
         onReloadReviewPoints: () => { void inspector.reloadReviewPoints(); },
+        onLoadMoreReviewPoints: () => { void inspector.loadMoreReviewPoints(); },
         onRefreshReviewPoints: () => { void inspector.refreshReviewPoints(); },
         t,
       }),
