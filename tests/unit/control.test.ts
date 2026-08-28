@@ -98,6 +98,37 @@ describe("AgentDispatcher control", () => {
     expect(dispatcher.queued()).toHaveLength(0);
   });
 
+  it("keeps other rooms queued when clearing the active room inbox", async () => {
+    const { dispatcher, rooms } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
+    rooms.createRoom({
+      roomId: "room-2",
+      hostId: "host",
+      hostSessionId: "session-room-2",
+      title: "Other room",
+      hostDisplayName: "Host",
+      now: 3,
+    });
+    rooms.addMember("room-2", {
+      memberId: "member-bob",
+      principalId: "bob",
+      displayName: "Bob",
+      now: 4,
+    });
+    await dispatcher.submit({ principalId: "alice", message: request("message-1", "Active", "member-alice", "dsh") });
+    await dispatcher.submit({ principalId: "alice", message: request("message-2", "Same room", "member-alice", "dsh") });
+    await dispatcher.submit({
+      principalId: "bob",
+      message: { ...request("message-3", "Other room", "member-bob", "dsh"), roomId: "room-2" },
+    });
+    await dispatcher.drainOne();
+
+    await dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "message-1", keepInbox: false });
+
+    expect(dispatcher.get("message-2")?.status).toBe("cancelled");
+    expect(dispatcher.get("message-3")?.status).toBe("queued");
+    expect(dispatcher.queued()).toEqual([expect.objectContaining({ requestId: "message-3", roomId: "room-2" })]);
+  });
+
   it("does not let a participant cancel the Host request", async () => {
     const { dispatcher } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
     await dispatcher.submit({ principalId: "alice", message: request("message-1", "First", "member-alice", "dsh") });

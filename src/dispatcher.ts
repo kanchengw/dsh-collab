@@ -306,11 +306,11 @@ export class AgentDispatcher {
     if (!input.keepInbox) {
       for (const queuedRequestId of [...this.queue]) {
         const queued = this.records.get(queuedRequestId);
-        if (!queued || queued.record.status !== "queued") continue;
+        if (!queued || queued.record.status !== "queued" || queued.record.roomId !== entry.record.roomId) continue;
         queued.record.status = "cancelled";
         this.appendCancelled(queued.record, member);
+        this.removeFromQueue(queuedRequestId);
       }
-      this.queue.length = 0;
     }
     return copy(entry.record);
   }
