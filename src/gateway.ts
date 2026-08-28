@@ -797,6 +797,7 @@ export class CollabGateway {
         requestId: requiredText(body.requestId, "requestId"),
         keepInbox: body.keepInbox === true,
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { request: record } };
     }
     if (action === "setMemberStatus") {

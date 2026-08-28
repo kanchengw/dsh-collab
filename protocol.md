@@ -193,6 +193,13 @@ The current implementation exposes the following explicit v1 actions:
 { "action": "cancel", "requestId": "request-1", "keepInbox": true }
 ```
 
+Cancellation writes the request terminal state and its single
+`agent.request.cancelled` event, then waits for critical-state persistence
+before returning `200`. A persistence failure returns `500`; retrying the same
+request confirms the existing cancelled state without cancelling the Host
+Agent or appending the event again. With `keepInbox=false`, the same barrier
+also covers all same-room queued requests cancelled by that action.
+
 ```json
 { "action": "setMemberStatus", "memberId": "member-2", "status": "suspended" }
 ```

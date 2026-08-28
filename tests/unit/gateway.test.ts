@@ -829,4 +829,41 @@ describe("CollabGateway route contract", () => {
       "request:room-1:agent-second",
     ]));
   });
+
+  it("confirms a cancelled request in persistent state before reporting success", async () => {
+    let persistenceFails = true;
+    const statusAtCommit: string[] = [];
+    let gateway: CollabGateway | undefined;
+    const commitCriticalState = vi.fn(async () => {
+      statusAtCommit.push(gateway?.dispatcher.get("request-cancel-persist")?.status ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState);
+    gateway = runtime.gateway;
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    await runtime.gateway.dispatcher.submit({
+      principalId: "host",
+      message: {
+        kind: "agent-request", messageId: "message-cancel-persist", requestId: "request-cancel-persist",
+        roomId: "room-1", authorMemberId: "member-host", text: "cancel me", target: "dsh", deliveryMode: "followup",
+      },
+    });
+    const cancel = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { action: "cancel", requestId: "request-cancel-persist", keepInbox: true },
+    };
+
+    expect(await request(runtime.gateway, cancel)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    expect(runtime.gateway.dispatcher.get("request-cancel-persist")).toMatchObject({ status: "cancelled" });
+
+    persistenceFails = false;
+    expect(await request(runtime.gateway, cancel)).toMatchObject({ status: 200, body: { request: { status: "cancelled" } } });
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(statusAtCommit).toEqual(["cancelled", "cancelled"]);
+    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.cancelled")).toHaveLength(1);
+  });
 });
