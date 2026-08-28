@@ -238,9 +238,9 @@ describe("AgentDispatcher", () => {
     });
   });
 
-  it("rechecks membership before delivering a queued request", async () => {
+  it("fails a queued request once when claim-time membership is inactive", async () => {
     const calls: string[] = [];
-    const { dispatcher, rooms } = createDispatcher({
+    const { dispatcher, rooms, ledger } = createDispatcher({
       followup(input) {
         calls.push(input.requestId);
       },
@@ -252,6 +252,15 @@ describe("AgentDispatcher", () => {
     rooms.setMemberStatus("room-1", "member-alice", "suspended");
 
     await expect(dispatcher.drainOne()).rejects.toMatchObject({ code: "MEMBER_INACTIVE" });
+    await expect(dispatcher.drainOne()).resolves.toBeUndefined();
     expect(calls).toEqual([]);
+    expect(dispatcher.get("message-1")).toMatchObject({ status: "failed", error: "member is inactive" });
+    expect(ledger.readAfter("room-1", 0).filter((event) => event.eventId === "message-1:failed")).toEqual([
+      expect.objectContaining({
+        type: "agent.request.failed",
+        actor: { memberId: "member-alice", principalId: "alice" },
+        payload: { requestId: "message-1", error: "member is inactive" },
+      }),
+    ]);
   });
 });

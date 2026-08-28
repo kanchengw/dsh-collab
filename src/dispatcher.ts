@@ -176,11 +176,12 @@ export class AgentDispatcher {
     const entry = this.records.get(requestId);
     if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "queued request disappeared", { requestId });
 
-    const member = this.options.rooms.listMembers(entry.record.roomId).find((candidate) => candidate.memberId === entry.record.authorMemberId);
+    const roomMembers = this.options.rooms.listMembers(entry.record.roomId);
+    const member = roomMembers.find((candidate) => candidate.memberId === entry.record.authorMemberId);
     if (!member) {
-      entry.record.status = "failed";
-      entry.record.error = "request author no longer exists";
-      throw new CollabError("MEMBER_NOT_FOUND", entry.record.error, { requestId });
+      const error = "request author no longer exists";
+      this.failQueued(entry.record, error, roomMembers.find((candidate) => candidate.role === "host")!);
+      throw new CollabError("MEMBER_NOT_FOUND", error, { requestId });
     }
     try {
       this.options.rooms.authorize(
@@ -189,8 +190,7 @@ export class AgentDispatcher {
         entry.record.deliveryMode === "steer" ? "steer" : "agentRequest",
       );
     } catch (error) {
-      entry.record.status = "failed";
-      entry.record.error = error instanceof Error ? error.message : String(error);
+      this.failQueued(entry.record, error instanceof Error ? error.message : String(error), member);
       throw error;
     }
     entry.record.status = "running";
@@ -379,6 +379,20 @@ export class AgentDispatcher {
       roomId: record.roomId,
       type: "agent.request.failed",
       actor: { memberId: member.memberId, principalId: member.principalId },
+      payload: { requestId: record.requestId, error },
+    });
+  }
+
+  private failQueued(record: QueueRecord, error: string, actor: { memberId: string; principalId: string }): void {
+    const entry = this.records.get(record.requestId);
+    if (!entry || entry.record.status !== "queued") return;
+    entry.record.status = "failed";
+    entry.record.error = error;
+    this.options.ledger.append({
+      eventId: record.requestId + ":failed",
+      roomId: record.roomId,
+      type: "agent.request.failed",
+      actor: { memberId: actor.memberId, principalId: actor.principalId },
       payload: { requestId: record.requestId, error },
     });
   }
