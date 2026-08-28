@@ -159,6 +159,92 @@ describe("real DSH client slot adapter", () => {
     expect(sideTask).not.toHaveProperty("remote");
   });
 
+  it("publishes only selected local Review findings before recording the server linkage locally", async () => {
+    const reviewPointId = "d".repeat(64);
+    const workspaceSnapshotId = "a".repeat(64);
+    const publicationId = "f".repeat(64);
+    const sideTask = {
+      task: {
+        taskId: "task-review", roomId: "room-joined", type: "review" as const, localPrompt: "Review", executor: "requester-local" as const,
+        context: { roomEventSeq: 4, selectedRoomEventIds: ["event-1"], reviewPointId, workspaceSnapshotId },
+        state: { status: "completed" as const }, publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "Two findings.",
+      findings: [
+        { severity: "high" as const, location: { kind: "line" as const, path: "src/parser.ts", line: 2 }, body: "Retry duplicates the write." },
+        { severity: "note" as const, location: { kind: "general" as const }, body: "Naming could be clearer." },
+      ],
+      revision: 3,
+    };
+    const published = {
+      ...sideTask,
+      task: { ...sideTask.task, publication: { status: "published" as const, publicationId, publishedAt: 30 } },
+      revision: 4,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => ({ ok: true, value: { sideTask: endpoint === "sidecar/mark-published" ? published : sideTask } })) };
+    const publishReviewPublication = vi.fn(async () => ({
+      publicationId, roomId: "room-joined", reviewPointId, taskId: "task-review", workspaceSnapshotId,
+      publishedBy: "member-bob", summary: "Two findings.", findingIds: ["e".repeat(64)], state: "published" as const, createdAt: 30,
+    }));
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+      getRoomSnapshot: () => ({ roomId: "room-joined", memberId: "member-bob", roomTitle: "Review", hostDisplayName: "Alice", role: "participant" as const, connection: "online" as const }),
+      listReviewPublications: vi.fn(async () => ({ publications: [] })),
+      publishReviewPublication,
+      save: vi.fn(),
+    };
+
+    const result = await createDshGatewayControlPort(base, rpc).publishLocalReview?.("room-joined", "task-review", [1, 0]);
+
+    expect(result).toEqual(published);
+    expect(publishReviewPublication).toHaveBeenCalledWith("room-joined", reviewPointId, {
+      taskId: "task-review", workspaceSnapshotId, summary: "Two findings.", findings: sideTask.findings,
+    });
+    expect(rpc.call.mock.calls).toEqual([
+      ["/dsh-collab", "sidecar/get", { roomId: "room-joined" }],
+      ["/dsh-collab", "sidecar/mark-published", { roomId: "room-joined", taskId: "task-review", publicationId, publishedAt: 30 }],
+    ]);
+  });
+
+  it("repairs a local publication link when the server accepted it before the local write completed", async () => {
+    const reviewPointId = "d".repeat(64);
+    const workspaceSnapshotId = "a".repeat(64);
+    const publicationId = "f".repeat(64);
+    const sideTask = {
+      task: {
+        taskId: "task-review", roomId: "room-joined", type: "review" as const, localPrompt: "Review", executor: "requester-local" as const,
+        context: { roomEventSeq: 4, selectedRoomEventIds: [], reviewPointId, workspaceSnapshotId },
+        state: { status: "completed" as const }, publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "One finding.",
+      findings: [{ severity: "high" as const, location: { kind: "general" as const }, body: "Retry duplicates the write." }],
+      revision: 3,
+    };
+    const published = {
+      ...sideTask,
+      task: { ...sideTask.task, publication: { status: "published" as const, publicationId, publishedAt: 30 } },
+      revision: 4,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => ({ ok: true, value: { sideTask: endpoint === "sidecar/mark-published" ? published : sideTask } })) };
+    const publishReviewPublication = vi.fn();
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+      getRoomSnapshot: () => ({ roomId: "room-joined", memberId: "member-bob", roomTitle: "Review", hostDisplayName: "Alice", role: "participant" as const, connection: "online" as const }),
+      listReviewPublications: vi.fn(async () => ({ publications: [{
+        publicationId, roomId: "room-joined", reviewPointId, taskId: "task-review", workspaceSnapshotId,
+        publishedBy: "member-bob", summary: "One finding.", findingIds: ["e".repeat(64)], state: "published" as const, createdAt: 30,
+      }] })),
+      publishReviewPublication,
+      save: vi.fn(),
+    };
+
+    await expect(createDshGatewayControlPort(base, rpc).publishLocalReview?.("room-joined", "task-review", [0])).resolves.toEqual(published);
+    expect(publishReviewPublication).not.toHaveBeenCalled();
+    expect(rpc.call).toHaveBeenLastCalledWith("/dsh-collab", "sidecar/mark-published", {
+      roomId: "room-joined", taskId: "task-review", publicationId, publishedAt: 30,
+    });
+  });
+
   it("rejects local SideTask projections that do not match the requested room, requester, or task", async () => {
     const sideTask = {
       task: {

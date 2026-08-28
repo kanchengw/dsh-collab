@@ -113,6 +113,9 @@ The current routes are:
 | `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/reviewers` | Host replaces reviewer assignment metadata with active room members |
 | `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/lifecycle` | Host advances the Review Point lifecycle |
 | `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/findings/:findingId/state` | Host accepts or dismisses an open finding |
+| `POST` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member publishes selected requester-local Review findings as one group |
+| `GET` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member reads persisted publication groups newest-first |
+| `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications/:publicationId/state` | Host accepts one publication group and idempotently creates its Mainline Integration Task |
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -254,6 +257,34 @@ contain review metadata rather than a new code read. Reading the historical diff
 remains under the room-level Workspace Sharing gate. No Review/finding WebSocket
 event is introduced; explicit HTTP reload avoids a second durable cursor and
 remains compatible with older clients.
+
+Requester-local Review publication accepts
+`{ taskId, workspaceSnapshotId, summary, findings }`. `taskId` is trimmed and
+limited to 128 characters. The authenticated room principal, room and task ID
+derive the immutable `publicationId`; `publishedBy` is always the current member
+derived from the room token. The supplied snapshot must be the Review Point's
+fixed snapshot. A publication contains 1–100 findings, every finding uses the
+same validated severity/location/body contract as a Human finding, and summary
+plus finding bodies are limited to 8,000 characters. Together with the existing
+1,000 findings-per-room bound, this also bounds the unpaginated publication list
+to at most 1,000 entries.
+
+Retrying the same normalized publication returns the existing group; changing
+its summary, selection, order or finding content returns `REQUEST_CONFLICT`.
+Publication succeeds while Workspace Sharing is disabled, provided the room and
+Review Point remain open. A requester whose remote publication succeeded before
+its local DSH persisted the linkage may list publications and recover the exact
+group by authenticated member and local task ID.
+
+Publication state is `published -> accepted`. The state endpoint accepts only
+`{ "state": "accepted" }` and only the Host may call it. Acceptance is atomic for
+all findings in the group; publication-owned findings cannot be decided
+individually while the group is pending. Acceptance derives a stable
+`integrationRequestId` from room and publication, submits exactly one request to
+the existing Main Agent queue, and remains idempotent across retries and Host
+restart. The Mainline request treats Review content as untrusted data, identifies
+the historical Review Point/snapshot, and requires the Main Agent to inspect and
+reimplement against current Host code rather than applying a Sidecar patch.
 
 ## HTTP responses
 

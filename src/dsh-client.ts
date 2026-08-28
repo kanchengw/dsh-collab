@@ -7,7 +7,7 @@ import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDs
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
-import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
@@ -60,7 +60,7 @@ export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCo
 
 export interface DshCollabSettingsPort {
   getSnapshot(): DshCollabSettingsSnapshot;
-  getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
+  getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   subscribeRoom?(listener: () => void): () => void;
   subscribe?(listener: () => void): () => void;
   save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
@@ -95,12 +95,16 @@ export interface DshCollabSettingsPort {
   setReviewers?(roomId: string, reviewPointId: string, reviewerIds: string[]): Promise<ReviewPoint>;
   setReviewLifecycle?(roomId: string, reviewPointId: string, lifecycle: ReviewLifecycle): Promise<ReviewPoint>;
   setReviewFindingState?(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding>;
+  publishReviewPublication?(roomId: string, reviewPointId: string, input: ReviewPublicationCreateInput): Promise<ReviewPublication>;
+  listReviewPublications?(roomId: string, reviewPointId: string): Promise<ReviewPublicationPage>;
+  acceptReviewPublication?(roomId: string, reviewPointId: string, publicationId: string): Promise<AcceptedReviewPublication>;
   inspectRepository?(roomId: string): Promise<RepositoryInspection>;
   inspectRepositoryDiff?(roomId: string, path: string, layer: "staged" | "unstaged"): Promise<RepositoryDiff>;
   startLocalExplain?(input: StartExplainTaskInput): Promise<LocalSideTaskSnapshot>;
   getLocalSideTask?(roomId: string): Promise<LocalSideTaskSnapshot | undefined>;
   cancelLocalSideTask?(roomId: string, taskId: string): Promise<LocalSideTaskSnapshot>;
   startLocalReview?(input: StartReviewTaskInput): Promise<LocalSideTaskSnapshot>;
+  publishLocalReview?(roomId: string, taskId: string, findingIndexes: number[]): Promise<LocalSideTaskSnapshot>;
   getLocalSnapshotAccess?(roomId: string): LocalSnapshotAccess;
 }
 
@@ -324,7 +328,10 @@ function decodeLocalSideTaskResult(
       || typeof task.context.workspaceSnapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task.context.workspaceSnapshotId)))
     || (task.type === "explain" && task.context.workspaceSnapshotId !== undefined
       && (typeof task.context.workspaceSnapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task.context.workspaceSnapshotId)))
-    || !task.publication || task.publication.status !== "private"
+    || !task.publication || (task.publication.status !== "private" && (task.publication.status !== "published"
+      || typeof task.publication.publicationId !== "string" || !/^[a-f0-9]{64}$/.test(task.publication.publicationId)
+      || !Number.isSafeInteger(task.publication.publishedAt) || task.publication.publishedAt < 0))
+    || (task.publication.status === "published" && (task.type !== "review" || task.state.status !== "completed" || !Array.isArray(snapshot.findings) || snapshot.findings.length < 1))
     || typeof snapshot.output !== "string" || !Number.isSafeInteger(revision) || typeof revision !== "number" || revision < 1) {
     throw new Error("Invalid local SideTask response");
   }
@@ -394,6 +401,42 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
         true,
         { roomId: input.roomId, requestedBy: input.requestedBy },
       )!;
+    },
+    publishLocalReview: async (roomId: string, taskId: string, findingIndexes: number[]) => {
+      const room = base.getRoomSnapshot?.();
+      if (!room || room.roomId !== roomId || room.connection === "offline" || !room.memberId) throw new Error("Connect to this collaboration room before publishing");
+      const sideTask = decodeLocalSideTaskResult(
+        await rpc.call("/dsh-collab", "sidecar/get", { roomId }), true, { roomId, taskId, requestedBy: room.memberId },
+      )!;
+      if (sideTask.task.type !== "review" || sideTask.task.state.status !== "completed" || sideTask.task.publication.status !== "private"
+        || !sideTask.findings || !sideTask.task.context.reviewPointId || !sideTask.task.context.workspaceSnapshotId) {
+        throw new Error("Only a completed private local Review can be published");
+      }
+      if (!Array.isArray(findingIndexes) || findingIndexes.length < 1 || findingIndexes.length > sideTask.findings.length
+        || new Set(findingIndexes).size !== findingIndexes.length
+        || findingIndexes.some((index) => !Number.isSafeInteger(index) || index < 0 || index >= sideTask.findings!.length)) {
+        throw new Error("Select at least one valid local Review finding");
+      }
+      if (!base.publishReviewPublication) throw new Error("Review publication is unavailable");
+      const existing = base.listReviewPublications
+        ? (await base.listReviewPublications(roomId, sideTask.task.context.reviewPointId)).publications
+          .find((publication) => publication.taskId === taskId && publication.publishedBy === room.memberId)
+        : undefined;
+      if (existing && existing.workspaceSnapshotId !== sideTask.task.context.workspaceSnapshotId) {
+        throw new Error("Local Review conflicts with its existing publication");
+      }
+      const publication = existing ?? await base.publishReviewPublication(roomId, sideTask.task.context.reviewPointId, {
+        taskId,
+        workspaceSnapshotId: sideTask.task.context.workspaceSnapshotId,
+        summary: sideTask.output,
+        findings: [...findingIndexes].sort((left, right) => left - right).map((index) => sideTask.findings![index]!),
+      });
+      return decodeLocalSideTaskResult(await rpc.call("/dsh-collab", "sidecar/mark-published", {
+        roomId,
+        taskId,
+        publicationId: publication.publicationId,
+        publishedAt: publication.createdAt,
+      }), true, { roomId, taskId, requestedBy: room.memberId })!;
     },
     getLocalSideTask: async (roomId: string) => decodeLocalSideTaskResult(
       await rpc.call("/dsh-collab", "sidecar/get", { roomId }), false, { roomId },
@@ -507,10 +550,14 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     setReviewers: actions.setReviewers?.bind(actions),
     setReviewLifecycle: actions.setReviewLifecycle?.bind(actions),
     setReviewFindingState: actions.setReviewFindingState?.bind(actions),
+    publishReviewPublication: actions.publishReviewPublication?.bind(actions),
+    listReviewPublications: actions.listReviewPublications?.bind(actions),
+    acceptReviewPublication: actions.acceptReviewPublication?.bind(actions),
     inspectRepository: actions.inspectRepository?.bind(actions),
     inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
     startLocalExplain: actions.startLocalExplain?.bind(actions),
     startLocalReview: actions.startLocalReview?.bind(actions),
+    publishLocalReview: actions.publishLocalReview?.bind(actions),
     getLocalSideTask: actions.getLocalSideTask?.bind(actions),
     cancelLocalSideTask: actions.cancelLocalSideTask?.bind(actions),
   };
@@ -842,6 +889,8 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         timeline: view.timeline ?? [],
         onStartLocalExplain: inspector.startLocalExplain,
         onStartLocalReview: inspector.startLocalReview,
+        onPublishLocalReview: inspector.publishLocalReview,
+        onAcceptReviewPublication: (reviewPointId: string, publicationId: string) => { void inspector.acceptReviewPublication(reviewPointId, publicationId); },
         onCancelLocalSideTask: () => { void inspector.cancelLocalSideTask(); },
         t,
       }),

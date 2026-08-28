@@ -893,6 +893,16 @@
   gap: 10px;
 }
 
+.localFindingSelect {
+  display: flex;
+  justify-content: flex-start;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
 .localFindingList li p {
   margin: 6px 0 0;
 }

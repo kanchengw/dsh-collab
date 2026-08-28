@@ -46,6 +46,8 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
     ],
     onStartLocalExplain: vi.fn(async () => true),
     onStartLocalReview: vi.fn(async () => true),
+    onPublishLocalReview: vi.fn(async () => true),
+    onAcceptReviewPublication: vi.fn(),
     onCancelLocalSideTask: vi.fn(),
   }));
 }
@@ -266,7 +268,41 @@ describe("Collab Changes Inspector", () => {
     expect(html).toContain("Private review result");
     expect(html).toContain("src/parser.ts:7");
     expect(html).toContain("The fallback drops the token.");
-    expect(html).not.toContain("Publish");
+    expect(html).toContain("Publish selected findings");
+    expect(html).toContain('type="checkbox"');
+  });
+
+  it("shows published Sidecar results in the Review Point and reserves Mainline acceptance for the Host", () => {
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), roomId: room.roomId, title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open" as const,
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified" as const, snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const finding = {
+      findingId: "e".repeat(64), roomId: room.roomId, reviewPointId: reviewPoint.reviewPointId, authorId: "member-bob", severity: "high" as const,
+      location: { kind: "line" as const, path: "src/parser.ts", line: 7 }, body: "The fallback drops the token.", state: "open" as const, createdAt: 30,
+    };
+    const publication = {
+      publicationId: "f".repeat(64), roomId: room.roomId, reviewPointId: reviewPoint.reviewPointId, taskId: "task-review",
+      workspaceSnapshotId: reviewPoint.workspaceSnapshotId, publishedBy: "member-bob", summary: "One issue found.",
+      findingIds: [finding.findingId], state: "published" as const, createdAt: 30,
+    };
+    const state: CollabInspectorState = {
+      status: "ready",
+      reviewPoints: [{ reviewPoint, freshness: "current", progress: { roomEventDelta: 0, workspaceChangedFileCount: 0 } }],
+      selectedReviewPointId: reviewPoint.reviewPointId,
+      reviewFindings: { [reviewPoint.reviewPointId]: [finding] },
+      reviewPublications: { [reviewPoint.reviewPointId]: [publication] },
+    };
+
+    const host = render(state, "host", "reviews");
+    expect(host).toContain("Published local review");
+    expect(host).toContain("One issue found.");
+    expect(host).toContain("Accept for Main Agent");
+    expect(host).not.toContain(">Accept<");
+    const participant = render(state, "participant", "reviews");
+    expect(participant).toContain("Published local review");
+    expect(participant).not.toContain("Accept for Main Agent");
   });
 
   it("does not let delayed polling replace or regress the active local SideTask", () => {

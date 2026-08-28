@@ -120,6 +120,38 @@ export interface ReviewFindingPage {
   nextCursor?: string;
 }
 
+export interface ReviewPublication {
+  publicationId: string;
+  roomId: string;
+  reviewPointId: string;
+  taskId: string;
+  workspaceSnapshotId: string;
+  publishedBy: string;
+  summary: string;
+  findingIds: string[];
+  state: "published" | "accepted";
+  createdAt: number;
+  acceptedBy?: string;
+  acceptedAt?: number;
+  integrationRequestId?: string;
+}
+
+export interface ReviewPublicationPage {
+  publications: ReviewPublication[];
+}
+
+export interface ReviewPublicationCreateInput {
+  taskId: string;
+  workspaceSnapshotId: string;
+  summary: string;
+  findings: ReviewFindingCreateInput[];
+}
+
+export interface AcceptedReviewPublication {
+  publication: ReviewPublication;
+  findings: ReviewFinding[];
+}
+
 export type SideTaskType = "explain" | "review";
 export type SideTaskState =
   | { status: "queued" }
@@ -127,7 +159,9 @@ export type SideTaskState =
   | { status: "completed" }
   | { status: "failed"; error: string }
   | { status: "cancelled" };
-export type SideTaskPublication = { status: "private" } | { status: "published" };
+export type SideTaskPublication =
+  | { status: "private" }
+  | { status: "published"; publicationId: string; publishedAt: number };
 
 export interface SideTask {
   taskId: string;

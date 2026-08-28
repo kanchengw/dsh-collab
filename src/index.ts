@@ -247,6 +247,14 @@ function registerGatewayControl(
         if (typeof input.roomId !== "string" || typeof input.taskId !== "string") throw new Error("roomId and taskId are required");
         return { ok: true, value: { sideTask: await sidecar.cancel(input.roomId, input.taskId) } };
       }
+      if (endpoint === "sidecar/mark-published") {
+        if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Local SideTask publication is invalid");
+        const input = payload as { roomId?: unknown; taskId?: unknown; publicationId?: unknown; publishedAt?: unknown };
+        if (typeof input.roomId !== "string" || typeof input.taskId !== "string" || typeof input.publicationId !== "string"
+          || typeof input.publishedAt !== "number") throw new Error("Local SideTask publication is invalid");
+        return { ok: true, value: { sideTask: sidecar.markPublished(input.roomId, input.taskId, input.publicationId, input.publishedAt) } };
+      }
       if (endpoint === "repository/inspect") {
         const { inspector } = activeRepository(payload);
         const inspection = await inspector.inspect(signal);

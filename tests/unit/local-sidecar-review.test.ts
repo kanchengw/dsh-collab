@@ -145,6 +145,26 @@ describe("Requester-local Review Sidecar", () => {
     expect(restored.get("room-1")).not.toBe(persisted.tasks[0]);
   });
 
+  it("records a completed Review publication locally and restores the idempotent linkage", async () => {
+    const runtime = harness();
+    const sidecar = new LocalSidecarService(runtime.port, { workspace: runtime.workspace, taskId: () => "task-published", now: () => 100 });
+    await sidecar.startReview({ roomId: "room-1", requestedBy: "member-bob", localPrompt: "Review", roomEventSeq: 9, contextMessages, reviewPoint });
+    runtime.emit("session-1", { kind: "completed", text: JSON.stringify({
+      summary: "One issue.",
+      findings: [{ severity: "high", location: { kind: "file", path: "src/retry.ts" }, body: "Retry can duplicate the write." }],
+    }) });
+    await vi.waitFor(() => { expect(sidecar.get("room-1")?.task.state.status).toBe("completed"); });
+
+    const publicationId = "c".repeat(64);
+    const published = sidecar.markPublished("room-1", "task-published", publicationId, 120);
+    expect(published.task.publication).toEqual({ status: "published", publicationId, publishedAt: 120 });
+    expect(sidecar.markPublished("room-1", "task-published", publicationId, 999)).toEqual(published);
+    expect(() => sidecar.markPublished("room-1", "task-published", "d".repeat(64), 121)).toThrow("different publication");
+
+    const restored = new LocalSidecarService(runtime.port, { snapshot: sidecar.snapshot() });
+    expect(restored.get("room-1")?.task.publication).toEqual({ status: "published", publicationId, publishedAt: 120 });
+  });
+
   it("never persists transient Participant credentials", async () => {
     const runtime = harness();
     const sidecar = new LocalSidecarService(runtime.port, { workspace: runtime.workspace, taskId: () => "task-private" });

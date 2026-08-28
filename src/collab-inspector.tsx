@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { DiffBlock, MarkdownText, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ReviewFinding, ReviewFindingCreateInput, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewFinding, ReviewFindingCreateInput, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointProjection, ReviewPublication, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { DshCollabSettingsPort } from "./dsh-client.js";
 import type { LocalSideTaskSnapshot } from "./local-sidecar.js";
 import type { CollabTranslate } from "./locales.js";
@@ -20,6 +20,7 @@ export interface CollabInspectorState {
   selectedReviewPointId?: string;
   reviewFindings?: Record<string, ReviewFinding[]>;
   reviewFindingNextCursors?: Record<string, string | undefined>;
+  reviewPublications?: Record<string, ReviewPublication[]>;
   reviewDiffs?: Record<string, Record<string, ReviewPointDiff>>;
   selectedReviewDiffPath?: string;
   sideTask?: LocalSideTaskSnapshot;
@@ -104,6 +105,8 @@ export function useCollabInspector(input: {
   loadReviewPointDiff(reviewPointId: string, fileIndex: number): Promise<void>;
   startLocalExplain(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
   startLocalReview(reviewPoint: ReviewPoint): Promise<boolean>;
+  publishLocalReview(findingIndexes: number[]): Promise<boolean>;
+  acceptReviewPublication(reviewPointId: string, publicationId: string): Promise<void>;
   cancelLocalSideTask(): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
@@ -275,12 +278,16 @@ export function useCollabInspector(input: {
     const roomId = input.roomId;
     setState((current) => ({ ...current, selectedReviewPointId: reviewPointId, status: "loading", error: undefined }));
     try {
-      const page = await input.port.listReviewFindings(roomId, reviewPointId);
+      const [page, publications] = await Promise.all([
+        input.port.listReviewFindings(roomId, reviewPointId),
+        input.port.listReviewPublications?.(roomId, reviewPointId),
+      ]);
       updateCurrentRoom(roomId, (current) => ({
         ...current,
         status: "ready",
         reviewFindings: { ...current.reviewFindings, [reviewPointId]: page.findings },
         reviewFindingNextCursors: { ...current.reviewFindingNextCursors, [reviewPointId]: page.nextCursor },
+        reviewPublications: { ...current.reviewPublications, [reviewPointId]: publications?.publications ?? [] },
         error: undefined,
       }));
     } catch (cause) {
@@ -488,6 +495,43 @@ export function useCollabInspector(input: {
       }
     }
   };
+  const publishLocalReview = async (findingIndexes: number[]): Promise<boolean> => {
+    const task = state.sideTask?.task;
+    if (!input.port?.publishLocalReview || !task || input.roomId === "") return false;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const sideTask = await input.port.publishLocalReview(roomId, task.taskId, findingIndexes);
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", sideTask, error: undefined }));
+      return roomIdRef.current === roomId;
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+      return false;
+    }
+  };
+  const acceptReviewPublication = async (reviewPointId: string, publicationId: string): Promise<void> => {
+    if (!input.port?.acceptReviewPublication || input.roomId === "") return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const accepted = await input.port.acceptReviewPublication(roomId, reviewPointId, publicationId);
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        reviewPublications: {
+          ...current.reviewPublications,
+          [reviewPointId]: (current.reviewPublications?.[reviewPointId] ?? []).map((publication) => publication.publicationId === publicationId ? accepted.publication : publication),
+        },
+        reviewFindings: {
+          ...current.reviewFindings,
+          [reviewPointId]: (current.reviewFindings?.[reviewPointId] ?? []).map((finding) => accepted.findings.find((item) => item.findingId === finding.findingId) ?? finding),
+        },
+        error: undefined,
+      }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
   return {
     open,
     activeTab,
@@ -518,6 +562,8 @@ export function useCollabInspector(input: {
     loadReviewPointDiff,
     startLocalExplain,
     startLocalReview,
+    publishLocalReview,
+    acceptReviewPublication,
     cancelLocalSideTask,
   };
 }
@@ -626,6 +672,7 @@ function ReviewDetail(props: {
   role: "host" | "participant";
   projection: ReviewPointProjection;
   findings: readonly ReviewFinding[];
+  publications: readonly ReviewPublication[];
   selectedDiffPath?: string;
   diffs: Readonly<Record<string, ReviewPointDiff>>;
   findingNextCursor?: string;
@@ -638,6 +685,7 @@ function ReviewDetail(props: {
   onSetReviewers(reviewerIds: string[]): void;
   onSetLifecycle(lifecycle: ReviewLifecycle): void;
   onSetFindingState(findingId: string, state: "accepted" | "dismissed"): void;
+  onAcceptPublication(publicationId: string): void;
   onStartLocalReview(): void;
   t: CollabTranslate;
 }): ReactNode {
@@ -661,6 +709,7 @@ function ReviewDetail(props: {
     if (await props.onCreateFinding({ severity, location, body: normalizedBody })) setBody("");
   };
   const memberNames = new Map(props.members.map((member) => [member.memberId, member.displayName]));
+  const publishedFindingIds = new Set(props.publications.flatMap((publication) => publication.findingIds));
   const selectedDiff = props.selectedDiffPath ? props.diffs[props.selectedDiffPath] : undefined;
   return <section className={css.reviewDetail} aria-labelledby="collab-review-detail-title">
     <div className={css.detailHeading}><div><h4 id="collab-review-detail-title">{reviewPoint.title}</h4><p>{props.t("inspector.reviewDetailHint")}</p></div><span>{props.t(`inspector.lifecycle.${reviewPoint.lifecycle}`)}</span></div>
@@ -673,6 +722,14 @@ function ReviewDetail(props: {
           : selectedDiff?.kind === "unavailable" ? <p className={css.emptyText}>{props.t("inspector.legacyDiffUnavailable")}</p>
             : <p className={css.emptyText}>{props.t("inspector.selectDiff")}</p>}
     </div>
+    {props.publications.length > 0 ? <section aria-labelledby="collab-published-reviews-title">
+      <strong id="collab-published-reviews-title">{props.t("inspector.publishedReviews")}</strong>
+      <ul className={css.findingList}>{props.publications.map((publication) => <li key={publication.publicationId} className={css.findingCard}>
+        <div className={css.findingMeta}><span>{memberNames.get(publication.publishedBy) ?? publication.publishedBy}</span><span>{props.t(`inspector.publicationState.${publication.state}`)}</span></div>
+        <MarkdownText text={publication.summary} />
+        {props.role === "host" && publication.state === "published" ? <button type="button" className={css.primaryAction} disabled={props.busy} onClick={() => { props.onAcceptPublication(publication.publicationId); }}>{props.t("inspector.acceptPublication")}</button> : null}
+      </li>)}</ul>
+    </section> : null}
     {props.role === "host" ? <>
       <fieldset className={css.reviewers}>
         <legend>{props.t("inspector.reviewers")}</legend>
@@ -702,7 +759,7 @@ function ReviewDetail(props: {
     {props.findings.length === 0 ? <p className={css.emptyText}>{props.t("inspector.noFindings")}</p> : <ul className={css.findingList}>{props.findings.map((finding) => <li key={finding.findingId} className={css.findingCard} data-severity={finding.severity}>
       <div className={css.findingMeta}><span>{props.t(`inspector.severity.${finding.severity}`)}</span><span>{findingLocation(finding, props.t)}</span><span>{memberNames.get(finding.authorId) ?? finding.authorId}</span></div>
       <p>{finding.body}</p>
-      <div className={css.findingDecision}><span>{props.t(`inspector.findingState.${finding.state}`)}</span>{props.role === "host" && finding.state === "open" ? <div><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "accepted"); }}>{props.t("inspector.acceptFinding")}</button><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "dismissed"); }}>{props.t("inspector.dismissFinding")}</button></div> : null}</div>
+      <div className={css.findingDecision}><span>{props.t(`inspector.findingState.${finding.state}`)}</span>{props.role === "host" && finding.state === "open" && !publishedFindingIds.has(finding.findingId) ? <div><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "accepted"); }}>{props.t("inspector.acceptFinding")}</button><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "dismissed"); }}>{props.t("inspector.dismissFinding")}</button></div> : null}</div>
     </li>)}</ul>}
     {props.findingNextCursor ? <button type="button" className={css.secondaryAction} disabled={props.busy} onClick={props.onLoadMoreFindings}>{props.t("inspector.loadOlderFindings")}</button> : null}
   </section>;
@@ -713,14 +770,21 @@ function PrivateSideWork(props: {
   timeline: readonly TimelineItem[];
   busy: boolean;
   onStart(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
+  onPublish(findingIndexes: number[]): Promise<boolean>;
   onCancel(): void;
   t: CollabTranslate;
 }): ReactNode {
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [includeWorkspace, setIncludeWorkspace] = useState(false);
+  const [selectedFindings, setSelectedFindings] = useState<number[]>([]);
   const messages = props.timeline.filter((item) => item.contextEventId && item.text?.trim() && !item.streaming && !item.eventId.startsWith("stream:"));
   const running = props.sideTask?.task.state.status === "queued" || props.sideTask?.task.state.status === "running";
+  const publishable = props.sideTask?.task.type === "review" && props.sideTask.task.state.status === "completed"
+    && props.sideTask.task.publication.status === "private" && Boolean(props.sideTask.findings?.length);
+  useEffect(() => {
+    setSelectedFindings(props.sideTask?.findings?.map((_finding, index) => index) ?? []);
+  }, [props.sideTask?.task.taskId, props.sideTask?.findings?.length]);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const localPrompt = prompt.trim();
@@ -753,8 +817,13 @@ function PrivateSideWork(props: {
         <span>{props.t(`inspector.taskState.${props.sideTask.task.state.status}`)}</span>
       </div>
       {props.sideTask.output ? <MarkdownText text={props.sideTask.output} streaming={running} /> : <p className={css.emptyText}>{props.t(running ? "inspector.waitingForExplain" : "inspector.noExplainOutput")}</p>}
-      {props.sideTask.findings?.length ? <ul className={css.localFindingList}>{props.sideTask.findings.map((finding, index) => <li key={`${finding.location.kind}:${finding.location.kind === "general" ? "general" : finding.location.path}:${String(index)}`} data-severity={finding.severity}><div><strong>{props.t(`inspector.severity.${finding.severity}`)}</strong><span>{finding.location.kind === "general" ? props.t("inspector.findingGeneral") : finding.location.kind === "line" ? `${finding.location.path}:${String(finding.location.line)}` : finding.location.path}</span></div><p>{finding.body}</p></li>)}</ul> : null}
+      {props.sideTask.findings?.length ? <ul className={css.localFindingList}>{props.sideTask.findings.map((finding, index) => <li key={`${finding.location.kind}:${finding.location.kind === "general" ? "general" : finding.location.path}:${String(index)}`} data-severity={finding.severity}>
+        {publishable ? <label className={css.localFindingSelect}><input type="checkbox" checked={selectedFindings.includes(index)} onChange={(event) => { setSelectedFindings(event.target.checked ? [...selectedFindings, index] : selectedFindings.filter((value) => value !== index)); }} /><span>{props.t("inspector.selectFinding")}</span></label> : null}
+        <div><strong>{props.t(`inspector.severity.${finding.severity}`)}</strong><span>{finding.location.kind === "general" ? props.t("inspector.findingGeneral") : finding.location.kind === "line" ? `${finding.location.path}:${String(finding.location.line)}` : finding.location.path}</span></div><p>{finding.body}</p>
+      </li>)}</ul> : null}
       {props.sideTask.task.state.status === "failed" ? <p className={css.error}>{props.sideTask.task.state.error}</p> : null}
+      {publishable ? <button type="button" className={css.primaryAction} disabled={props.busy || selectedFindings.length === 0} onClick={() => { void props.onPublish(selectedFindings); }}>{props.t("inspector.publishSelectedFindings")}</button> : null}
+      {props.sideTask.task.publication.status === "published" ? <p className={css.reviewHint}>{props.t("inspector.localReviewPublished")}</p> : null}
       {running ? <button type="button" className={css.secondaryAction} onClick={props.onCancel}>{props.t("inspector.cancelSideTask")}</button> : null}
     </section> : null}
   </section>;
@@ -787,6 +856,8 @@ export function DshCollabInspector(props: {
   timeline: readonly TimelineItem[];
   onStartLocalExplain(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
   onStartLocalReview(reviewPoint: ReviewPoint): Promise<boolean>;
+  onPublishLocalReview(findingIndexes: number[]): Promise<boolean>;
+  onAcceptReviewPublication(reviewPointId: string, publicationId: string): void;
   onCancelLocalSideTask(): void;
   t?: CollabTranslate;
 }): ReactNode {
@@ -851,6 +922,7 @@ export function DshCollabInspector(props: {
             role={props.role}
             projection={projection}
             findings={props.state.reviewFindings?.[reviewPointId] ?? []}
+            publications={props.state.reviewPublications?.[reviewPointId] ?? []}
             selectedDiffPath={props.state.selectedReviewDiffPath}
             diffs={props.state.reviewDiffs?.[reviewPointId] ?? {}}
             findingNextCursor={props.state.reviewFindingNextCursors?.[reviewPointId]}
@@ -863,11 +935,12 @@ export function DshCollabInspector(props: {
             onSetReviewers={(reviewerIds) => { props.onSetReviewers(reviewPointId, reviewerIds); }}
             onSetLifecycle={(lifecycle) => { props.onSetReviewLifecycle(reviewPointId, lifecycle); }}
             onSetFindingState={(findingId, state) => { props.onSetReviewFindingState(reviewPointId, findingId, state); }}
+            onAcceptPublication={(publicationId) => { props.onAcceptReviewPublication(reviewPointId, publicationId); }}
             onStartLocalReview={() => { void props.onStartLocalReview(projection.reviewPoint); }}
             t={t}
           />;
         })() : null}
-      </section> : <PrivateSideWork key={props.roomId} sideTask={props.state.sideTask} timeline={props.timeline} busy={busy} onStart={props.onStartLocalExplain} onCancel={props.onCancelLocalSideTask} t={t} />}
+      </section> : <PrivateSideWork key={props.roomId} sideTask={props.state.sideTask} timeline={props.timeline} busy={busy} onStart={props.onStartLocalExplain} onPublish={props.onPublishLocalReview} onCancel={props.onCancelLocalSideTask} t={t} />}
     </div>
   </aside>;
 }

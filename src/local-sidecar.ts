@@ -220,18 +220,25 @@ function containsSensitiveSource(value: object): boolean {
   return ["remote", "gatewayEndpoint", "roomToken", "credential", "source"].some((field) => field in value);
 }
 
+function validPublication(value: SideTask["publication"]): boolean {
+  return value?.status === "private" || (value?.status === "published"
+    && /^[a-f0-9]{64}$/.test(value.publicationId)
+    && Number.isSafeInteger(value.publishedAt) && value.publishedAt >= 0);
+}
+
 function restoredTask(value: LocalSideTaskSnapshot): LocalSideTaskSnapshot {
   const task = value?.task;
   if (!value || containsSensitiveSource(value) || !task || containsSensitiveSource(task)
     || typeof task.taskId !== "string" || task.taskId.trim() === "" || typeof task.roomId !== "string" || task.roomId.trim() === ""
     || (task.type !== "explain" && task.type !== "review") || task.executor !== "requester-local"
     || typeof task.localPrompt !== "string" || task.localPrompt.trim() === "" || typeof task.requestedBy !== "string" || task.requestedBy.trim() === ""
-    || !Number.isSafeInteger(task.createdAt) || task.createdAt < 0 || !task.state || !terminal(task.state) || !task.publication || task.publication.status !== "private"
+    || !Number.isSafeInteger(task.createdAt) || task.createdAt < 0 || !task.state || !terminal(task.state) || !validPublication(task.publication)
     || !task.context || containsSensitiveSource(task.context)
     || !Number.isSafeInteger(task.context.roomEventSeq) || task.context.roomEventSeq < 0
     || !Array.isArray(task.context.selectedRoomEventIds) || (task.type === "explain" && task.context.selectedRoomEventIds.length < 1)
     || task.context.selectedRoomEventIds.some((eventId) => typeof eventId !== "string" || eventId.trim() === "")
     || typeof value.output !== "string" || !Number.isSafeInteger(value.revision) || value.revision < 1
+    || (task.publication.status === "published" && (task.type !== "review" || task.state.status !== "completed" || !Array.isArray(value.findings) || value.findings.length < 1))
     || (task.type === "review" && (!/^[a-f0-9]{64}$/.test(String(task.context.reviewPointId))
       || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(String(task.context.workspaceSnapshotId))))
     || (task.type === "review" && task.state.status === "completed" && !Array.isArray(value.findings))) {
@@ -346,6 +353,24 @@ export class LocalSidecarService {
     }
     if (!record.cleanup) this.finish(record, { status: "cancelled" }, record.snapshot.output);
     await record.cleanup;
+    return clone(record.snapshot);
+  }
+
+  markPublished(roomId: string, taskId: string, publicationId: string, publishedAt: number): LocalSideTaskSnapshot {
+    const record = this.tasks.get(roomId);
+    if (!record || record.snapshot.task.taskId !== taskId) throw new Error("Local SideTask was not found");
+    const task = record.snapshot.task;
+    if (task.type !== "review" || task.state.status !== "completed" || !record.snapshot.findings?.length) {
+      throw new Error("Only a completed local Review with findings can be published");
+    }
+    if (!/^[a-f0-9]{64}$/.test(publicationId) || !Number.isSafeInteger(publishedAt) || publishedAt < 0) {
+      throw new Error("Local SideTask publication is invalid");
+    }
+    if (task.publication.status === "published") {
+      if (task.publication.publicationId !== publicationId) throw new Error("Local SideTask is linked to a different publication");
+      return clone(record.snapshot);
+    }
+    this.update(record, { ...task, publication: { status: "published", publicationId, publishedAt } }, record.snapshot.output);
     return clone(record.snapshot);
   }
 

@@ -6,7 +6,7 @@ import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, d
 import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 import type { LocalSnapshotAccess } from "./local-sidecar.js";
-import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 
 export interface BrowserRequestInit {
   method?: string;
@@ -341,6 +341,69 @@ function reviewFindingPage(value: unknown, roomId: string, reviewPointId: string
   };
 }
 
+function reviewPublication(value: unknown, roomId: string, reviewPointId: string): ReviewPublication {
+  const publication = record(value);
+  const accepted = publication?.state === "accepted";
+  if (!publication || typeof publication.publicationId !== "string" || !/^[a-f0-9]{64}$/.test(publication.publicationId)
+    || publication.roomId !== roomId || publication.reviewPointId !== reviewPointId
+    || typeof publication.taskId !== "string" || publication.taskId.trim() === "" || publication.taskId.length > 128
+    || typeof publication.workspaceSnapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(publication.workspaceSnapshotId)
+    || typeof publication.publishedBy !== "string" || publication.publishedBy.trim() === ""
+    || typeof publication.summary !== "string" || publication.summary.trim() === "" || publication.summary.length > 8_000
+    || !Array.isArray(publication.findingIds) || publication.findingIds.length < 1 || publication.findingIds.length > 100
+    || publication.findingIds.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id))
+    || new Set(publication.findingIds).size !== publication.findingIds.length
+    || (publication.state !== "published" && publication.state !== "accepted")
+    || !Number.isSafeInteger(publication.createdAt) || (publication.createdAt as number) < 0
+    || (accepted
+      ? typeof publication.acceptedBy !== "string" || publication.acceptedBy.trim() === ""
+        || !Number.isSafeInteger(publication.acceptedAt) || (publication.acceptedAt as number) < 0
+        || typeof publication.integrationRequestId !== "string" || !/^[a-f0-9]{64}$/.test(publication.integrationRequestId)
+      : publication.acceptedBy !== undefined || publication.acceptedAt !== undefined || publication.integrationRequestId !== undefined)) {
+    throw new Error("Gateway Review publication response is invalid");
+  }
+  return {
+    publicationId: publication.publicationId,
+    roomId,
+    reviewPointId,
+    taskId: publication.taskId,
+    workspaceSnapshotId: publication.workspaceSnapshotId,
+    publishedBy: publication.publishedBy,
+    summary: publication.summary,
+    findingIds: [...publication.findingIds] as string[],
+    state: publication.state,
+    createdAt: publication.createdAt as number,
+    ...(accepted ? {
+      acceptedBy: publication.acceptedBy as string,
+      acceptedAt: publication.acceptedAt as number,
+      integrationRequestId: publication.integrationRequestId as string,
+    } : {}),
+  };
+}
+
+function reviewPublicationPage(value: unknown, roomId: string, reviewPointId: string): ReviewPublicationPage {
+  const page = record(value);
+  if (!page || !Array.isArray(page.publications) || page.publications.length > 1_000) {
+    throw new Error("Gateway Review publication page is invalid");
+  }
+  return { publications: page.publications.map((publication) => reviewPublication(publication, roomId, reviewPointId)) };
+}
+
+function acceptedReviewPublication(value: unknown, roomId: string, reviewPointId: string): AcceptedReviewPublication {
+  const result = record(value);
+  if (!result || !Array.isArray(result.findings) || result.findings.length < 1 || result.findings.length > 100) {
+    throw new Error("Gateway accepted Review publication response is invalid");
+  }
+  const publication = reviewPublication(result.publication, roomId, reviewPointId);
+  const findings = result.findings.map((finding) => reviewFinding(finding, roomId, reviewPointId));
+  if (publication.state !== "accepted" || findings.some((finding) => finding.state !== "accepted")
+    || findings.length !== publication.findingIds.length
+    || findings.some((finding, index) => finding.findingId !== publication.findingIds[index])) {
+    throw new Error("Gateway accepted Review publication response is invalid");
+  }
+  return { publication, findings };
+}
+
 function reviewPointDiff(value: unknown): ReviewPointDiff {
   const diff = record(value);
   if (!diff || typeof diff.path !== "string" || !safeSnapshotPath(diff.path)) throw new Error("Gateway Review Point diff response is invalid");
@@ -669,6 +732,22 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return reviewFinding(data?.finding, roomId, reviewPointId);
   }
 
+  async publishReviewPublication(roomId: string, reviewPointId: string, input: ReviewPublicationCreateInput): Promise<ReviewPublication> {
+    this.assertActiveRoom(roomId);
+    const data = record(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/publications`, input, true)));
+    return reviewPublication(data?.publication, roomId, reviewPointId);
+  }
+
+  async listReviewPublications(roomId: string, reviewPointId: string): Promise<ReviewPublicationPage> {
+    this.assertActiveRoom(roomId);
+    return reviewPublicationPage(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/publications`, undefined, true)), roomId, reviewPointId);
+  }
+
+  async acceptReviewPublication(roomId: string, reviewPointId: string, publicationId: string): Promise<AcceptedReviewPublication> {
+    this.assertActiveRoom(roomId);
+    return acceptedReviewPublication(parseEnvelope(await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/publications/${encodeURIComponent(publicationId)}/state`, { state: "accepted" }, true)), roomId, reviewPointId);
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -955,7 +1034,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } {
     return this.client.getSettingsSnapshot();
   }
-  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "roomTitle" | "hostDisplayName" | "role" | "connection"> { return this.client.getSnapshot(); }
+  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection"> { return this.client.getSnapshot(); }
   subscribeRoom(listener: () => void): () => void { return this.client.subscribe(listener); }
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
@@ -982,6 +1061,9 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   setReviewers(roomId: string, reviewPointId: string, reviewerIds: string[]): Promise<ReviewPoint> { return this.client.setReviewers(roomId, reviewPointId, reviewerIds); }
   setReviewLifecycle(roomId: string, reviewPointId: string, lifecycle: ReviewLifecycle): Promise<ReviewPoint> { return this.client.setReviewLifecycle(roomId, reviewPointId, lifecycle); }
   setReviewFindingState(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding> { return this.client.setReviewFindingState(roomId, reviewPointId, findingId, state); }
+  publishReviewPublication(roomId: string, reviewPointId: string, input: ReviewPublicationCreateInput): Promise<ReviewPublication> { return this.client.publishReviewPublication(roomId, reviewPointId, input); }
+  listReviewPublications(roomId: string, reviewPointId: string): Promise<ReviewPublicationPage> { return this.client.listReviewPublications(roomId, reviewPointId); }
+  acceptReviewPublication(roomId: string, reviewPointId: string, publicationId: string): Promise<AcceptedReviewPublication> { return this.client.acceptReviewPublication(roomId, reviewPointId, publicationId); }
 }
 
 export function createDshBrowserCollabClient(options: DshBrowserCollabOptions): DshBrowserCollabClient {

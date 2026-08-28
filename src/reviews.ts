@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import type {
+  AcceptedReviewPublication,
   ReviewFinding,
+  ReviewFindingCreateInput,
   ReviewFindingLocation,
   ReviewFindingPage,
   ReviewLifecycle,
   ReviewPoint,
+  ReviewPublication,
+  ReviewPublicationPage,
 } from "./collaboration-types.js";
 import { CollabError, invalidInput } from "./errors.js";
 import { ReviewPointService } from "./review-points.js";
@@ -13,10 +17,13 @@ import { RoomStore } from "./room.js";
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const MAX_FINDINGS_PER_ROOM = 1_000;
+const MAX_PUBLICATION_FINDINGS = 100;
+const MAX_PUBLICATION_CONTENT_LENGTH = 8_000;
 
 export interface ReviewServiceSnapshot {
   version: 1;
   findings: ReviewFinding[];
+  publications?: ReviewPublication[];
 }
 
 interface ReviewServiceOptions {
@@ -38,6 +45,14 @@ function requestId(value: string): string {
 
 function findingId(roomId: string, principalId: string, clientRequestId: string): string {
   return createHash("sha256").update(`${roomId}\0${principalId}\0review-finding\0${clientRequestId}`).digest("hex");
+}
+
+function publicationId(roomId: string, principalId: string, taskId: string): string {
+  return createHash("sha256").update(`${roomId}\0${principalId}\0review-publication\0${taskId}`).digest("hex");
+}
+
+function integrationRequestId(roomId: string, id: string): string {
+  return createHash("sha256").update(`${roomId}\0${id}\0mainline-integration`).digest("hex");
 }
 
 function severity(value: ReviewFinding["severity"]): ReviewFinding["severity"] {
@@ -77,10 +92,66 @@ function validateRestoredFinding(value: ReviewFinding, options: ReviewServiceOpt
   return structuredClone(value);
 }
 
+function sameLocation(left: ReviewFindingLocation, right: ReviewFindingLocation): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validateRestoredPublication(
+  value: ReviewPublication,
+  options: ReviewServiceOptions,
+  points: ReadonlyMap<string, ReviewPoint>,
+  findings: ReadonlyMap<string, ReviewFinding>,
+): ReviewPublication {
+  const point = points.get(value?.reviewPointId);
+  const accepted = value?.state === "accepted";
+  if (!value || !/^[a-f0-9]{64}$/.test(value.publicationId) || typeof value.roomId !== "string" || !point || point.roomId !== value.roomId
+    || typeof value.taskId !== "string" || value.taskId.trim() === "" || value.taskId.length > 128
+    || value.workspaceSnapshotId !== point.workspaceSnapshotId || typeof value.publishedBy !== "string"
+    || typeof value.summary !== "string" || value.summary.trim() === "" || value.summary.length > MAX_PUBLICATION_CONTENT_LENGTH
+    || !Array.isArray(value.findingIds) || value.findingIds.length < 1 || value.findingIds.length > MAX_PUBLICATION_FINDINGS
+    || new Set(value.findingIds).size !== value.findingIds.length
+    || value.findingIds.some((id) => {
+      const finding = findings.get(id);
+      return !finding || finding.roomId !== value.roomId || finding.reviewPointId !== value.reviewPointId || finding.authorId !== value.publishedBy;
+    })
+    || !["published", "accepted"].includes(value.state) || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+    || (accepted
+      ? typeof value.acceptedBy !== "string" || !Number.isSafeInteger(value.acceptedAt) || !/^[a-f0-9]{64}$/.test(String(value.integrationRequestId))
+      : value.acceptedBy !== undefined || value.acceptedAt !== undefined || value.integrationRequestId !== undefined)) {
+    throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+  }
+  const publisher = options.rooms.listMembers(value.roomId).find((member) => member.memberId === value.publishedBy);
+  if (!publisher) throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+  if (value.publicationId !== publicationId(value.roomId, publisher.principalId, value.taskId)
+    || value.findingIds.some((id, index) => id !== findingId(value.roomId, publisher.principalId, `${value.publicationId}:${String(index)}`))
+    || (accepted && value.integrationRequestId !== integrationRequestId(value.roomId, value.publicationId))) {
+    throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+  }
+  if (value.summary.length + value.findingIds.reduce((total, id) => total + findings.get(id)!.body.length, 0) > MAX_PUBLICATION_CONTENT_LENGTH) {
+    throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+  }
+  if (accepted) {
+    const host = options.rooms.listMembers(value.roomId).find((member) => member.memberId === value.acceptedBy && member.role === "host");
+    if (!host || value.findingIds.some((id) => {
+      const finding = findings.get(id)!;
+      return finding.state !== "accepted" || finding.decidedBy !== value.acceptedBy || finding.decidedAt !== value.acceptedAt;
+    })) {
+      throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+    }
+  } else if (value.findingIds.some((id) => findings.get(id)?.state !== "open")) {
+    throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+  }
+  return structuredClone(value);
+}
+
 export class ReviewService {
   private readonly findings: ReviewFinding[] = [];
   private readonly byId = new Map<string, ReviewFinding>();
   private readonly byPoint = new Map<string, ReviewFinding[]>();
+  private readonly publications: ReviewPublication[] = [];
+  private readonly publicationsById = new Map<string, ReviewPublication>();
+  private readonly publicationsByPoint = new Map<string, ReviewPublication[]>();
+  private readonly publicationByFindingId = new Map<string, ReviewPublication>();
   private readonly listeners = new Set<() => void>();
   private readonly now: () => number;
 
@@ -108,6 +179,14 @@ export class ReviewService {
       if (roomCount > MAX_FINDINGS_PER_ROOM) throw new CollabError("SNAPSHOT_INVALID", "Review finding snapshot exceeds the room limit");
       roomCounts.set(finding.roomId, roomCount);
       service.add(finding);
+    }
+    if (snapshot.publications !== undefined && !Array.isArray(snapshot.publications)) {
+      throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
+    }
+    for (const raw of snapshot.publications ?? []) {
+      const publication = validateRestoredPublication(raw, options, points, service.byId);
+      if (service.publicationsById.has(publication.publicationId)) throw new CollabError("SNAPSHOT_INVALID", "Review snapshot contains duplicate publications");
+      service.addPublication(publication);
     }
     return service;
   }
@@ -146,7 +225,7 @@ export class ReviewService {
         && existing.reviewPointId === finding.reviewPointId
         && existing.authorId === finding.authorId
         && existing.severity === finding.severity
-        && JSON.stringify(existing.location) === JSON.stringify(finding.location)
+        && sameLocation(existing.location, finding.location)
         && existing.body === finding.body;
       if (!sameCreatePayload) throw new CollabError("REQUEST_CONFLICT", "Review finding request conflicts with an existing request");
       return structuredClone(existing);
@@ -160,6 +239,111 @@ export class ReviewService {
     this.add(finding);
     this.emit();
     return structuredClone(finding);
+  }
+
+  publishSideTaskResult(input: {
+    roomId: string;
+    principalId: string;
+    reviewPointId: string;
+    taskId: string;
+    workspaceSnapshotId: string;
+    summary: string;
+    findings: ReviewFindingCreateInput[];
+  }): ReviewPublication {
+    const member = this.options.rooms.authorize(input.roomId, input.principalId, "read");
+    const point = this.options.reviewPoints.get(input);
+    const taskId = text(input.taskId, "taskId", 128);
+    const id = publicationId(input.roomId, input.principalId, taskId);
+    const summary = text(input.summary, "summary", MAX_PUBLICATION_CONTENT_LENGTH);
+    if (input.workspaceSnapshotId !== point.workspaceSnapshotId) throw invalidInput("publication snapshot does not match the Review Point");
+    if (!Array.isArray(input.findings) || input.findings.length < 1 || input.findings.length > MAX_PUBLICATION_FINDINGS) {
+      throw invalidInput("publication findings must contain between 1 and 100 items");
+    }
+    const candidates = input.findings.map((finding, index): ReviewFinding => ({
+      findingId: findingId(input.roomId, input.principalId, `${id}:${String(index)}`),
+      roomId: input.roomId,
+      reviewPointId: point.reviewPointId,
+      authorId: member.memberId,
+      severity: severity(finding.severity),
+      location: location(finding.location, point),
+      body: text(finding.body, "body", 4_000),
+      state: "open",
+      createdAt: this.now(),
+    }));
+    if (summary.length + candidates.reduce((total, finding) => total + finding.body.length, 0) > MAX_PUBLICATION_CONTENT_LENGTH) {
+      throw invalidInput("publication summary and findings are too long");
+    }
+    const next: ReviewPublication = {
+      publicationId: id,
+      roomId: input.roomId,
+      reviewPointId: point.reviewPointId,
+      taskId,
+      workspaceSnapshotId: point.workspaceSnapshotId,
+      publishedBy: member.memberId,
+      summary,
+      findingIds: candidates.map((finding) => finding.findingId),
+      state: "published",
+      createdAt: candidates[0]!.createdAt,
+    };
+    const existing = this.publicationsById.get(id);
+    if (existing) {
+      const existingFindings = existing.findingIds.map((findingId) => this.byId.get(findingId)!);
+      const samePayload = existing.roomId === next.roomId && existing.reviewPointId === next.reviewPointId
+        && existing.taskId === next.taskId && existing.workspaceSnapshotId === next.workspaceSnapshotId
+        && existing.publishedBy === next.publishedBy && existing.summary === next.summary
+        && existingFindings.length === candidates.length
+        && existingFindings.every((finding, index) => finding.severity === candidates[index]!.severity
+          && sameLocation(finding.location, candidates[index]!.location) && finding.body === candidates[index]!.body);
+      if (!samePayload) throw new CollabError("REQUEST_CONFLICT", "SideTask publication conflicts with an existing request");
+      return structuredClone(existing);
+    }
+    this.requireOpenRoom(input.roomId);
+    this.requireOpenReviewPoint(point);
+    if (this.findings.filter((finding) => finding.roomId === input.roomId).length + candidates.length > MAX_FINDINGS_PER_ROOM) {
+      throw new CollabError("RESOURCE_LIMIT", "Review finding limit reached for this room");
+    }
+    for (const finding of candidates) this.add(finding);
+    this.addPublication(next);
+    this.emit();
+    return structuredClone(next);
+  }
+
+  listPublications(input: { roomId: string; principalId: string; reviewPointId: string }): ReviewPublicationPage {
+    this.options.reviewPoints.get(input);
+    return { publications: structuredClone([...(this.publicationsByPoint.get(input.reviewPointId) ?? [])].reverse()) };
+  }
+
+  acceptSideTaskPublication(input: {
+    roomId: string;
+    principalId: string;
+    reviewPointId: string;
+    publicationId: string;
+  }): AcceptedReviewPublication {
+    const host = this.requireHost(input.roomId, input.principalId);
+    const point = this.options.reviewPoints.get(input);
+    const publication = this.publicationsById.get(input.publicationId);
+    if (!publication || publication.roomId !== input.roomId || publication.reviewPointId !== input.reviewPointId) {
+      throw new CollabError("SNAPSHOT_NOT_FOUND", "Review publication does not exist");
+    }
+    const findings = publication.findingIds.map((id) => this.byId.get(id)!);
+    if (publication.state === "accepted") return { publication: structuredClone(publication), findings: structuredClone(findings) };
+    this.requireOpenRoom(input.roomId);
+    this.requireOpenReviewPoint(point);
+    if (findings.some((finding) => finding.state !== "open")) {
+      throw new CollabError("REQUEST_CONFLICT", "Review publication findings already have a decision");
+    }
+    const decidedAt = this.now();
+    for (const finding of findings) {
+      finding.state = "accepted";
+      finding.decidedBy = host.memberId;
+      finding.decidedAt = decidedAt;
+    }
+    publication.state = "accepted";
+    publication.acceptedBy = host.memberId;
+    publication.acceptedAt = decidedAt;
+    publication.integrationRequestId = integrationRequestId(input.roomId, publication.publicationId);
+    this.emit();
+    return { publication: structuredClone(publication), findings: structuredClone(findings) };
   }
 
   listFindings(input: { roomId: string; principalId: string; reviewPointId: string; after?: string; limit?: number }): ReviewFindingPage {
@@ -196,6 +380,9 @@ export class ReviewService {
       throw new CollabError("SNAPSHOT_NOT_FOUND", "Review finding does not exist");
     }
     if (finding.state === input.state) return structuredClone(finding);
+    if (this.publicationByFindingId.has(finding.findingId)) {
+      throw new CollabError("REQUEST_CONFLICT", "Published SideTask findings must be decided as one publication");
+    }
     this.requireOpenRoom(input.roomId);
     this.requireOpenReviewPoint(point);
     if (finding.state !== "open") throw new CollabError("REQUEST_CONFLICT", "Review finding decision is terminal");
@@ -207,7 +394,7 @@ export class ReviewService {
   }
 
   snapshot(): ReviewServiceSnapshot {
-    return { version: 1, findings: structuredClone(this.findings) };
+    return { version: 1, findings: structuredClone(this.findings), publications: structuredClone(this.publications) };
   }
 
   private requireHost(roomId: string, principalId: string) {
@@ -234,6 +421,15 @@ export class ReviewService {
     const findings = this.byPoint.get(finding.reviewPointId) ?? [];
     findings.push(finding);
     this.byPoint.set(finding.reviewPointId, findings);
+  }
+
+  private addPublication(publication: ReviewPublication): void {
+    this.publications.push(publication);
+    this.publicationsById.set(publication.publicationId, publication);
+    const publications = this.publicationsByPoint.get(publication.reviewPointId) ?? [];
+    publications.push(publication);
+    this.publicationsByPoint.set(publication.reviewPointId, publications);
+    for (const findingId of publication.findingIds) this.publicationByFindingId.set(findingId, publication);
   }
 
   private emit(): void {

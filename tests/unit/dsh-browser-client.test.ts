@@ -12,6 +12,83 @@ function errorResponse(code: string, message: string, status: number): { ok: boo
 }
 
 describe("browser Gateway client", () => {
+  it("publishes, lists and accepts SideTask findings through validated contracts", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const reviewPointId = "d".repeat(64);
+    const publication = {
+      publicationId: "f".repeat(64), roomId: "room-1", reviewPointId, taskId: "task-review-1",
+      workspaceSnapshotId: "a".repeat(64), publishedBy: "member-bob", summary: "One issue.",
+      findingIds: ["e".repeat(64)], state: "published", createdAt: 30,
+    };
+    const finding = {
+      findingId: "e".repeat(64), roomId: "room-1", reviewPointId, authorId: "member-bob", severity: "high",
+      location: { kind: "line", path: "src/parser.ts", line: 2 }, body: "Recovery skips the token.", state: "accepted",
+      createdAt: 30, decidedBy: "member-host", decidedAt: 31,
+    };
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/publications") && init?.method === "POST") return response({ publication }, 201);
+      if (url.endsWith("/publications") && init?.method === "GET") return response({ publications: [publication] });
+      if (url.endsWith(`/publications/${publication.publicationId}/state`)) return response({
+        publication: { ...publication, state: "accepted", acceptedBy: "member-host", acceptedAt: 31, integrationRequestId: "9".repeat(64) },
+        findings: [finding],
+      });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+    const input = {
+      taskId: "task-review-1", workspaceSnapshotId: "a".repeat(64), summary: "One issue.",
+      findings: [{ severity: "high" as const, location: { kind: "line" as const, path: "src/parser.ts", line: 2 }, body: "Recovery skips the token." }],
+    };
+
+    await expect(client.publishReviewPublication("room-1", reviewPointId, input)).resolves.toEqual(publication);
+    await expect(client.listReviewPublications("room-1", reviewPointId)).resolves.toEqual({ publications: [publication] });
+    await expect(client.acceptReviewPublication("room-1", reviewPointId, publication.publicationId)).resolves.toMatchObject({
+      publication: { state: "accepted", integrationRequestId: "9".repeat(64) }, findings: [{ state: "accepted" }],
+    });
+    expect(requests.filter(({ url }) => url.includes("/publications"))).toHaveLength(3);
+    client.dispose();
+  });
+
+  it("rejects cross-room or inconsistent Review publications at the browser boundary", async () => {
+    const reviewPointId = "d".repeat(64);
+    let payload: unknown = { publications: [] };
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/publications")) return response(payload);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+    const publication = {
+      publicationId: "f".repeat(64), roomId: "room-other", reviewPointId, taskId: "task-review-1",
+      workspaceSnapshotId: "a".repeat(64), publishedBy: "member-bob", summary: "One issue.",
+      findingIds: ["e".repeat(64)], state: "published", createdAt: 30,
+    };
+
+    payload = { publications: [publication] };
+    await expect(client.listReviewPublications("room-1", reviewPointId)).rejects.toThrow("invalid");
+    payload = { publications: [{ ...publication, roomId: "room-1", state: "accepted", acceptedBy: "member-host", acceptedAt: 31 }] };
+    await expect(client.listReviewPublications("room-1", reviewPointId)).rejects.toThrow("invalid");
+    client.dispose();
+  });
+
   it("creates, lists and decides Human Review findings through validated contracts", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const point = {
