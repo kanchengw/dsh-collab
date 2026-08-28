@@ -310,8 +310,7 @@ export class AgentDispatcher {
       actor: { memberId: member.memberId, principalId: member.principalId },
       payload: { requestId, error },
     });
-    const commit = this.options.commitCriticalState?.();
-    if (commit) void commit.catch(() => undefined);
+    this.schedulePersistenceCommit();
     return this.get(requestId);
   }
 
@@ -457,6 +456,7 @@ export class AgentDispatcher {
       actor: { memberId: actor.memberId, principalId: actor.principalId },
       payload: { requestId: record.requestId, error },
     });
+    this.schedulePersistenceCommit();
   }
 
   private async appendAgentOutput(record: QueueRecord, text: string): Promise<void> {
@@ -470,6 +470,11 @@ export class AgentDispatcher {
       payload: { requestId: record.requestId, state: "output", text },
     });
     await this.options.commitCriticalState?.();
+  }
+
+  private schedulePersistenceCommit(): void {
+    const commit = this.options.commitCriticalState?.();
+    if (commit) void commit.catch(() => undefined);
   }
 
   private appendCancelled(record: QueueRecord, actor: { memberId: string; principalId: string }): void {

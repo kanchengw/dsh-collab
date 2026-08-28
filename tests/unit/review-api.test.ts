@@ -305,6 +305,7 @@ describe("SideTask publication API", () => {
     splitSnapshot.dispatcher.queue.push(orphanRequestId);
     splitSnapshot.dispatcher.nextQueueSeq += 1;
     const recoveredDeliveries: string[] = [];
+    const recoveryCommit = vi.fn(async () => {});
     const recovered = createDshCollabHostRuntime({
       roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Release", hostDisplayName: "Host",
       sessions: { owns: () => true, followup(input) { recoveredDeliveries.push(input.requestId); }, steer() {}, cancel() {} },
@@ -314,9 +315,11 @@ describe("SideTask publication API", () => {
         readChunk: async (_snapshotId: string, _path: string, offset: number, length: number) => content.subarray(offset, offset + length),
       },
       snapshot: splitSnapshot,
+      commitCriticalState: recoveryCommit,
       now: () => 31,
     });
     expect(recovered.gateway.dispatcher.get(orphanRequestId)).toMatchObject({ status: "failed" });
+    await vi.waitFor(() => expect(recoveryCommit).toHaveBeenCalledTimes(1));
     await recovered.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Release" } });
     await recovered.gateway.dispatcher.processQueue();
     expect(recoveredDeliveries).toEqual([]);

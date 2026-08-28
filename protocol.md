@@ -578,3 +578,26 @@ considered complete. If a persistence barrier fails before delivery, no Agent
 side effect is started; if it fails after delivery, the in-memory record remains
 the authoritative `running`/terminal projection and recovery treats an active
 request with unknown outcome as failed rather than redelivering it.
+
+## Persistence mutation matrix
+
+The following matrix is the release boundary for Host-owned state. A durable
+mutation is not reported as successful until the existing whole-runtime
+snapshot barrier has observed it. Ephemeral projections are intentionally
+recreated or cleared at process boundaries and are not part of the Host
+snapshot contract.
+
+| Mutation or state | Durability | Success boundary / restart behavior |
+| --- | --- | --- |
+| Room creation, Host room binding and title changes | Durable | Room metadata is committed before sharing becomes active; it is restored after restart. |
+| Member join, role and status changes | Durable | Member and ledger event are committed before success; token and resume revocation follows the same mutation. |
+| Resume credential binding | Durable digest only | The Host stores only the SHA-256 digest and binding; raw credentials and room tokens are reissued or kept on the Participant side. |
+| Agent request queued, claimed/running, output, completed/failed/cancelled | Durable | Queue and ledger transitions are barrier-confirmed; an unconfirmed active delivery is failed as outcome-unknown on restart and is never redelivered automatically. |
+| Approval request and decision | Durable | Approval projection and ledger event are committed before the HTTP response. |
+| Review Point, freshness comparison, reviewers, lifecycle, findings and publication | Durable | Review aggregates and their immutable references are committed before success. Mainline acceptance commits the accepted publication and integration request together. |
+| One-time invitation lifecycle | Ephemeral | Invite secrets and active/accepted/expired projections are held in memory; a restart invalidates them. A joined member is durable through the member and ledger commit. |
+| Room tokens and resume exchange access tokens | Ephemeral | Tokens are reissued after restart; revocation is enforced in the current process and durable resume records are revoked when applicable. |
+| ActiveRoomRegistry, Workspace Sharing, live presence/connections and transient Agent output | Ephemeral | Sharing and live projections are cleared on stop/restart; clients reacquire authoritative state through HTTP and replay durable events. |
+
+No mutation outside the durable rows above may be promoted to a durable
+contract merely because it is observable in memory.
