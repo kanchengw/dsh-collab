@@ -124,6 +124,41 @@ describe("real DSH client slot adapter", () => {
     await expect(createDshGatewayControlPort(base, rpc).getLocalSideTask?.("room-joined")).rejects.toThrow(/invalid local sidetask/i);
   });
 
+  it("passes Participant snapshot credentials only through the loopback Review request", async () => {
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), title: "Parser review", workspaceSnapshotId: "a".repeat(64),
+      files: [{ path: "src/parser.ts", status: "modified" as const }],
+    };
+    const sideTask = {
+      task: {
+        taskId: "task-review", roomId: "room-joined", type: "review" as const, localPrompt: "Review", executor: "requester-local" as const,
+        context: { roomEventSeq: 4, selectedRoomEventIds: ["event-1"], reviewPointId: reviewPoint.reviewPointId, workspaceSnapshotId: reviewPoint.workspaceSnapshotId },
+        state: { status: "completed" as const }, publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "One issue.",
+      findings: [{ severity: "high" as const, location: { kind: "line" as const, path: "src/parser.ts", line: 2 }, body: "Retry duplicates the write." }],
+      revision: 3,
+    };
+    const rpc = { call: vi.fn(async () => ({ ok: true, value: { sideTask } })) };
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+      getRoomSnapshot: () => ({ roomId: "room-joined", roomTitle: "Review", hostDisplayName: "Alice", role: "participant" as const, connection: "online" as const }),
+      getLocalSnapshotAccess: () => ({ gatewayEndpoint: "ws://192.168.1.10:4312/collab", roomToken: "transient-token" }),
+      save: vi.fn(),
+    };
+    const input = {
+      roomId: "room-joined", requestedBy: "member-bob", localPrompt: "Review", roomEventSeq: 4,
+      contextMessages: [{ eventId: "event-1", author: "Alice", text: "Review the retry" }], reviewPoint,
+    };
+
+    await expect(createDshGatewayControlPort(base, rpc).startLocalReview?.(input)).resolves.toEqual(sideTask);
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "sidecar/start-review", {
+      ...input,
+      remote: { gatewayEndpoint: "ws://192.168.1.10:4312/collab", roomToken: "transient-token" },
+    });
+    expect(sideTask).not.toHaveProperty("remote");
+  });
+
   it("rejects local SideTask projections that do not match the requested room, requester, or task", async () => {
     const sideTask = {
       task: {
@@ -147,6 +182,9 @@ describe("real DSH client slot adapter", () => {
 
     const wrongTask = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { sideTask: { ...sideTask, task: { ...sideTask.task, taskId: "task-other" } } } })) });
     await expect(wrongTask.cancelLocalSideTask?.("room-joined", "task-1")).rejects.toThrow(/invalid local sidetask/i);
+
+    const leakedCredential = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { sideTask: { ...sideTask, roomToken: "must-not-project" } } })) });
+    await expect(leakedCredential.getLocalSideTask?.("room-joined")).rejects.toThrow(/invalid local sidetask/i);
   });
 
   it("preserves class-backed room actions when adding Gateway controls", async () => {

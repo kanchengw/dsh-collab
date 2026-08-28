@@ -6,6 +6,8 @@ export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
 export * from "./local-sidecar.js";
+export * from "./local-sidecar-store.js";
+export * from "./local-sidecar-workspace.js";
 export * from "./collaboration-types.js";
 export * from "./collaboration-client.js";
 export * from "./dsh-cordis-agent.js";
@@ -33,10 +35,12 @@ export * from "./snapshot-workspace.js";
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
-import { HostSnapshotFile, resolveDefaultCollabStateFile } from "./persistence.js";
+import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
-import { LocalSidecarService, type StartExplainTaskInput } from "./local-sidecar.js";
+import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskInput } from "./local-sidecar.js";
+import { LocalSideTaskFile } from "./local-sidecar-store.js";
+import { DshLocalSidecarWorkspace } from "./local-sidecar-workspace.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -125,13 +129,34 @@ function registerGatewayControl(
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
   let starting: Promise<{ status: "running"; port: number }> | undefined;
   const createLocalAgent = context.agents.create;
+  const sideTaskPersistence = config.sideTaskFile === false || (config.sideTaskFile === undefined && config.stateFile === false)
+    ? undefined
+    : new LocalSideTaskFile(config.sideTaskFile ?? resolveDefaultCollabSideTaskFile());
   const sidecar = context.agentPresets && context.on && createLocalAgent
     ? new LocalSidecarService(createDshLocalAgentSessionPort({
         agents: { create: (input) => createLocalAgent.call(context.agents, input) },
         agentPresets: context.agentPresets,
         on: (event, listener) => context.on!(event, listener),
-      }))
+      }), {
+        snapshot: sideTaskPersistence?.loadSync(),
+        workspace: new DshLocalSidecarWorkspace({
+          local: (roomId) => {
+            if (!mounted?.workspaceSnapshots) return undefined;
+            const room = mounted.runtime.rooms.getRoom(roomId);
+            return {
+              provider: mounted.workspaceSnapshots,
+              hostSessionId: room.hostSessionId,
+              roomEventSeq: mounted.runtime.ledger.latestSeq(roomId),
+            };
+          },
+        }),
+      })
     : undefined;
+  const saveSideTasks = (): void => {
+    if (sidecar && sideTaskPersistence) void sideTaskPersistence.save(sidecar.snapshot()).catch((error: unknown) => console.warn("dsh-collab local SideTask save failed", error));
+  };
+  const unsubscribeSideTasks = sidecar && sideTaskPersistence ? sidecar.subscribe(saveSideTasks) : undefined;
+  saveSideTasks();
 
   const stop = async (): Promise<{ status: "stopped" }> => {
     await starting?.catch(() => undefined);
@@ -206,6 +231,10 @@ function registerGatewayControl(
         if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
         return { ok: true, value: { sideTask: await sidecar.startExplain(payload as StartExplainTaskInput) } };
       }
+      if (endpoint === "sidecar/start-review") {
+        if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
+        return { ok: true, value: { sideTask: await sidecar.startReview(payload as StartReviewTaskInput) } };
+      }
       if (endpoint === "sidecar/get") {
         if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
         if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { roomId?: unknown }).roomId !== "string") throw new Error("roomId is required");
@@ -237,6 +266,8 @@ function registerGatewayControl(
   context.effect?.(() => async () => {
     await removeControl();
     await Promise.all([stop(), sidecar?.dispose()]);
+    unsubscribeSideTasks?.();
+    await sideTaskPersistence?.flush();
   }, "dsh-collab: Gateway control");
 }
 

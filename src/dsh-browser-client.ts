@@ -5,6 +5,7 @@ import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js"
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
+import type { LocalSnapshotAccess } from "./local-sidecar.js";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 
 export interface BrowserRequestInit {
@@ -87,6 +88,7 @@ export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   disconnectJoinedRoom(): void;
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
+  getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
 }
 
 type RoomData = {
@@ -414,6 +416,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   settingsPort(): DshBrowserSettingsPort { return new DshBrowserCollabSettings(this); }
+
+  getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess {
+    this.assertActiveRoom(roomId);
+    const endpoint = new URL(this.base);
+    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+    return { gatewayEndpoint: endpoint.toString(), roomToken: this.token! };
+  }
 
   async bootstrap(roomId?: string): Promise<void> {
     this.base = this.hostBase;
@@ -960,6 +969,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   disconnectJoinedRoom(): void { this.client.disconnectJoinedRoom(); }
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.forgetJoinedRoom(ref); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
+  getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess { return this.client.getLocalSnapshotAccess(roomId); }
   getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> { return this.client.getWorkspaceSharing(roomId); }
   setWorkspaceSharing(roomId: string, enabled: boolean): Promise<WorkspaceSharingState> { return this.client.setWorkspaceSharing(roomId, enabled); }
   requestWorkspaceSnapshot(roomId: string): Promise<WorkspaceSnapshotPackage> { return this.client.requestWorkspaceSnapshot(roomId); }

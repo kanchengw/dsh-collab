@@ -544,13 +544,13 @@ describe("browser Gateway client", () => {
     const fetch: BrowserFetch = async (url, init) => {
       requests.push({ url, init });
       if (url.endsWith("/join")) return response({
-        room: { roomId: "room-1", title: "Release", hostDisplayName: "Host" },
+        room: { roomId: "room-2", title: "Release", hostDisplayName: "Host" },
         member: { memberId: "member-bob", role: "participant" },
         roomToken: "bob-room-token",
       }, 201);
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       return response({
-        room: { roomId: "room-1", title: "Release" },
+        room: { roomId: "room-2", title: "Release" },
         members: [{ memberId: "member-host", role: "host", displayName: "Local Host" }],
         lastEventSeq: 0,
       });
@@ -572,6 +572,7 @@ describe("browser Gateway client", () => {
       displayName: "Bob",
     });
     expect(client.getSnapshot()).toMatchObject({ role: "participant", canSteer: false, connection: "online", hostDisplayName: "Local Host" });
+    expect(client.settingsPort().getLocalSnapshotAccess("room-2")).toEqual({ gatewayEndpoint: "wss://collab.example/collab", roomToken: "bob-room-token" });
     expect(requests[0]?.init?.headers).not.toHaveProperty("x-dsh-principal-id");
     expect(requests[0]?.url).toBe("https://collab.example/collab/v1/rooms/room-2/join");
   });

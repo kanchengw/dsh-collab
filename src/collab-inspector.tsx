@@ -102,7 +102,8 @@ export function useCollabInspector(input: {
   setReviewLifecycle(reviewPointId: string, lifecycle: ReviewLifecycle): Promise<void>;
   setReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<void>;
   loadReviewPointDiff(reviewPointId: string, fileIndex: number): Promise<void>;
-  startLocalExplain(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  startLocalExplain(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
+  startLocalReview(reviewPoint: ReviewPoint): Promise<boolean>;
   cancelLocalSideTask(): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
@@ -402,14 +403,18 @@ export function useCollabInspector(input: {
       }
     }
   };
-  const startLocalExplain = async (localPrompt: string, selectedEventIds: string[]): Promise<boolean> => {
+  const contextMessages = (selectedEventIds: ReadonlySet<string>, maxSeq = Number.MAX_SAFE_INTEGER) => {
+    const memberNames = new Map(input.members.map((member) => [member.memberId, member.displayName]));
+    return input.timeline.filter((item) => item.contextEventId && item.seq <= maxSeq && !item.streaming && !item.eventId.startsWith("stream:")).flatMap((item) =>
+      item.contextEventId && selectedEventIds.has(item.contextEventId) && item.text?.trim()
+        ? [{ eventId: item.contextEventId, author: item.kind === "agent" ? "@agent" : memberNames.get(item.authorMemberId) ?? item.authorMemberId, text: item.text }]
+        : []);
+  };
+  const startLocalExplain = async (localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean> => {
     if (!input.port?.startLocalExplain || !input.memberId || input.roomId === "") return false;
     const selected = new Set(selectedEventIds);
-    const memberNames = new Map(input.members.map((member) => [member.memberId, member.displayName]));
     const stableTimeline = input.timeline.filter((item) => item.contextEventId && !item.streaming && !item.eventId.startsWith("stream:"));
-    const contextMessages = stableTimeline.flatMap((item) => item.contextEventId && selected.has(item.contextEventId) && item.text?.trim()
-      ? [{ eventId: item.contextEventId, author: item.kind === "agent" ? "@agent" : memberNames.get(item.authorMemberId) ?? item.authorMemberId, text: item.text }]
-      : []);
+    const messages = contextMessages(selected);
     const roomId = input.roomId;
     const epoch = sideTaskEpochRef.current + 1;
     sideTaskEpochRef.current = epoch;
@@ -421,9 +426,45 @@ export function useCollabInspector(input: {
         requestedBy: input.memberId,
         localPrompt,
         roomEventSeq: stableTimeline.reduce((seq, item) => Math.max(seq, item.seq), 0),
-        contextMessages,
+        contextMessages: messages,
+        ...(includeWorkspace ? { includeWorkspace: true } : {}),
       });
       if (sideTaskEpochRef.current === epoch) updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", sideTask, error: undefined }));
+      return roomIdRef.current === roomId && sideTaskEpochRef.current === epoch;
+    } catch (cause) {
+      if (sideTaskEpochRef.current === epoch) updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+      return false;
+    }
+  };
+  const startLocalReview = async (reviewPoint: ReviewPoint): Promise<boolean> => {
+    if (!input.port?.startLocalReview || !input.memberId || input.roomId === "") return false;
+    const stable = input.timeline.filter((item) => item.contextEventId && item.seq <= reviewPoint.roomEventSeq && !item.streaming && !item.eventId.startsWith("stream:")).slice(-100);
+    const selected = new Set(stable.flatMap((item) => item.contextEventId ? [item.contextEventId] : []));
+    const messages = contextMessages(selected, reviewPoint.roomEventSeq);
+    const roomId = input.roomId;
+    const epoch = sideTaskEpochRef.current + 1;
+    sideTaskEpochRef.current = epoch;
+    sideTaskReadSeqRef.current += 1;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const sideTask = await input.port.startLocalReview({
+        roomId,
+        requestedBy: input.memberId,
+        localPrompt: reviewPoint.focus?.trim() || `Review ${reviewPoint.title}`,
+        roomEventSeq: reviewPoint.roomEventSeq,
+        contextMessages: messages,
+        reviewPoint: {
+          reviewPointId: reviewPoint.reviewPointId,
+          title: reviewPoint.title,
+          ...(reviewPoint.focus ? { focus: reviewPoint.focus } : {}),
+          workspaceSnapshotId: reviewPoint.workspaceSnapshotId,
+          files: reviewPoint.files.map(({ path, status }) => ({ path, status })),
+        },
+      });
+      if (sideTaskEpochRef.current === epoch) {
+        updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", sideTask, error: undefined }));
+        setActiveTab("tasks");
+      }
       return roomIdRef.current === roomId && sideTaskEpochRef.current === epoch;
     } catch (cause) {
       if (sideTaskEpochRef.current === epoch) updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
@@ -476,6 +517,7 @@ export function useCollabInspector(input: {
     setReviewFindingState,
     loadReviewPointDiff,
     startLocalExplain,
+    startLocalReview,
     cancelLocalSideTask,
   };
 }
@@ -589,12 +631,14 @@ function ReviewDetail(props: {
   findingNextCursor?: string;
   members: readonly { memberId: string; displayName: string }[];
   busy: boolean;
+  localTaskRunning: boolean;
   onCreateFinding(input: ReviewFindingCreateInput): Promise<boolean>;
   onLoadDiff(fileIndex: number): void;
   onLoadMoreFindings(): void;
   onSetReviewers(reviewerIds: string[]): void;
   onSetLifecycle(lifecycle: ReviewLifecycle): void;
   onSetFindingState(findingId: string, state: "accepted" | "dismissed"): void;
+  onStartLocalReview(): void;
   t: CollabTranslate;
 }): ReactNode {
   const { reviewPoint } = props.projection;
@@ -620,6 +664,7 @@ function ReviewDetail(props: {
   const selectedDiff = props.selectedDiffPath ? props.diffs[props.selectedDiffPath] : undefined;
   return <section className={css.reviewDetail} aria-labelledby="collab-review-detail-title">
     <div className={css.detailHeading}><div><h4 id="collab-review-detail-title">{reviewPoint.title}</h4><p>{props.t("inspector.reviewDetailHint")}</p></div><span>{props.t(`inspector.lifecycle.${reviewPoint.lifecycle}`)}</span></div>
+    <button type="button" className={css.primaryAction} disabled={props.busy || props.localTaskRunning} onClick={props.onStartLocalReview}>{props.t("inspector.startLocalReview")}</button>
     <div className={css.historicalDiffs}>
       <strong>{props.t("inspector.historicalDiff")}</strong>
       <div className={css.diffFiles}>{reviewPoint.files.map((file, index) => <button key={file.path} type="button" data-selected={props.selectedDiffPath === file.path} disabled={props.busy} onClick={() => { props.onLoadDiff(index); }}>{file.path}</button>)}</div>
@@ -667,19 +712,20 @@ function PrivateSideWork(props: {
   sideTask?: LocalSideTaskSnapshot;
   timeline: readonly TimelineItem[];
   busy: boolean;
-  onStart(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  onStart(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
   onCancel(): void;
   t: CollabTranslate;
 }): ReactNode {
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const [includeWorkspace, setIncludeWorkspace] = useState(false);
   const messages = props.timeline.filter((item) => item.contextEventId && item.text?.trim() && !item.streaming && !item.eventId.startsWith("stream:"));
   const running = props.sideTask?.task.state.status === "queued" || props.sideTask?.task.state.status === "running";
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const localPrompt = prompt.trim();
     if (localPrompt === "" || selected.length === 0) return;
-    if (await props.onStart(localPrompt, selected)) setPrompt("");
+    if (await props.onStart(localPrompt, selected, includeWorkspace)) setPrompt("");
   };
   return <section className={css.sideWork} aria-labelledby="collab-side-work-title">
     <div className={css.sideWorkHeading}>
@@ -696,16 +742,18 @@ function PrivateSideWork(props: {
         <span>{item.text}</span>
       </label>)}
     </fieldset>
+    <label className={css.workspaceOption}><input type="checkbox" checked={includeWorkspace} disabled={props.busy || running} onChange={(event) => { setIncludeWorkspace(event.target.checked); }} /><span><strong>{props.t("inspector.includeWorkspace")}</strong><small>{props.t("inspector.includeWorkspaceHint")}</small></span></label>
     <form className={css.sideTaskForm} onSubmit={(event) => { void submit(event); }}>
       <label>{props.t("inspector.localPrompt")}<textarea rows={4} maxLength={16_000} value={prompt} disabled={props.busy || running} onChange={(event) => { setPrompt(event.target.value); }} placeholder={props.t("inspector.localPromptPlaceholder")} /></label>
       <button type="submit" className={css.primaryAction} disabled={props.busy || running || prompt.trim() === "" || selected.length === 0}>{props.t("inspector.startExplain")}</button>
     </form>
     {props.sideTask ? <section className={css.sideTaskResult} aria-live="polite">
       <div className={css.sideTaskStatus}>
-        <strong>{props.t("inspector.explainResult")}</strong>
+        <strong>{props.t(props.sideTask.task.type === "review" ? "inspector.reviewResult" : "inspector.explainResult")}</strong>
         <span>{props.t(`inspector.taskState.${props.sideTask.task.state.status}`)}</span>
       </div>
       {props.sideTask.output ? <MarkdownText text={props.sideTask.output} streaming={running} /> : <p className={css.emptyText}>{props.t(running ? "inspector.waitingForExplain" : "inspector.noExplainOutput")}</p>}
+      {props.sideTask.findings?.length ? <ul className={css.localFindingList}>{props.sideTask.findings.map((finding, index) => <li key={`${finding.location.kind}:${finding.location.kind === "general" ? "general" : finding.location.path}:${String(index)}`} data-severity={finding.severity}><div><strong>{props.t(`inspector.severity.${finding.severity}`)}</strong><span>{finding.location.kind === "general" ? props.t("inspector.findingGeneral") : finding.location.kind === "line" ? `${finding.location.path}:${String(finding.location.line)}` : finding.location.path}</span></div><p>{finding.body}</p></li>)}</ul> : null}
       {props.sideTask.task.state.status === "failed" ? <p className={css.error}>{props.sideTask.task.state.error}</p> : null}
       {running ? <button type="button" className={css.secondaryAction} onClick={props.onCancel}>{props.t("inspector.cancelSideTask")}</button> : null}
     </section> : null}
@@ -737,7 +785,8 @@ export function DshCollabInspector(props: {
   onSetReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): void;
   onLoadReviewPointDiff(reviewPointId: string, fileIndex: number): void;
   timeline: readonly TimelineItem[];
-  onStartLocalExplain(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  onStartLocalExplain(localPrompt: string, selectedEventIds: string[], includeWorkspace: boolean): Promise<boolean>;
+  onStartLocalReview(reviewPoint: ReviewPoint): Promise<boolean>;
   onCancelLocalSideTask(): void;
   t?: CollabTranslate;
 }): ReactNode {
@@ -807,12 +856,14 @@ export function DshCollabInspector(props: {
             findingNextCursor={props.state.reviewFindingNextCursors?.[reviewPointId]}
             members={props.members}
             busy={busy}
+            localTaskRunning={props.state.sideTask?.task.state.status === "queued" || props.state.sideTask?.task.state.status === "running"}
             onCreateFinding={(input) => props.onCreateReviewFinding(reviewPointId, input)}
             onLoadDiff={(fileIndex) => { props.onLoadReviewPointDiff(reviewPointId, fileIndex); }}
             onLoadMoreFindings={() => { props.onLoadMoreReviewFindings?.(reviewPointId); }}
             onSetReviewers={(reviewerIds) => { props.onSetReviewers(reviewPointId, reviewerIds); }}
             onSetLifecycle={(lifecycle) => { props.onSetReviewLifecycle(reviewPointId, lifecycle); }}
             onSetFindingState={(findingId, state) => { props.onSetReviewFindingState(reviewPointId, findingId, state); }}
+            onStartLocalReview={() => { void props.onStartLocalReview(projection.reviewPoint); }}
             t={t}
           />;
         })() : null}

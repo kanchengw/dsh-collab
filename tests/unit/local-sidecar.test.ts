@@ -207,4 +207,22 @@ describe("Requester-local Sidecar", () => {
     expect(cancelled).toEqual(["session-queued"]);
     expect(disposed).toEqual(["session-queued"]);
   });
+
+  it("waits for terminal cleanup before replacing a room task", async () => {
+    const runtime = harness();
+    let releaseDispose!: () => void;
+    const disposing = new Promise<void>((resolve) => { releaseDispose = resolve; });
+    runtime.port.dispose = async () => { await disposing; };
+    const sidecar = new LocalSidecarService(runtime.port, { taskId: () => `task-${String(runtime.prompts.length + 1)}` });
+    await sidecar.startExplain(request);
+    runtime.emit("session-1", { kind: "completed", text: "done" });
+
+    const replacement = sidecar.startExplain({ ...request, localPrompt: "Explain again" });
+    await Promise.resolve();
+    expect(runtime.prompts).toHaveLength(1);
+    releaseDispose();
+
+    await expect(replacement).resolves.toMatchObject({ task: { state: { status: "running" } } });
+    expect(runtime.prompts).toHaveLength(2);
+  });
 });

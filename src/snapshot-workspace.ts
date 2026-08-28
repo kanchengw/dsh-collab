@@ -3,6 +3,9 @@ import { access, chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile 
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import { isSafeWorkspaceSnapshotPath, validateWorkspaceSnapshotPackage } from "./workspace-snapshot-store.js";
+import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
+
+const LOCAL_READ_CHUNK_BYTES = 256 * 1024;
 
 function hash(content: Uint8Array | string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -10,6 +13,8 @@ function hash(content: Uint8Array | string): string {
 
 export class MaterializedSnapshotWorkspace {
   constructor(readonly root: string, readonly snapshot: WorkspaceSnapshotPackage) {}
+
+  get snapshotId(): string { return this.snapshot.snapshotId; }
 
   async readFile(path: string): Promise<Uint8Array> {
     if (!isSafeWorkspaceSnapshotPath(path)) throw new Error("Workspace Snapshot path is unsafe");
@@ -23,6 +28,32 @@ export class MaterializedSnapshotWorkspace {
     if (content.byteLength !== file.size || hash(content) !== file.contentHash) throw new Error(`Materialized Workspace Snapshot is corrupted: ${path}`);
     return content;
   }
+
+  async dispose(): Promise<void> {
+    await rm(dirname(this.root), { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+export async function materializeSnapshotFromProvider(input: {
+  snapshotId: string;
+  provider: WorkspaceSnapshotProvider;
+  materializer: SnapshotWorkspaceMaterializer;
+}): Promise<MaterializedSnapshotWorkspace> {
+  const snapshot = await input.provider.load(input.snapshotId);
+  if (!snapshot) throw new Error(`Workspace Snapshot ${input.snapshotId} does not exist`);
+  const contents = new Map<string, Uint8Array>();
+  for (const file of snapshot.files) {
+    const content = Buffer.alloc(file.size);
+    let offset = 0;
+    while (offset < file.size) {
+      const bytes = await input.provider.readChunk(snapshot.snapshotId, file.path, offset, Math.min(LOCAL_READ_CHUNK_BYTES, file.size - offset));
+      if (bytes.byteLength < 1 || offset + bytes.byteLength > file.size) throw new Error(`Workspace Snapshot content is truncated: ${file.path}`);
+      content.set(bytes, offset);
+      offset += bytes.byteLength;
+    }
+    contents.set(file.path, content);
+  }
+  return await input.materializer.materialize(snapshot, contents);
 }
 
 export class SnapshotWorkspaceMaterializer {

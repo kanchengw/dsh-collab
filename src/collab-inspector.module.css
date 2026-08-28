@@ -854,6 +854,49 @@
   margin-top: 18px;
 }
 
+.workspaceOption {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+}
+
+.workspaceOption span {
+  display: grid;
+  gap: 3px;
+}
+
+.workspaceOption small {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.localFindingList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.localFindingList li {
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--dsw-alias-state-business-primary);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.localFindingList li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.localFindingList li p {
+  margin: 6px 0 0;
+}
+
 .sideTaskForm label {
   display: flex;
   flex-direction: column;

@@ -16,6 +16,10 @@ export function resolveDefaultCollabWorkspaceDir(env: Record<string, string | un
   return join(resolveDshHome(undefined, env), "collab", "v1", "workspaces");
 }
 
+export function resolveDefaultCollabSideTaskFile(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDshHome(undefined, env), "collab", "v1", "side-tasks.json");
+}
+
 function parseSnapshot(text: string): DshCollabHostRuntimeSnapshot {
   try {
     const value = JSON.parse(text) as DshCollabHostRuntimeSnapshot;

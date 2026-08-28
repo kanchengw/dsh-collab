@@ -11,7 +11,7 @@ import { CollabGateway } from "../../src/gateway.js";
 import { InviteStore } from "../../src/invites.js";
 import { RoomStore } from "../../src/room.js";
 import { ReviewPointService } from "../../src/review-points.js";
-import { SnapshotWorkspaceMaterializer } from "../../src/snapshot-workspace.js";
+import { materializeSnapshotFromProvider, SnapshotWorkspaceMaterializer } from "../../src/snapshot-workspace.js";
 import type { GatewayResponse } from "../../src/types.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "../../src/workspace-service.js";
 import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
@@ -251,6 +251,28 @@ describe("Workspace Snapshot transport", () => {
     expect((await stat(join(first.root, "src", "value.ts"))).mode & 0o222).toBe(0);
     online = false;
     await expect(first.readFile("src/value.ts")).resolves.toEqual(content);
+  });
+
+  it("materializes and disposes a trusted local snapshot without a remote sharing request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-local-workspace-"));
+    temporaryDirectories.push(root);
+    const content = Buffer.from("export const local = true;\n");
+    const packageValue = snapshot(content);
+    const provider: WorkspaceSnapshotProvider = {
+      capture: vi.fn(),
+      load: async (snapshotId) => snapshotId === packageValue.snapshotId ? packageValue : undefined,
+      readChunk: async (_snapshotId, _path, offset, length) => content.subarray(offset, offset + length),
+    };
+
+    const workspace = await materializeSnapshotFromProvider({
+      snapshotId: packageValue.snapshotId,
+      provider,
+      materializer: new SnapshotWorkspaceMaterializer({ root }),
+    });
+
+    await expect(workspace.readFile("src/value.ts")).resolves.toEqual(content);
+    await workspace.dispose();
+    await expect(stat(workspace.root)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects tampered chunks, unsafe manifests and download limits before publication", async () => {

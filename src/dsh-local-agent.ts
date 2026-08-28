@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export type LocalAgentFrame =
   | { kind: "output"; text: string }
@@ -7,7 +8,7 @@ export type LocalAgentFrame =
   | { kind: "failed"; error: string };
 
 export interface LocalAgentSessionPort {
-  start(input: { cwd?: string; prompt: string }): Promise<{ sessionId: string }>;
+  start(input: { cwd?: string; prompt: string; readOnlyRoot?: string }): Promise<{ sessionId: string }>;
   subscribe(sessionId: string, listener: (frame: LocalAgentFrame) => void): () => void;
   cancel(sessionId: string): Promise<void>;
   dispose(sessionId: string): Promise<void>;
@@ -54,6 +55,13 @@ export interface DshLocalAgentContext {
   ): () => void;
 }
 
+interface DshLocalAgentToolContext {
+  tools?: {
+    restrict(filter: { allow?: string[]; deny?: string[] }): () => void;
+    guard(check: (exec: { name: string; arguments: unknown }) => string | undefined): () => void;
+  };
+}
+
 interface LocalSession {
   acceptingOutput: boolean;
   handle: DshLocalAgentHandle;
@@ -69,6 +77,16 @@ interface LocalSession {
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readOnlyWorkspaceGuard(root: string, exec: { name: string; arguments: unknown }): string | undefined {
+  if (exec.name !== "read") return "Local review workspaces are read-only";
+  const filePath = record(exec.arguments)?.file_path;
+  if (typeof filePath !== "string" || filePath.trim() === "") return "Local review reads require a workspace path";
+  const contained = relative(resolve(root), resolve(root, filePath));
+  return contained === ".." || contained.startsWith(`..${sep}`) || isAbsolute(contained)
+    ? "Local review cannot read outside its snapshot workspace"
     : undefined;
 }
 
@@ -106,7 +124,14 @@ export function createDshLocalAgentSessionPort(
       const handle = await context.agents.create({
         sessionId,
         ...(input.cwd === undefined ? {} : { meta: { cwd: input.cwd } }),
-        setup: async (agentContext) => { await context.agentPresets.mount(agentContext); },
+        setup: async (agentContext) => {
+          await context.agentPresets.mount(agentContext);
+          if (input.readOnlyRoot === undefined) return;
+          const tools = (agentContext as DshLocalAgentToolContext).tools;
+          if (!tools) throw new Error("Local review read-only tool policy is unavailable");
+          tools.restrict({ allow: ["read"] });
+          tools.guard((exec) => readOnlyWorkspaceGuard(input.readOnlyRoot!, exec));
+        },
       });
       const message = userMessage(input.prompt);
       const session: LocalSession = {

@@ -22,10 +22,12 @@ export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" |
   enabled?: boolean;
   hostSessionId?: string;
   stateFile?: string | false;
+  sideTaskFile?: string | false;
 };
 
 export interface MountedDshCollabHost {
   runtime: DshCollabHostRuntime;
+  workspaceSnapshots?: WorkspaceSnapshotProvider;
   ready: Promise<number>;
   dispose(): Promise<void>;
 }
@@ -90,6 +92,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   return {
     runtime,
+    ...(workspaceSnapshots ? { workspaceSnapshots } : {}),
     ready,
     async dispose(): Promise<void> {
       await ready.catch(() => undefined);

@@ -45,6 +45,7 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
       { eventId: "event-2", contextEventId: "event-2", seq: 2, kind: "agent", authorMemberId: "agent", text: "The key is room-scoped." },
     ],
     onStartLocalExplain: vi.fn(async () => true),
+    onStartLocalReview: vi.fn(async () => true),
     onCancelLocalSideTask: vi.fn(),
   }));
 }
@@ -205,6 +206,7 @@ describe("Collab Changes Inspector", () => {
     expect(participant).toContain("Add finding");
     expect(participant).toContain("Recovery skips the token.");
     expect(participant).toContain("Historical code diff");
+    expect(participant).toContain("Review this point with local Agent");
     expect(participant).toContain("old token");
     expect(participant).toContain("new token");
     expect(participant).not.toContain(">Accept<");
@@ -239,11 +241,32 @@ describe("Collab Changes Inspector", () => {
     expect(participant).toContain("The key is room-scoped.");
     expect(participant).toContain('type="checkbox"');
     expect(participant).toContain("Ask your local Agent");
+    expect(participant).toContain("Read a code snapshot");
     expect(participant).toContain("The retry is safe because");
     expect(participant).toContain("Running");
     expect(participant).toContain("Cancel");
     expect(participant).not.toContain("Publish");
     expect(render({ status: "ready" }, "host", "tasks")).toContain("Private Side Work");
+  });
+
+  it("shows requester-local Review findings as private task output", () => {
+    const sideTask = {
+      task: {
+        taskId: "task-review", roomId: room.roomId, type: "review" as const, localPrompt: "Review parser", executor: "requester-local" as const,
+        context: { roomEventSeq: 2, selectedRoomEventIds: ["event-1"], reviewPointId: "d".repeat(64), workspaceSnapshotId: "a".repeat(64) }, state: { status: "completed" as const },
+        publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 20,
+      },
+      output: "One issue found.",
+      findings: [{ severity: "high" as const, location: { kind: "line" as const, path: "src/parser.ts", line: 7 }, body: "The fallback drops the token." }],
+      revision: 4,
+    };
+
+    const html = render({ status: "ready", sideTask }, "participant", "tasks");
+
+    expect(html).toContain("Private review result");
+    expect(html).toContain("src/parser.ts:7");
+    expect(html).toContain("The fallback drops the token.");
+    expect(html).not.toContain("Publish");
   });
 
   it("does not let delayed polling replace or regress the active local SideTask", () => {

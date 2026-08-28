@@ -11,7 +11,7 @@ import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, Review
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
-import type { LocalSideTaskSnapshot, StartExplainTaskInput } from "./local-sidecar.js";
+import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -100,6 +100,8 @@ export interface DshCollabSettingsPort {
   startLocalExplain?(input: StartExplainTaskInput): Promise<LocalSideTaskSnapshot>;
   getLocalSideTask?(roomId: string): Promise<LocalSideTaskSnapshot | undefined>;
   cancelLocalSideTask?(roomId: string, taskId: string): Promise<LocalSideTaskSnapshot>;
+  startLocalReview?(input: StartReviewTaskInput): Promise<LocalSideTaskSnapshot>;
+  getLocalSnapshotAccess?(roomId: string): LocalSnapshotAccess;
 }
 
 interface DshClientConnectionRpc {
@@ -283,6 +285,12 @@ function decodeRepositoryDiffResult(result: unknown): RepositoryDiff {
   return { path: value.path, layer: value.layer, patch: value.patch };
 }
 
+function safeSnapshotPath(path: string): boolean {
+  const segments = path.split("/");
+  return path !== "" && !path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path) && !path.includes("\\")
+    && segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
 function decodeLocalSideTaskResult(
   result: unknown,
   required: boolean,
@@ -297,21 +305,41 @@ function decodeLocalSideTaskResult(
   const snapshot = value as Partial<LocalSideTaskSnapshot>;
   const task = snapshot.task;
   const revision = snapshot.revision;
-  if (!task || typeof task !== "object" || typeof task.taskId !== "string" || task.taskId.trim() === ""
+  if (["remote", "gatewayEndpoint", "roomToken", "credential", "source"].some((field) => field in (value as object))
+    || !task || typeof task !== "object" || ["remote", "gatewayEndpoint", "roomToken", "credential", "source"].some((field) => field in task)
+    || typeof task.taskId !== "string" || task.taskId.trim() === ""
     || typeof task.roomId !== "string" || task.roomId !== expected.roomId || task.roomId.trim() === ""
     || (expected.taskId !== undefined && task.taskId !== expected.taskId)
-    || task.type !== "explain" || task.executor !== "requester-local"
+    || (task.type !== "explain" && task.type !== "review") || task.executor !== "requester-local"
     || typeof task.localPrompt !== "string" || task.localPrompt.trim() === "" || typeof task.requestedBy !== "string" || task.requestedBy.trim() === ""
     || (expected.requestedBy !== undefined && task.requestedBy !== expected.requestedBy)
     || !Number.isSafeInteger(task.createdAt) || task.createdAt < 0
-    || !task.context || !Number.isSafeInteger(task.context.roomEventSeq) || task.context.roomEventSeq < 0
-    || !Array.isArray(task.context.selectedRoomEventIds) || task.context.selectedRoomEventIds.length < 1
+    || !task.context || ["remote", "gatewayEndpoint", "roomToken", "credential", "source"].some((field) => field in task.context)
+    || !Number.isSafeInteger(task.context.roomEventSeq) || task.context.roomEventSeq < 0
+    || !Array.isArray(task.context.selectedRoomEventIds) || (task.type === "explain" && task.context.selectedRoomEventIds.length < 1)
     || task.context.selectedRoomEventIds.some((eventId) => typeof eventId !== "string" || eventId.trim() === "")
     || !task.state || !["queued", "running", "completed", "failed", "cancelled"].includes(task.state.status)
     || (task.state.status === "failed" && (typeof task.state.error !== "string" || task.state.error.trim() === ""))
+    || (task.type === "review" && (typeof task.context.reviewPointId !== "string" || !/^[a-f0-9]{64}$/.test(task.context.reviewPointId)
+      || typeof task.context.workspaceSnapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task.context.workspaceSnapshotId)))
+    || (task.type === "explain" && task.context.workspaceSnapshotId !== undefined
+      && (typeof task.context.workspaceSnapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task.context.workspaceSnapshotId)))
     || !task.publication || task.publication.status !== "private"
     || typeof snapshot.output !== "string" || !Number.isSafeInteger(revision) || typeof revision !== "number" || revision < 1) {
     throw new Error("Invalid local SideTask response");
+  }
+  if (task.type === "review" && task.state.status === "completed" && !Array.isArray(snapshot.findings)) throw new Error("Invalid local SideTask response");
+  if (snapshot.findings !== undefined) {
+    if (task.type !== "review" || !Array.isArray(snapshot.findings) || snapshot.findings.length > 100) throw new Error("Invalid local SideTask response");
+    for (const finding of snapshot.findings) {
+      if (!finding || !["critical", "high", "medium", "low", "note"].includes(finding.severity)
+        || typeof finding.body !== "string" || finding.body.trim() === "" || finding.body.length > 4_000
+        || !finding.location || !["general", "file", "line"].includes(finding.location.kind)
+        || (finding.location.kind !== "general" && (typeof finding.location.path !== "string" || !safeSnapshotPath(finding.location.path)))
+        || (finding.location.kind === "line" && (!Number.isSafeInteger(finding.location.line) || finding.location.line < 1))) {
+        throw new Error("Invalid local SideTask response");
+      }
+    }
   }
   return value as LocalSideTaskSnapshot;
 }
@@ -334,6 +362,12 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     for (const listener of roomListeners) listener();
     return ownedRooms;
   };
+  const transientSnapshotAccess = (roomId: string): LocalSnapshotAccess | undefined => {
+    const room = base.getRoomSnapshot?.();
+    if (room?.role !== "participant" || room.roomId !== roomId || room.connection === "offline") return undefined;
+    if (!base.getLocalSnapshotAccess) throw new Error("Participant snapshot access is unavailable");
+    return base.getLocalSnapshotAccess(roomId);
+  };
   return Object.assign(base, {
     getGatewaySnapshot: () => gateway,
     subscribeGateway: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -345,9 +379,22 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     refreshOwnedRooms,
     inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
     inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),
-    startLocalExplain: async (input: StartExplainTaskInput) => decodeLocalSideTaskResult(
-      await rpc.call("/dsh-collab", "sidecar/start", input), true, { roomId: input.roomId, requestedBy: input.requestedBy },
-    )!,
+    startLocalExplain: async (input: StartExplainTaskInput) => {
+      const remote = input.includeWorkspace ? transientSnapshotAccess(input.roomId) : undefined;
+      return decodeLocalSideTaskResult(
+        await rpc.call("/dsh-collab", "sidecar/start", { ...input, ...(remote ? { remote } : {}) }),
+        true,
+        { roomId: input.roomId, requestedBy: input.requestedBy },
+      )!;
+    },
+    startLocalReview: async (input: StartReviewTaskInput) => {
+      const remote = transientSnapshotAccess(input.roomId);
+      return decodeLocalSideTaskResult(
+        await rpc.call("/dsh-collab", "sidecar/start-review", { ...input, ...(remote ? { remote } : {}) }),
+        true,
+        { roomId: input.roomId, requestedBy: input.requestedBy },
+      )!;
+    },
     getLocalSideTask: async (roomId: string) => decodeLocalSideTaskResult(
       await rpc.call("/dsh-collab", "sidecar/get", { roomId }), false, { roomId },
     ),
@@ -463,6 +510,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     inspectRepository: actions.inspectRepository?.bind(actions),
     inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
     startLocalExplain: actions.startLocalExplain?.bind(actions),
+    startLocalReview: actions.startLocalReview?.bind(actions),
     getLocalSideTask: actions.getLocalSideTask?.bind(actions),
     cancelLocalSideTask: actions.cancelLocalSideTask?.bind(actions),
   };
@@ -793,6 +841,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         onLoadReviewPointDiff: (reviewPointId: string, fileIndex: number) => { void inspector.loadReviewPointDiff(reviewPointId, fileIndex); },
         timeline: view.timeline ?? [],
         onStartLocalExplain: inspector.startLocalExplain,
+        onStartLocalReview: inspector.startLocalReview,
         onCancelLocalSideTask: () => { void inspector.cancelLocalSideTask(); },
         t,
       }),

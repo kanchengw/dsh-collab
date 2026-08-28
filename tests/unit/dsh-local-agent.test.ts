@@ -16,6 +16,8 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
   const messages: Array<{ id: string }> = [];
   const prompts: string[] = [];
   const cancellations: Array<{ cause: { kind: "user" }; keepInbox: boolean | undefined }> = [];
+  const restrictions: Array<{ allow?: string[]; deny?: string[] }> = [];
+  const guards: Array<(exec: { name: string; arguments: unknown }) => string | undefined> = [];
 
   const emit = (sessionId: string, event: DshLocalAgentSessionEvent): void => {
     for (const listener of listeners) listener({ id: sessionId }, event);
@@ -24,7 +26,12 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
     agents: {
       async create(input) {
         createCalls.push(input as unknown as Record<string, unknown>);
-        const agentContext = {};
+        const agentContext = {
+          tools: {
+            restrict: (filter: { allow?: string[]; deny?: string[] }) => { restrictions.push(filter); return () => {}; },
+            guard: (guard: (exec: { name: string; arguments: unknown }) => string | undefined) => { guards.push(guard); return () => {}; },
+          },
+        };
         await input.setup?.(agentContext);
         const agent: DshLocalAgent = {
           followup(message) {
@@ -56,7 +63,7 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
     },
   };
 
-  return { agents, cancellations, context, createCalls, emit, handles, messages, mountedContexts, prompts };
+  return { agents, cancellations, context, createCalls, emit, guards, handles, messages, mountedContexts, prompts, restrictions };
 }
 
 describe("DSH local Agent session adapter", () => {
@@ -85,6 +92,19 @@ describe("DSH local Agent session adapter", () => {
       { kind: "output", text: "Hello world" },
       { kind: "completed", text: "Hello world" },
     ]);
+  });
+
+  it("limits a review Agent to reads contained by its materialized snapshot workspace", async () => {
+    const runtime = harness();
+    const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-review" });
+
+    await port.start({ cwd: "C:\\snapshot\\workspace", readOnlyRoot: "C:\\snapshot\\workspace", prompt: "Review" });
+
+    expect(runtime.restrictions).toEqual([{ allow: ["read"] }]);
+    expect(runtime.guards).toHaveLength(1);
+    expect(runtime.guards[0]?.({ name: "read", arguments: { file_path: "src/app.ts" } })).toBeUndefined();
+    expect(runtime.guards[0]?.({ name: "read", arguments: { file_path: "..\\secret.txt" } })).toMatch(/outside/i);
+    expect(runtime.guards[0]?.({ name: "write", arguments: { file_path: "src/app.ts" } })).toMatch(/read-only/i);
   });
 
   it("stops accepting output after cancellation and disposes the exact owned handle", async () => {
