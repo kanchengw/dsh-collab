@@ -33,6 +33,13 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
     onReloadReviewPoints: vi.fn(),
     onLoadMoreReviewPoints: vi.fn(),
     onRefreshReviewPoints: vi.fn(),
+    members: [{ memberId: "member-host", displayName: "Host" }, { memberId: "member-bob", displayName: "Bob" }],
+    onSelectReviewPoint: vi.fn(),
+    onCreateReviewFinding: vi.fn(async () => true),
+    onSetReviewers: vi.fn(),
+    onSetReviewLifecycle: vi.fn(),
+    onSetReviewFindingState: vi.fn(),
+    onLoadReviewPointDiff: vi.fn(),
   }));
 }
 
@@ -167,6 +174,45 @@ describe("Collab Changes Inspector", () => {
   it("keeps older Review Points reachable when the list has another page", () => {
     const html = render({ status: "ready", reviewPoints: [], reviewNextCursor: "d".repeat(64) }, "participant", "reviews");
     expect(html).toContain("Load older reviews");
+  });
+
+  it("lets both roles publish findings while reserving assignments and decisions for the Host", () => {
+    const reviewPoint = {
+      reviewPointId: "d".repeat(64), roomId: room.roomId, title: "Parser review", createdBy: "member-host", reviewerIds: ["member-bob"], lifecycle: "open" as const,
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified" as const, snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const finding = {
+      findingId: "e".repeat(64), roomId: room.roomId, reviewPointId: reviewPoint.reviewPointId, authorId: "member-bob", severity: "high" as const,
+      location: { kind: "line" as const, path: "src/parser.ts", line: 2 }, body: "Recovery skips the token.", state: "open" as const, createdAt: 30,
+    };
+    const state: CollabInspectorState = {
+      status: "ready",
+      reviewPoints: [{ reviewPoint, freshness: "current", progress: { roomEventDelta: 0, workspaceChangedFileCount: 0 } }],
+      selectedReviewPointId: reviewPoint.reviewPointId,
+      reviewFindings: { [reviewPoint.reviewPointId]: [finding] },
+      selectedReviewDiffPath: "src/parser.ts",
+      reviewDiffs: { [reviewPoint.reviewPointId]: { "src/parser.ts": { path: "src/parser.ts", kind: "text", oldText: "old token\n", newText: "new token\n" } } },
+    };
+
+    const participant = render(state, "participant", "reviews");
+    expect(participant).toContain("Add finding");
+    expect(participant).toContain("Recovery skips the token.");
+    expect(participant).toContain("Historical code diff");
+    expect(participant).toContain("old token");
+    expect(participant).toContain("new token");
+    expect(participant).not.toContain(">Accept<");
+    const host = render(state, "host", "reviews");
+    expect(host).toContain("Reviewers");
+    expect(host).toContain("Bob");
+    expect(host).toContain(">Accept<");
+    expect(host).toContain(">Dismiss<");
+
+    const legacy = render({
+      ...state,
+      reviewDiffs: { [reviewPoint.reviewPointId]: { "src/parser.ts": { path: "src/parser.ts", kind: "unavailable" } } },
+    }, "participant", "reviews");
+    expect(legacy).toContain("predates historical diff capture");
   });
 
   it("uses a room drawer at narrow widths instead of a floating window", () => {

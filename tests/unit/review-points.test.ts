@@ -47,6 +47,7 @@ describe("ReviewPointService", () => {
       focus: "Error recovery",
       snapshot: original,
       files: [{ path: "src/a.ts", status: "modified", additions: 3, deletions: 1 }],
+      diffs: [{ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" }],
     });
     ledger.append({ eventId: "event-1", roomId: "room-1", type: "human.message", actor: { memberId: "member-bob", principalId: "bob" }, payload: { text: "continue" } });
     service.observeSnapshot({ roomId: "room-1", principalId: "host", snapshot: contextAdvanced });
@@ -72,9 +73,12 @@ describe("ReviewPointService", () => {
       title: "Parser review",
       snapshot: original,
       files: [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }],
+      diffs: [{ path: "src/a.ts", kind: "text" as const, oldText: "a0", newText: "a1" }],
     };
     const created = first.service.create(input);
     expect(first.service.create(input)).toEqual(created);
+    first.service.setWorkflow({ roomId: "room-1", principalId: "host", reviewPointId: created.reviewPointId, reviewerIds: ["member-bob"], lifecycle: "changes-requested" });
+    expect(first.service.create(input)).toMatchObject({ reviewerIds: ["member-bob"], lifecycle: "changes-requested" });
 
     const restored = ReviewPointService.fromSnapshot({
       rooms: first.rooms,
@@ -86,7 +90,9 @@ describe("ReviewPointService", () => {
     await expect(restored.list({ roomId: "room-1", principalId: "host" })).resolves.toMatchObject({
       reviewPoints: [{ reviewPoint: { reviewPointId: created.reviewPointId, files: [{ path: "src/a.ts", snapshotContentHash: hash("a1") }] }, freshness: "current" }],
     });
-    expect(restored.create(input)).toEqual(created);
+    expect(restored.create(input)).toMatchObject({ reviewPointId: created.reviewPointId, reviewerIds: ["member-bob"], lifecycle: "changes-requested" });
+    expect(restored.getDiff({ roomId: "room-1", principalId: "host", reviewPointId: created.reviewPointId, fileIndex: 0 }))
+      .toEqual({ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" });
   });
 
   it("keeps a historical Review Point when the room is rebound to a new Host Session", async () => {
@@ -96,6 +102,7 @@ describe("ReviewPointService", () => {
     const created = first.service.create({
       roomId: "room-1", principalId: "host", clientRequestId: "create-1", title: "Parser review", snapshot: original,
       files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+      diffs: [{ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" }],
     });
     const reboundRooms = new RoomStore();
     reboundRooms.createRoom({ roomId: "room-1", hostId: "host", hostSessionId: "session-2", title: "Release", hostDisplayName: "Host", now: 1 });
@@ -115,15 +122,74 @@ describe("ReviewPointService", () => {
     });
   });
 
+  it("projects an explicit unavailable diff for Review Points restored from U08", () => {
+    const { rooms, ledger, service, snapshots } = fixture();
+    const original = snapshot("snapshot-1", 0, [{ path: "src/a.ts", content: "a1" }]);
+    snapshots.set(original.snapshotId, original);
+    const point = service.create({
+      roomId: "room-1", principalId: "host", clientRequestId: "create-1", title: "Parser review", snapshot: original,
+      files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+      diffs: [{ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" }],
+    });
+    const current = service.snapshot();
+    const restored = ReviewPointService.fromSnapshot({ rooms, ledger, snapshots: { load: async (snapshotId) => snapshots.get(snapshotId) } }, {
+      ...current,
+      version: 1,
+      reviewDiffs: undefined,
+    });
+
+    expect(restored.getDiff({ roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, fileIndex: 0 }))
+      .toEqual({ path: "src/a.ts", kind: "unavailable" });
+  });
+
   it("allows active members to read but only the Host to create or refresh", async () => {
     const { snapshots, service } = fixture();
     const original = snapshot("snapshot-1", 0, [{ path: "src/a.ts", content: "a1" }]);
     snapshots.set(original.snapshotId, original);
-    const create = { roomId: "room-1", principalId: "bob", clientRequestId: "create-1", title: "Review", snapshot: original, files: [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }] };
+    const create = { roomId: "room-1", principalId: "bob", clientRequestId: "create-1", title: "Review", snapshot: original, files: [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }], diffs: [{ path: "src/a.ts", kind: "text" as const, oldText: "a0", newText: "a1" }] };
 
     expect(() => service.create(create)).toThrow("Host");
     expect(() => service.observeSnapshot({ roomId: "room-1", principalId: "bob", snapshot: original })).toThrow("Host");
     await expect(service.list({ roomId: "room-1", principalId: "bob" })).resolves.toEqual({ reviewPoints: [] });
+  });
+
+  it("does not publish a Review Point when its immutable diff artifact is invalid", async () => {
+    const { snapshots, service } = fixture();
+    const original = snapshot("snapshot-1", 0, [{ path: "src/a.ts", content: "a1" }]);
+    snapshots.set(original.snapshotId, original);
+
+    expect(() => service.create({
+      roomId: "room-1", principalId: "host", clientRequestId: "create-1", title: "Review", snapshot: original,
+      files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+      diffs: [{ path: "src/other.ts", kind: "text", oldText: "a0", newText: "a1" }],
+    })).toThrow("diff artifact");
+    await expect(service.list({ roomId: "room-1", principalId: "host" })).resolves.toEqual({ reviewPoints: [] });
+  });
+
+  it("requires complete diff artifacts for newly created points and guards its workflow mutator", () => {
+    const { rooms, snapshots, service } = fixture();
+    const original = snapshot("snapshot-1", 0, [{ path: "src/a.ts", content: "a1" }]);
+    snapshots.set(original.snapshotId, original);
+    const base = {
+      roomId: "room-1", principalId: "host", title: "Review", snapshot: original,
+      files: [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }],
+    };
+
+    expect(() => service.create({ ...base, clientRequestId: "missing-diff", diffs: undefined as never })).toThrow("diff artifact");
+    expect(() => service.create({
+      ...base,
+      clientRequestId: "unavailable-diff",
+      diffs: [{ path: "src/a.ts", kind: "unavailable" }],
+    })).toThrow("diff artifact");
+    const point = service.create({
+      ...base,
+      clientRequestId: "valid-diff",
+      diffs: [{ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" }],
+    });
+    rooms.setRoomState("room-1", "closed");
+    expect(() => service.setWorkflow({
+      roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, lifecycle: "approved",
+    })).toThrow("not open");
   });
 
   it("rejects malformed reviewer and file collections during restore", () => {
@@ -133,6 +199,7 @@ describe("ReviewPointService", () => {
     const point = service.create({
       roomId: "room-1", principalId: "host", clientRequestId: "create-1", title: "Parser review", snapshot: original,
       files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+      diffs: [{ path: "src/a.ts", kind: "text", oldText: "a0", newText: "a1" }],
     });
     const options = { rooms, ledger, snapshots: { load: async (snapshotId: string) => snapshots.get(snapshotId) } };
     const base = service.snapshot();
@@ -143,7 +210,21 @@ describe("ReviewPointService", () => {
     })).toThrow("invalid");
     expect(() => ReviewPointService.fromSnapshot(options, {
       ...base,
+      reviewPoints: [{ ...point, reviewerIds: ["member-missing"] }],
+    })).toThrow("invalid");
+    expect(() => ReviewPointService.fromSnapshot(options, {
+      ...base,
       reviewPoints: [{ ...point, files: [] }],
     })).toThrow("invalid");
+    expect(() => ReviewPointService.fromSnapshot(options, {
+      ...base,
+      reviewDiffs: [{ reviewPointId: point.reviewPointId, diffs: [{ path: "../secret", kind: "text", oldText: "a", newText: "b" }] }],
+    })).toThrow("invalid");
+    expect(() => ReviewPointService.fromSnapshot(options, {
+      ...base,
+      version: 1,
+      reviewDiffs: [{ reviewPointId: point.reviewPointId, diffs: [{ path: "src/a.ts", kind: "unavailable" }] }],
+    })).toThrow("invalid");
+    expect(() => ReviewPointService.fromSnapshot(options, { ...base, reviewDiffs: [] })).toThrow("invalid");
   });
 });

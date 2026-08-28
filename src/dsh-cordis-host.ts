@@ -3,6 +3,7 @@ import type { DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
 import { HostSnapshotFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess } from "./repository-inspector.js";
+import { captureReviewDiffs } from "./review-diffs.js";
 import { createDshWorkspaceFilePort, WorkspaceSnapshotCapture, type DshWorkspaceFileSystem } from "./workspace-snapshot.js";
 import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
@@ -47,6 +48,15 @@ export function createDshWorkspaceSnapshotProvider(input: {
     },
     load: (snapshotId) => input.store.load(snapshotId),
     readChunk: (snapshotId, path, offset, length) => input.store.readChunk(snapshotId, path, offset, length),
+    async captureReviewDiffs(request) {
+      const cwd = input.sessions.workspacePath?.(request.snapshot.hostSessionId);
+      if (!cwd) throw new Error("Host session does not expose a workspace path");
+      return await captureReviewDiffs({
+        ...request,
+        commands: createDshRepositoryCommandPort({ subprocess: input.subprocess, cwd }),
+        readSnapshotFile: (path) => input.store.readFile(request.snapshot.snapshotId, path),
+      });
+    },
   };
 }
 
@@ -74,6 +84,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   const unsubscribeLedger = persistence ? runtime.ledger.subscribe(save) : undefined;
   const unsubscribeRooms = persistence ? runtime.rooms.subscribe(save) : undefined;
   const unsubscribeReviewPoints = persistence ? runtime.reviewPoints.subscribe(save) : undefined;
+  const unsubscribeReviews = persistence ? runtime.reviews.subscribe(save) : undefined;
   const ready = runtime.http.listen();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
   void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
@@ -85,6 +96,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
       unsubscribeLedger?.();
       unsubscribeRooms?.();
       unsubscribeReviewPoints?.();
+      unsubscribeReviews?.();
       try {
         await persistence?.save(runtime.snapshot());
       } finally {

@@ -5,7 +5,7 @@ import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js"
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
-import type { ReviewPoint, ReviewPointCreateInput, ReviewPointFile, ReviewPointPage, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 
 export interface BrowserRequestInit {
   method?: string;
@@ -205,6 +205,7 @@ function safeSnapshotPath(path: string): boolean {
 function reviewPointFile(value: unknown, paths: Set<string>): ReviewPointFile {
   const file = record(value);
   if (!file || typeof file.path !== "string" || !safeSnapshotPath(file.path) || paths.has(file.path)
+    || (file.previousPath !== undefined && (typeof file.previousPath !== "string" || !safeSnapshotPath(file.previousPath)))
     || !["added", "modified", "deleted", "renamed"].includes(String(file.status))
     || !Number.isSafeInteger(file.additions) || (file.additions as number) < 0
     || !Number.isSafeInteger(file.deletions) || (file.deletions as number) < 0
@@ -216,6 +217,7 @@ function reviewPointFile(value: unknown, paths: Set<string>): ReviewPointFile {
   paths.add(file.path);
   return {
     path: file.path,
+    ...(typeof file.previousPath === "string" ? { previousPath: file.previousPath } : {}),
     status: file.status as ReviewPointFile["status"],
     ...(typeof file.baseBlobOid === "string" ? { baseBlobOid: file.baseBlobOid } : {}),
     ...(typeof file.snapshotContentHash === "string" ? { snapshotContentHash: file.snapshotContentHash } : {}),
@@ -287,6 +289,66 @@ function reviewPointPage(value: unknown, roomId: string): ReviewPointPage {
     reviewPoints: page.reviewPoints.map((projection) => reviewPointProjection(projection, roomId)),
     ...(typeof page.nextCursor === "string" ? { nextCursor: page.nextCursor } : {}),
   };
+}
+
+function reviewFindingLocation(value: unknown): ReviewFindingLocation {
+  const location = record(value);
+  if (!location || !["general", "file", "line"].includes(String(location.kind))) throw new Error("Gateway Review finding location is invalid");
+  if (location.kind === "general") return { kind: "general" };
+  if (typeof location.path !== "string" || !safeSnapshotPath(location.path)) throw new Error("Gateway Review finding path is invalid");
+  if (location.kind === "file") return { kind: "file", path: location.path };
+  if (!Number.isSafeInteger(location.line) || (location.line as number) < 1) throw new Error("Gateway Review finding line is invalid");
+  return { kind: "line", path: location.path, line: location.line as number };
+}
+
+function reviewFinding(value: unknown, roomId: string, reviewPointId: string): ReviewFinding {
+  const finding = record(value);
+  if (!finding || !/^[a-f0-9]{64}$/.test(String(finding.findingId)) || finding.roomId !== roomId || finding.reviewPointId !== reviewPointId
+    || typeof finding.authorId !== "string" || finding.authorId.trim() === ""
+    || !["critical", "high", "medium", "low", "note"].includes(String(finding.severity))
+    || typeof finding.body !== "string" || finding.body.trim() === "" || finding.body.length > 4_000
+    || !["open", "accepted", "dismissed", "resolved"].includes(String(finding.state))
+    || !Number.isSafeInteger(finding.createdAt) || (finding.createdAt as number) < 0
+    || (finding.state === "open" ? finding.decidedBy !== undefined || finding.decidedAt !== undefined
+      : typeof finding.decidedBy !== "string" || !Number.isSafeInteger(finding.decidedAt) || (finding.decidedAt as number) < 0)) {
+    throw new Error("Gateway Review finding response is invalid");
+  }
+  return {
+    findingId: finding.findingId as string,
+    roomId,
+    reviewPointId,
+    authorId: finding.authorId,
+    severity: finding.severity as ReviewFinding["severity"],
+    location: reviewFindingLocation(finding.location),
+    body: finding.body,
+    state: finding.state as ReviewFinding["state"],
+    createdAt: finding.createdAt as number,
+    ...(typeof finding.decidedBy === "string" ? { decidedBy: finding.decidedBy, decidedAt: finding.decidedAt as number } : {}),
+  };
+}
+
+function reviewFindingPage(value: unknown, roomId: string, reviewPointId: string): ReviewFindingPage {
+  const page = record(value);
+  if (!page || !Array.isArray(page.findings) || page.findings.length > 100
+    || (page.nextCursor !== undefined && (typeof page.nextCursor !== "string" || !/^[a-f0-9]{64}$/.test(page.nextCursor)))) {
+    throw new Error("Gateway Review finding page is invalid");
+  }
+  return {
+    findings: page.findings.map((finding) => reviewFinding(finding, roomId, reviewPointId)),
+    ...(typeof page.nextCursor === "string" ? { nextCursor: page.nextCursor } : {}),
+  };
+}
+
+function reviewPointDiff(value: unknown): ReviewPointDiff {
+  const diff = record(value);
+  if (!diff || typeof diff.path !== "string" || !safeSnapshotPath(diff.path)) throw new Error("Gateway Review Point diff response is invalid");
+  if (diff.kind === "binary" || diff.kind === "unavailable") return { path: diff.path, kind: diff.kind };
+  if (diff.kind !== "text" || (diff.oldText !== null && typeof diff.oldText !== "string") || (diff.newText !== null && typeof diff.newText !== "string")
+    || (typeof diff.oldText === "string" && diff.oldText.length > 2 * 1024 * 1024)
+    || (typeof diff.newText === "string" && diff.newText.length > 2 * 1024 * 1024)) {
+    throw new Error("Gateway Review Point diff response is invalid");
+  }
+  return { path: diff.path, kind: "text", oldText: diff.oldText, newText: diff.newText };
 }
 
 export class DshBrowserCollabClient implements DshCollabClientPort {
@@ -551,6 +613,53 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return data.snapshotId;
   }
 
+  async loadReviewPointDiff(roomId: string, reviewPointId: string, fileIndex: number): Promise<ReviewPointDiff> {
+    this.assertActiveRoom(roomId);
+    if (!Number.isSafeInteger(fileIndex) || fileIndex < 0) throw new Error("Review Point diff file index is invalid");
+    const data = record(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/diffs/${String(fileIndex)}`, undefined, true)));
+    return reviewPointDiff(data?.diff);
+  }
+
+  async createReviewFinding(roomId: string, reviewPointId: string, input: ReviewFindingCreateInput): Promise<ReviewFinding> {
+    this.assertActiveRoom(roomId);
+    const commandKey = JSON.stringify({ resource: "review-finding", roomId, reviewPointId, input });
+    const clientRequestId = this.pendingCommandIds.get(commandKey) ?? randomId("finding");
+    this.pendingCommandIds.set(commandKey, clientRequestId);
+    const data = record(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/findings`, {
+      clientRequestId,
+      ...input,
+    }, true)));
+    const finding = reviewFinding(data?.finding, roomId, reviewPointId);
+    this.pendingCommandIds.delete(commandKey);
+    return finding;
+  }
+
+  async listReviewFindings(roomId: string, reviewPointId: string, after?: string, limit = 50): Promise<ReviewFindingPage> {
+    this.assertActiveRoom(roomId);
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (after !== undefined) query.set("after", after);
+    const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/findings?${query.toString()}`, undefined, true));
+    return reviewFindingPage(data, roomId, reviewPointId);
+  }
+
+  async setReviewers(roomId: string, reviewPointId: string, reviewerIds: string[]): Promise<ReviewPoint> {
+    this.assertActiveRoom(roomId);
+    const data = record(parseEnvelope(await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/reviewers`, { reviewerIds }, true)));
+    return reviewPoint(data?.reviewPoint, roomId);
+  }
+
+  async setReviewLifecycle(roomId: string, reviewPointId: string, lifecycle: ReviewLifecycle): Promise<ReviewPoint> {
+    this.assertActiveRoom(roomId);
+    const data = record(parseEnvelope(await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/lifecycle`, { lifecycle }, true)));
+    return reviewPoint(data?.reviewPoint, roomId);
+  }
+
+  async setReviewFindingState(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding> {
+    this.assertActiveRoom(roomId);
+    const data = record(parseEnvelope(await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/${encodeURIComponent(reviewPointId)}/findings/${encodeURIComponent(findingId)}/state`, { state }, true)));
+    return reviewFinding(data?.finding, roomId, reviewPointId);
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -576,7 +685,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       roomTitle: snapshot.room.title,
       hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? this.snapshot.hostDisplayName,
       onlineCount: 0,
-      members: snapshot.members.flatMap((member) => typeof member.displayName === "string" && member.displayName.trim() !== ""
+      members: snapshot.members.flatMap((member) => (member.status === undefined || member.status === "active") && typeof member.displayName === "string" && member.displayName.trim() !== ""
         ? [{ memberId: member.memberId, displayName: member.displayName }]
         : []),
       timeline: this.projectTimeline(),
@@ -740,6 +849,10 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
           members = [...(members ?? []).filter((member) => member.memberId !== payload.memberId), { memberId: payload.memberId, displayName: payload.displayName }];
         }
       }
+      if ((event.type === "member.suspended" || event.type === "member.removed") && event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)) {
+        const memberId = (event.payload as Record<string, unknown>).memberId;
+        if (typeof memberId === "string") members = (members ?? []).filter((member) => member.memberId !== memberId);
+      }
       this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline() };
       this.emit();
     }
@@ -851,6 +964,12 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   createReviewPoint(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint> { return this.client.createReviewPoint(roomId, input); }
   listReviewPoints(roomId: string, after?: string, limit?: number): Promise<ReviewPointPage> { return this.client.listReviewPoints(roomId, after, limit); }
   refreshReviewPoints(roomId: string): Promise<string> { return this.client.refreshReviewPoints(roomId); }
+  loadReviewPointDiff(roomId: string, reviewPointId: string, fileIndex: number): Promise<ReviewPointDiff> { return this.client.loadReviewPointDiff(roomId, reviewPointId, fileIndex); }
+  createReviewFinding(roomId: string, reviewPointId: string, input: ReviewFindingCreateInput): Promise<ReviewFinding> { return this.client.createReviewFinding(roomId, reviewPointId, input); }
+  listReviewFindings(roomId: string, reviewPointId: string, after?: string, limit?: number): Promise<ReviewFindingPage> { return this.client.listReviewFindings(roomId, reviewPointId, after, limit); }
+  setReviewers(roomId: string, reviewPointId: string, reviewerIds: string[]): Promise<ReviewPoint> { return this.client.setReviewers(roomId, reviewPointId, reviewerIds); }
+  setReviewLifecycle(roomId: string, reviewPointId: string, lifecycle: ReviewLifecycle): Promise<ReviewPoint> { return this.client.setReviewLifecycle(roomId, reviewPointId, lifecycle); }
+  setReviewFindingState(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding> { return this.client.setReviewFindingState(roomId, reviewPointId, findingId, state); }
 }
 
 export function createDshBrowserCollabClient(options: DshBrowserCollabOptions): DshBrowserCollabClient {

@@ -13,6 +13,8 @@ import { ActiveRoomRegistry } from "./active-rooms.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
+import type { ReviewService } from "./reviews.js";
+import type { ReviewFinding, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
 import type {
   GatewayRequest,
   GatewayResponse,
@@ -49,6 +51,7 @@ interface GatewayOptions {
   activeRooms?: ActiveRoomRegistry;
   workspace?: WorkspaceService;
   reviewPoints?: ReviewPointService;
+  reviews?: ReviewService;
 }
 
 const MAX_ROOM_TITLE_LENGTH = 80;
@@ -93,6 +96,34 @@ function snapshotIdField(value: unknown): string {
   return snapshotId;
 }
 
+function hashIdField(value: unknown, field: string): string {
+  const id = requiredText(value, field);
+  if (!/^[a-f0-9]{64}$/.test(id)) throw invalidInput(`${field} is invalid`, { field });
+  return id;
+}
+
+function reviewFindingLocation(value: unknown): ReviewFindingLocation {
+  const location = objectBody(value);
+  if (location.kind === "general") return { kind: "general" };
+  if (location.kind === "file") return { kind: "file", path: requiredText(location.path, "path") };
+  if (location.kind === "line") return { kind: "line", path: requiredText(location.path, "path"), line: numberField(location, "line") };
+  throw invalidInput("finding location is invalid", { field: "location" });
+}
+
+function reviewFindingSeverity(value: unknown): ReviewFinding["severity"] {
+  if (value !== "critical" && value !== "high" && value !== "medium" && value !== "low" && value !== "note") {
+    throw invalidInput("finding severity is invalid", { field: "severity" });
+  }
+  return value;
+}
+
+function reviewLifecycle(value: unknown): ReviewLifecycle {
+  if (value !== "open" && value !== "changes-requested" && value !== "approved" && value !== "closed") {
+    throw invalidInput("Review lifecycle is invalid", { field: "lifecycle" });
+  }
+  return value;
+}
+
 function reviewPointFiles(value: unknown): ReviewPointCreateFile[] {
   if (!Array.isArray(value)) throw invalidInput("files must be an array", { field: "files" });
   return value.map((entry) => {
@@ -103,6 +134,7 @@ function reviewPointFiles(value: unknown): ReviewPointCreateFile[] {
     }
     return {
       path: requiredText(file.path, "path"),
+      ...(file.previousPath === undefined ? {} : { previousPath: requiredText(file.previousPath, "previousPath") }),
       status,
       additions: numberField(file, "additions"),
       deletions: numberField(file, "deletions"),
@@ -369,6 +401,65 @@ export class CollabGateway {
   private async reviewPoints(roomId: string, tail: string[], query: URLSearchParams, request: GatewayRequest): Promise<GatewayResponse> {
     const claims = this.claims(roomId, request);
     const reviewPoints = this.options.reviewPoints!;
+    const reviewPointId = tail[0] === undefined || tail[0] === "refresh" ? undefined : hashIdField(tail[0], "reviewPointId");
+    const reviews = this.options.reviews;
+    if (request.method === "GET" && reviewPointId && tail.length === 3 && tail[1] === "diffs") {
+      this.options.workspace!.requireWorkspaceRead({ roomId, principalId: claims.principalId });
+      const fileIndex = this.parseQueryInteger(tail[2]!, "fileIndex");
+      return { status: 200, body: { diff: reviewPoints.getDiff({ roomId, principalId: claims.principalId, reviewPointId, fileIndex }) } };
+    }
+    if (reviewPointId && tail[1] === "findings" && tail.length === 2 && reviews) {
+      if (request.method === "GET") {
+        const after = query.get("after") ?? undefined;
+        const limit = query.get("limit") === null ? undefined : this.parseQueryInteger(query.get("limit"), "limit");
+        return { status: 200, body: reviews.listFindings({ roomId, principalId: claims.principalId, reviewPointId, ...(after ? { after } : {}), ...(limit === undefined ? {} : { limit }) }) };
+      }
+      if (request.method === "POST") {
+        const body = objectBody(request.body);
+        const finding = reviews.createFinding({
+          roomId,
+          principalId: claims.principalId,
+          reviewPointId,
+          clientRequestId: requestIdField(body, "clientRequestId"),
+          severity: reviewFindingSeverity(body.severity),
+          location: reviewFindingLocation(body.location),
+          body: requiredText(body.body, "body"),
+        });
+        return { status: 201, body: { finding } };
+      }
+    }
+    if (request.method === "PUT" && reviewPointId && tail.length === 2 && tail[1] === "reviewers" && reviews) {
+      const body = objectBody(request.body);
+      if (!Array.isArray(body.reviewerIds) || body.reviewerIds.length > 100) throw invalidInput("reviewerIds must be an array", { field: "reviewerIds" });
+      const reviewPoint = reviews.setReviewers({
+        roomId,
+        principalId: claims.principalId,
+        reviewPointId,
+        reviewerIds: body.reviewerIds.map((value) => requiredText(value, "reviewerId")),
+      });
+      return { status: 200, body: { reviewPoint } };
+    }
+    if (request.method === "PUT" && reviewPointId && tail.length === 2 && tail[1] === "lifecycle" && reviews) {
+      const reviewPoint = reviews.setLifecycle({
+        roomId,
+        principalId: claims.principalId,
+        reviewPointId,
+        lifecycle: reviewLifecycle(objectBody(request.body).lifecycle),
+      });
+      return { status: 200, body: { reviewPoint } };
+    }
+    if (request.method === "PUT" && reviewPointId && tail.length === 4 && tail[1] === "findings" && tail[3] === "state" && reviews) {
+      const state = objectBody(request.body).state;
+      if (state !== "accepted" && state !== "dismissed") throw invalidInput("Review finding state is invalid", { field: "state" });
+      const finding = reviews.setFindingState({
+        roomId,
+        principalId: claims.principalId,
+        reviewPointId,
+        findingId: hashIdField(tail[2], "findingId"),
+        state,
+      });
+      return { status: 200, body: { finding } };
+    }
     if (request.method === "GET" && tail.length === 0) {
       const after = query.get("after") ?? undefined;
       const limit = query.get("limit") === null ? undefined : this.parseQueryInteger(query.get("limit"), "limit");
@@ -403,6 +494,12 @@ export class CollabGateway {
       const reviewPoint = reviewPoints.create({
         ...createInput!,
         snapshot,
+        diffs: await this.options.workspace!.captureReviewDiffs({
+          roomId,
+          principalId: claims.principalId,
+          snapshot,
+          files: createInput!.files,
+        }),
       });
       return { status: 201, body: { reviewPoint } };
     }

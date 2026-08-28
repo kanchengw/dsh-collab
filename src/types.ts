@@ -105,7 +105,7 @@ export interface RoomTokenStoreOptions {
 }
 
 export interface GatewayRequest {
-  method: "GET" | "POST" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   path: string;
   headers?: Record<string, string | undefined>;
   auth?: { principalId?: string };

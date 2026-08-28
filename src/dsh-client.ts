@@ -7,7 +7,7 @@ import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDs
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
-import type { ReviewPoint, ReviewPointCreateInput, ReviewPointPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
@@ -87,6 +87,12 @@ export interface DshCollabSettingsPort {
   createReviewPoint?(roomId: string, input: ReviewPointCreateInput): Promise<ReviewPoint>;
   listReviewPoints?(roomId: string, after?: string, limit?: number): Promise<ReviewPointPage>;
   refreshReviewPoints?(roomId: string): Promise<string>;
+  loadReviewPointDiff?(roomId: string, reviewPointId: string, fileIndex: number): Promise<ReviewPointDiff>;
+  createReviewFinding?(roomId: string, reviewPointId: string, input: ReviewFindingCreateInput): Promise<ReviewFinding>;
+  listReviewFindings?(roomId: string, reviewPointId: string, after?: string, limit?: number): Promise<ReviewFindingPage>;
+  setReviewers?(roomId: string, reviewPointId: string, reviewerIds: string[]): Promise<ReviewPoint>;
+  setReviewLifecycle?(roomId: string, reviewPointId: string, lifecycle: ReviewLifecycle): Promise<ReviewPoint>;
+  setReviewFindingState?(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding>;
   inspectRepository?(roomId: string): Promise<RepositoryInspection>;
   inspectRepositoryDiff?(roomId: string, path: string, layer: "staged" | "unstaged"): Promise<RepositoryDiff>;
 }
@@ -401,6 +407,12 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     createReviewPoint: actions.createReviewPoint?.bind(actions),
     listReviewPoints: actions.listReviewPoints?.bind(actions),
     refreshReviewPoints: actions.refreshReviewPoints?.bind(actions),
+    loadReviewPointDiff: actions.loadReviewPointDiff?.bind(actions),
+    createReviewFinding: actions.createReviewFinding?.bind(actions),
+    listReviewFindings: actions.listReviewFindings?.bind(actions),
+    setReviewers: actions.setReviewers?.bind(actions),
+    setReviewLifecycle: actions.setReviewLifecycle?.bind(actions),
+    setReviewFindingState: actions.setReviewFindingState?.bind(actions),
     inspectRepository: actions.inspectRepository?.bind(actions),
     inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
   };
@@ -713,6 +725,14 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         onReloadReviewPoints: () => { void inspector.reloadReviewPoints(); },
         onLoadMoreReviewPoints: () => { void inspector.loadMoreReviewPoints(); },
         onRefreshReviewPoints: () => { void inspector.refreshReviewPoints(); },
+        members: view.members ?? [],
+        onSelectReviewPoint: (reviewPointId: string) => { void inspector.selectReviewPoint(reviewPointId); },
+        onCreateReviewFinding: inspector.createReviewFinding,
+        onLoadMoreReviewFindings: (reviewPointId: string) => { void inspector.loadMoreReviewFindings(reviewPointId); },
+        onSetReviewers: (reviewPointId: string, reviewerIds: string[]) => { void inspector.setReviewers(reviewPointId, reviewerIds); },
+        onSetReviewLifecycle: (reviewPointId: string, lifecycle: ReviewLifecycle) => { void inspector.setReviewLifecycle(reviewPointId, lifecycle); },
+        onSetReviewFindingState: (reviewPointId: string, findingId: string, state: "accepted" | "dismissed") => { void inspector.setReviewFindingState(reviewPointId, findingId, state); },
+        onLoadReviewPointDiff: (reviewPointId: string, fileIndex: number) => { void inspector.loadReviewPointDiff(reviewPointId, fileIndex); },
         t,
       }),
     ),

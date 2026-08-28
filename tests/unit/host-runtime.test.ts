@@ -16,6 +16,7 @@ describe("host runtime factory", () => {
       }),
       load: async (snapshotId: string) => stored.get(snapshotId),
       readChunk: async () => new Uint8Array(),
+      captureReviewDiffs: async () => [{ path: "src/app.ts", kind: "text" as const, oldText: "old app", newText: "app" }],
     };
     const options = {
       roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Room", hostDisplayName: "Host",
@@ -36,12 +37,17 @@ describe("host runtime factory", () => {
     restored.activeRooms.activate("room-1");
     const shared = await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
     const restoredHeaders = { authorization: `Bearer ${(shared.body as { roomToken: string }).roomToken}`, [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY };
+    const reviewPointId = snapshot.reviewPoints!.reviewPoints[0]!.reviewPointId;
     await expect(restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points", headers: restoredHeaders })).resolves.toMatchObject({
       status: 200,
       body: { reviewPoints: [{ reviewPoint: { title: "App review", mainAgentSessionId: "room-1", files: [{ path: "src/app.ts" }] }, freshness: "current" }] },
     });
     await expect(restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders })).resolves.toMatchObject({ body: { state: { enabled: false } } });
+    await expect(restored.gateway.handle({ method: "GET", path: `/v1/rooms/room-1/review-points/${reviewPointId}/diffs/0`, headers: restoredHeaders }))
+      .resolves.toMatchObject({ status: 409, body: { error: { code: "WORKSPACE_SHARING_DISABLED" } } });
     await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders, body: { enabled: true } });
+    await expect(restored.gateway.handle({ method: "GET", path: `/v1/rooms/room-1/review-points/${reviewPointId}/diffs/0`, headers: restoredHeaders }))
+      .resolves.toMatchObject({ status: 200, body: { diff: { path: "src/app.ts", oldText: "old app", newText: "app" } } });
     const historicalSnapshotId = snapshot.reviewPoints!.reviewPoints[0]!.workspaceSnapshotId;
     await expect(restored.gateway.handle({ method: "GET", path: `/v1/rooms/room-1/workspace-snapshots/${historicalSnapshotId}`, headers: restoredHeaders }))
       .resolves.toMatchObject({ status: 200, body: { snapshot: { hostSessionId: "room-1" } } });

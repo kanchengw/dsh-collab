@@ -223,6 +223,7 @@ describe("Cordis Host mount", () => {
       first.runtime.reviewPoints.create({
         roomId: "room-1", principalId: "host", clientRequestId: "review-1", title: "App review", snapshot,
         files: [{ path: "src/app.ts", status: "modified", additions: 1, deletions: 0 }],
+        diffs: [{ path: "src/app.ts", kind: "text", oldText: "old\n", newText: "new\n" }],
       });
       await first.dispose();
 

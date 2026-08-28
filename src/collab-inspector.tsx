@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { DiffBlock, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ReviewPointCreateInput, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewFinding, ReviewFindingCreateInput, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { DshCollabSettingsPort } from "./dsh-client.js";
 import type { CollabTranslate } from "./locales.js";
 import { defaultCollabTranslate } from "./locales.js";
@@ -15,6 +15,11 @@ export interface CollabInspectorState {
   diff?: RepositoryDiff;
   reviewPoints?: ReviewPointProjection[];
   reviewNextCursor?: string;
+  selectedReviewPointId?: string;
+  reviewFindings?: Record<string, ReviewFinding[]>;
+  reviewFindingNextCursors?: Record<string, string | undefined>;
+  reviewDiffs?: Record<string, Record<string, ReviewPointDiff>>;
+  selectedReviewDiffPath?: string;
   error?: string;
 }
 
@@ -43,6 +48,7 @@ export function reviewPointFilesFromInspection(inspection: RepositoryInspection)
           : "modified";
     return {
       path: file.path,
+      ...(file.previousPath ? { previousPath: file.previousPath } : {}),
       status,
       additions: (staged?.additions ?? 0) + (unstaged?.additions ?? 0),
       deletions: (staged?.deletions ?? 0) + (unstaged?.deletions ?? 0),
@@ -70,6 +76,13 @@ export function useCollabInspector(input: {
   reloadReviewPoints(): Promise<void>;
   loadMoreReviewPoints(): Promise<void>;
   refreshReviewPoints(): Promise<void>;
+  selectReviewPoint(reviewPointId: string): Promise<void>;
+  createReviewFinding(reviewPointId: string, input: ReviewFindingCreateInput): Promise<boolean>;
+  loadMoreReviewFindings(reviewPointId: string): Promise<void>;
+  setReviewers(reviewPointId: string, reviewerIds: string[]): Promise<void>;
+  setReviewLifecycle(reviewPointId: string, lifecycle: ReviewLifecycle): Promise<void>;
+  setReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<void>;
+  loadReviewPointDiff(reviewPointId: string, fileIndex: number): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<CollabInspectorTab>("changes");
@@ -203,6 +216,120 @@ export function useCollabInspector(input: {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
   };
+  const selectReviewPoint = async (reviewPointId: string): Promise<void> => {
+    if (!input.port?.listReviewFindings || input.roomId === "") return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, selectedReviewPointId: reviewPointId, status: "loading", error: undefined }));
+    try {
+      const page = await input.port.listReviewFindings(roomId, reviewPointId);
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        reviewFindings: { ...current.reviewFindings, [reviewPointId]: page.findings },
+        reviewFindingNextCursors: { ...current.reviewFindingNextCursors, [reviewPointId]: page.nextCursor },
+        error: undefined,
+      }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+  const createReviewFinding = async (reviewPointId: string, finding: ReviewFindingCreateInput): Promise<boolean> => {
+    if (!input.port?.createReviewFinding || input.roomId === "") return false;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      await input.port.createReviewFinding(roomId, reviewPointId, finding);
+      const page = await input.port.listReviewFindings?.(roomId, reviewPointId);
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        ...(page ? {
+          reviewFindings: { ...current.reviewFindings, [reviewPointId]: page.findings },
+          reviewFindingNextCursors: { ...current.reviewFindingNextCursors, [reviewPointId]: page.nextCursor },
+        } : {}),
+        error: undefined,
+      }));
+      return roomIdRef.current === roomId;
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+      return false;
+    }
+  };
+  const loadMoreReviewFindings = async (reviewPointId: string): Promise<void> => {
+    const cursor = state.reviewFindingNextCursors?.[reviewPointId];
+    if (!input.port?.listReviewFindings || input.roomId === "" || !cursor) return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const page = await input.port.listReviewFindings(roomId, reviewPointId, cursor);
+      updateCurrentRoom(roomId, (current) => {
+        const findings = [...(current.reviewFindings?.[reviewPointId] ?? []), ...page.findings];
+        return {
+          ...current,
+          status: "ready",
+          reviewFindings: { ...current.reviewFindings, [reviewPointId]: [...new Map(findings.map((finding) => [finding.findingId, finding])).values()] },
+          reviewFindingNextCursors: { ...current.reviewFindingNextCursors, [reviewPointId]: page.nextCursor },
+          error: undefined,
+        };
+      });
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+  const updateReviewPoint = async (reviewPointId: string, update: () => Promise<ReviewPoint>): Promise<void> => {
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const reviewPoint = await update();
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        reviewPoints: current.reviewPoints?.map((projection) => projection.reviewPoint.reviewPointId === reviewPointId ? { ...projection, reviewPoint } : projection),
+        error: undefined,
+      }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+  const setReviewFindingState = async (reviewPointId: string, findingId: string, findingState: "accepted" | "dismissed"): Promise<void> => {
+    if (!input.port?.setReviewFindingState || input.roomId === "") return;
+    const roomId = input.roomId;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const finding = await input.port.setReviewFindingState(roomId, reviewPointId, findingId, findingState);
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        reviewFindings: {
+          ...current.reviewFindings,
+          [reviewPointId]: (current.reviewFindings?.[reviewPointId] ?? []).map((item) => item.findingId === findingId ? finding : item),
+        },
+        error: undefined,
+      }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+  const loadReviewPointDiff = async (reviewPointId: string, fileIndex: number): Promise<void> => {
+    if (!input.port?.loadReviewPointDiff || input.roomId === "") return;
+    const roomId = input.roomId;
+    const expectedPath = state.reviewPoints?.find((projection) => projection.reviewPoint.reviewPointId === reviewPointId)?.reviewPoint.files[fileIndex]?.path;
+    if (!expectedPath) return;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const diff = await input.port.loadReviewPointDiff(roomId, reviewPointId, fileIndex);
+      if (diff.path !== expectedPath) throw new Error("Review Point diff path does not match the selected file");
+      updateCurrentRoom(roomId, (current) => ({
+        ...current,
+        status: "ready",
+        selectedReviewDiffPath: diff.path,
+        reviewDiffs: { ...current.reviewDiffs, [reviewPointId]: { ...current.reviewDiffs?.[reviewPointId], [diff.path]: diff } },
+        error: undefined,
+      }));
+    } catch (cause) {
+      updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
   return {
     open,
     activeTab,
@@ -218,6 +345,19 @@ export function useCollabInspector(input: {
     reloadReviewPoints,
     loadMoreReviewPoints,
     refreshReviewPoints,
+    selectReviewPoint,
+    createReviewFinding,
+    loadMoreReviewFindings,
+    setReviewers: async (reviewPointId, reviewerIds) => {
+      if (!input.port?.setReviewers || input.roomId === "") return;
+      await updateReviewPoint(reviewPointId, () => input.port!.setReviewers!(input.roomId, reviewPointId, reviewerIds));
+    },
+    setReviewLifecycle: async (reviewPointId, lifecycle) => {
+      if (!input.port?.setReviewLifecycle || input.roomId === "") return;
+      await updateReviewPoint(reviewPointId, () => input.port!.setReviewLifecycle!(input.roomId, reviewPointId, lifecycle));
+    },
+    setReviewFindingState,
+    loadReviewPointDiff,
   };
 }
 
@@ -291,9 +431,9 @@ function SnapshotFiles({ snapshot, t }: { snapshot: WorkspaceSnapshotPackage; t:
   </section>;
 }
 
-function ReviewPoints(props: { points: readonly ReviewPointProjection[]; t: CollabTranslate }): ReactNode {
+function ReviewPoints(props: { points: readonly ReviewPointProjection[]; selectedId?: string; onSelect(reviewPointId: string): void; t: CollabTranslate }): ReactNode {
   if (props.points.length === 0) return <div className={css.empty}><strong>{props.t("inspector.noReviews")}</strong><p>{props.t("inspector.noReviewsHint")}</p></div>;
-  return <ul className={css.reviewList}>{props.points.map(({ reviewPoint, freshness, progress }) => <li key={reviewPoint.reviewPointId} className={css.reviewCard}>
+  return <ul className={css.reviewList}>{props.points.map(({ reviewPoint, freshness, progress }) => <li key={reviewPoint.reviewPointId} className={css.reviewCard} data-selected={props.selectedId === reviewPoint.reviewPointId}>
     <div className={css.reviewHeading}><div><strong>{reviewPoint.title}</strong>{reviewPoint.focus ? <p>{reviewPoint.focus}</p> : null}</div><span>{props.t(`inspector.lifecycle.${reviewPoint.lifecycle}`)}</span></div>
     <div className={css.reviewStatus}>
       <span data-freshness={freshness}>{props.t(`inspector.freshness.${freshness}`)}</span>
@@ -304,7 +444,104 @@ function ReviewPoints(props: { points: readonly ReviewPointProjection[]; t: Coll
       <span>{props.t("inspector.workspaceChangedFiles", { count: progress.workspaceChangedFileCount })}</span>
     </div>
     <ul className={css.reviewFiles}>{reviewPoint.files.map((file) => <li key={file.path}><span>{file.path}</span><small><i className={css.additions}>+{file.additions}</i> <i className={css.deletions}>-{file.deletions}</i></small></li>)}</ul>
+    <button type="button" className={css.secondaryAction} onClick={() => { props.onSelect(reviewPoint.reviewPointId); }}>{props.t(props.selectedId === reviewPoint.reviewPointId ? "inspector.reviewSelected" : "inspector.openReview")}</button>
   </li>)}</ul>;
+}
+
+function findingLocation(finding: ReviewFinding, t: CollabTranslate): string {
+  if (finding.location.kind === "general") return t("inspector.findingGeneral");
+  if (finding.location.kind === "file") return finding.location.path;
+  return `${finding.location.path}:${String(finding.location.line)}`;
+}
+
+function lifecycleActions(lifecycle: ReviewLifecycle): Array<Exclude<ReviewLifecycle, "open">> {
+  if (lifecycle === "open") return ["changes-requested", "approved", "closed"];
+  if (lifecycle === "changes-requested") return ["approved", "closed"];
+  if (lifecycle === "approved") return ["closed"];
+  return [];
+}
+
+function ReviewDetail(props: {
+  role: "host" | "participant";
+  projection: ReviewPointProjection;
+  findings: readonly ReviewFinding[];
+  selectedDiffPath?: string;
+  diffs: Readonly<Record<string, ReviewPointDiff>>;
+  findingNextCursor?: string;
+  members: readonly { memberId: string; displayName: string }[];
+  busy: boolean;
+  onCreateFinding(input: ReviewFindingCreateInput): Promise<boolean>;
+  onLoadDiff(fileIndex: number): void;
+  onLoadMoreFindings(): void;
+  onSetReviewers(reviewerIds: string[]): void;
+  onSetLifecycle(lifecycle: ReviewLifecycle): void;
+  onSetFindingState(findingId: string, state: "accepted" | "dismissed"): void;
+  t: CollabTranslate;
+}): ReactNode {
+  const { reviewPoint } = props.projection;
+  const [severity, setSeverity] = useState<ReviewFinding["severity"]>("medium");
+  const [path, setPath] = useState("");
+  const [line, setLine] = useState("");
+  const [body, setBody] = useState("");
+  useEffect(() => { setSeverity("medium"); setPath(""); setLine(""); setBody(""); }, [reviewPoint.reviewPointId]);
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const normalizedBody = body.trim();
+    if (normalizedBody === "") return;
+    const parsedLine = line === "" ? undefined : Number(line);
+    const location: ReviewFindingCreateInput["location"] = path === ""
+      ? { kind: "general" }
+      : parsedLine === undefined
+        ? { kind: "file", path }
+        : { kind: "line", path, line: parsedLine };
+    if (location.kind === "line" && (!Number.isSafeInteger(location.line) || location.line < 1)) return;
+    if (await props.onCreateFinding({ severity, location, body: normalizedBody })) setBody("");
+  };
+  const memberNames = new Map(props.members.map((member) => [member.memberId, member.displayName]));
+  const selectedDiff = props.selectedDiffPath ? props.diffs[props.selectedDiffPath] : undefined;
+  return <section className={css.reviewDetail} aria-labelledby="collab-review-detail-title">
+    <div className={css.detailHeading}><div><h4 id="collab-review-detail-title">{reviewPoint.title}</h4><p>{props.t("inspector.reviewDetailHint")}</p></div><span>{props.t(`inspector.lifecycle.${reviewPoint.lifecycle}`)}</span></div>
+    <div className={css.historicalDiffs}>
+      <strong>{props.t("inspector.historicalDiff")}</strong>
+      <div className={css.diffFiles}>{reviewPoint.files.map((file, index) => <button key={file.path} type="button" data-selected={props.selectedDiffPath === file.path} disabled={props.busy} onClick={() => { props.onLoadDiff(index); }}>{file.path}</button>)}</div>
+      {selectedDiff?.kind === "text" ? <DiffBlock diffs={[{ path: selectedDiff.path, oldText: selectedDiff.oldText, newText: selectedDiff.newText ?? "" }]} maxLines={120} />
+        : selectedDiff?.kind === "binary" ? <p className={css.emptyText}>{props.t("inspector.binaryDiff")}</p>
+          : selectedDiff?.kind === "unavailable" ? <p className={css.emptyText}>{props.t("inspector.legacyDiffUnavailable")}</p>
+            : <p className={css.emptyText}>{props.t("inspector.selectDiff")}</p>}
+    </div>
+    {props.role === "host" ? <>
+      <fieldset className={css.reviewers}>
+        <legend>{props.t("inspector.reviewers")}</legend>
+        {props.members.map((member) => <label key={member.memberId}><input type="checkbox" checked={reviewPoint.reviewerIds.includes(member.memberId)} disabled={props.busy} onChange={(event) => {
+          const reviewerIds = event.target.checked
+            ? [...reviewPoint.reviewerIds, member.memberId]
+            : reviewPoint.reviewerIds.filter((id) => id !== member.memberId);
+          props.onSetReviewers(reviewerIds);
+        }} />{member.displayName}</label>)}
+      </fieldset>
+      {lifecycleActions(reviewPoint.lifecycle).length > 0 ? <div className={css.lifecycleActions} aria-label={props.t("inspector.lifecycleActions")}>
+        {lifecycleActions(reviewPoint.lifecycle).map((lifecycle) => <button key={lifecycle} type="button" className={css.secondaryAction} disabled={props.busy} onClick={() => { props.onSetLifecycle(lifecycle); }}>{props.t(`inspector.lifecycleAction.${lifecycle}`)}</button>)}
+      </div> : null}
+    </> : null}
+    <form className={css.findingForm} onSubmit={(event) => { void submit(event); }}>
+      <strong>{props.t("inspector.addFinding")}</strong>
+      <div className={css.findingFields}>
+        <label>{props.t("inspector.findingSeverity")}<select value={severity} onChange={(event) => { setSeverity(event.target.value as ReviewFinding["severity"]); }}>
+          {(["critical", "high", "medium", "low", "note"] as const).map((value) => <option key={value} value={value}>{props.t(`inspector.severity.${value}`)}</option>)}
+        </select></label>
+        <label>{props.t("inspector.findingFile")}<select value={path} onChange={(event) => { setPath(event.target.value); setLine(""); }}><option value="">{props.t("inspector.findingGeneral")}</option>{reviewPoint.files.map((file) => <option key={file.path} value={file.path}>{file.path}</option>)}</select></label>
+        <label>{props.t("inspector.findingLine")}<input type="number" min={1} step={1} value={line} disabled={path === ""} onChange={(event) => { setLine(event.target.value); }} /></label>
+      </div>
+      <label>{props.t("inspector.findingBody")}<textarea rows={3} maxLength={4_000} value={body} onChange={(event) => { setBody(event.target.value); }} /></label>
+      <button type="submit" className={css.primaryAction} disabled={props.busy || body.trim() === ""}>{props.t("inspector.publishFinding")}</button>
+    </form>
+    {props.findings.length === 0 ? <p className={css.emptyText}>{props.t("inspector.noFindings")}</p> : <ul className={css.findingList}>{props.findings.map((finding) => <li key={finding.findingId} className={css.findingCard} data-severity={finding.severity}>
+      <div className={css.findingMeta}><span>{props.t(`inspector.severity.${finding.severity}`)}</span><span>{findingLocation(finding, props.t)}</span><span>{memberNames.get(finding.authorId) ?? finding.authorId}</span></div>
+      <p>{finding.body}</p>
+      <div className={css.findingDecision}><span>{props.t(`inspector.findingState.${finding.state}`)}</span>{props.role === "host" && finding.state === "open" ? <div><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "accepted"); }}>{props.t("inspector.acceptFinding")}</button><button type="button" disabled={props.busy} onClick={() => { props.onSetFindingState(finding.findingId, "dismissed"); }}>{props.t("inspector.dismissFinding")}</button></div> : null}</div>
+    </li>)}</ul>}
+    {props.findingNextCursor ? <button type="button" className={css.secondaryAction} disabled={props.busy} onClick={props.onLoadMoreFindings}>{props.t("inspector.loadOlderFindings")}</button> : null}
+  </section>;
 }
 
 export function DshCollabInspector(props: {
@@ -323,6 +560,14 @@ export function DshCollabInspector(props: {
   onReloadReviewPoints(): void;
   onLoadMoreReviewPoints(): void;
   onRefreshReviewPoints(): void;
+  members: readonly { memberId: string; displayName: string }[];
+  onSelectReviewPoint(reviewPointId: string): void;
+  onCreateReviewFinding(reviewPointId: string, input: ReviewFindingCreateInput): Promise<boolean>;
+  onLoadMoreReviewFindings?(reviewPointId: string): void;
+  onSetReviewers(reviewPointId: string, reviewerIds: string[]): void;
+  onSetReviewLifecycle(reviewPointId: string, lifecycle: ReviewLifecycle): void;
+  onSetReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): void;
+  onLoadReviewPointDiff(reviewPointId: string, fileIndex: number): void;
   t?: CollabTranslate;
 }): ReactNode {
   const [reviewTitle, setReviewTitle] = useState("");
@@ -376,8 +621,30 @@ export function DshCollabInspector(props: {
           <button type="button" className={css.secondaryAction} disabled={busy || !enabled || !props.state.reviewPoints?.length} onClick={props.onRefreshReviewPoints}>{t("inspector.refreshComparison")}</button>
           {!enabled ? <p className={css.reviewHint}>{t("inspector.reviewSharingRequired")}</p> : null}
         </> : null}
-        <ReviewPoints points={props.state.reviewPoints ?? []} t={t} />
+        <ReviewPoints points={props.state.reviewPoints ?? []} selectedId={props.state.selectedReviewPointId} onSelect={props.onSelectReviewPoint} t={t} />
         {props.state.reviewNextCursor ? <button type="button" className={css.secondaryAction} disabled={busy} onClick={props.onLoadMoreReviewPoints}>{t("inspector.loadOlderReviews")}</button> : null}
+        {props.state.selectedReviewPointId ? (() => {
+          const projection = props.state.reviewPoints?.find(({ reviewPoint }) => reviewPoint.reviewPointId === props.state.selectedReviewPointId);
+          if (!projection) return null;
+          const reviewPointId = projection.reviewPoint.reviewPointId;
+          return <ReviewDetail
+            role={props.role}
+            projection={projection}
+            findings={props.state.reviewFindings?.[reviewPointId] ?? []}
+            selectedDiffPath={props.state.selectedReviewDiffPath}
+            diffs={props.state.reviewDiffs?.[reviewPointId] ?? {}}
+            findingNextCursor={props.state.reviewFindingNextCursors?.[reviewPointId]}
+            members={props.members}
+            busy={busy}
+            onCreateFinding={(input) => props.onCreateReviewFinding(reviewPointId, input)}
+            onLoadDiff={(fileIndex) => { props.onLoadReviewPointDiff(reviewPointId, fileIndex); }}
+            onLoadMoreFindings={() => { props.onLoadMoreReviewFindings?.(reviewPointId); }}
+            onSetReviewers={(reviewerIds) => { props.onSetReviewers(reviewPointId, reviewerIds); }}
+            onSetLifecycle={(lifecycle) => { props.onSetReviewLifecycle(reviewPointId, lifecycle); }}
+            onSetFindingState={(findingId, state) => { props.onSetReviewFindingState(reviewPointId, findingId, state); }}
+            t={t}
+          />;
+        })() : null}
       </section>}
     </div>
   </aside>;

@@ -44,6 +44,7 @@ export interface ReviewProgress {
 
 export interface ReviewPointFile {
   path: string;
+  previousPath?: string;
   status: "added" | "modified" | "deleted" | "renamed";
   baseBlobOid?: string;
   snapshotContentHash?: string;
@@ -54,7 +55,7 @@ export interface ReviewPointFile {
 export interface ReviewPointCreateInput {
   title: string;
   focus?: string;
-  files: Array<Pick<ReviewPointFile, "path" | "status" | "additions" | "deletions">>;
+  files: Array<Pick<ReviewPointFile, "path" | "previousPath" | "status" | "additions" | "deletions">>;
 }
 
 export interface ReviewPoint {
@@ -84,6 +85,11 @@ export interface ReviewPointPage {
   nextCursor?: string;
 }
 
+export type ReviewPointDiff =
+  | { path: string; kind: "text"; oldText: string | null; newText: string | null }
+  | { path: string; kind: "binary" }
+  | { path: string; kind: "unavailable" };
+
 export type ReviewFindingLocation =
   | { kind: "general" }
   | { kind: "file"; path: string }
@@ -91,12 +97,27 @@ export type ReviewFindingLocation =
 
 export interface ReviewFinding {
   findingId: string;
+  roomId: string;
   reviewPointId: string;
   authorId: string;
   severity: "critical" | "high" | "medium" | "low" | "note";
   location: ReviewFindingLocation;
   body: string;
   state: "open" | "accepted" | "dismissed" | "resolved";
+  createdAt: number;
+  decidedBy?: string;
+  decidedAt?: number;
+}
+
+export interface ReviewFindingCreateInput {
+  severity: ReviewFinding["severity"];
+  location: ReviewFindingLocation;
+  body: string;
+}
+
+export interface ReviewFindingPage {
+  findings: ReviewFinding[];
+  nextCursor?: string;
 }
 
 export type SideTaskType = "explain" | "review";

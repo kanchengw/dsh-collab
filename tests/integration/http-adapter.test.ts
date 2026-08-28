@@ -140,6 +140,7 @@ describe("localhost HTTP adapter", () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
     expect(preflight.headers.get("access-control-allow-headers")).toContain("x-dsh-collab-capabilities");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("PUT");
 
     const blocked = await fetch(`${base}/collab/v1/rooms/room-1/bootstrap`, { headers: { origin: "https://evil.example" } });
     expect(blocked.status).toBe(401);

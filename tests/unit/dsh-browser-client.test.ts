@@ -12,6 +12,46 @@ function errorResponse(code: string, message: string, status: number): { ok: boo
 }
 
 describe("browser Gateway client", () => {
+  it("creates, lists and decides Human Review findings through validated contracts", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    const point = {
+      reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
+      roomEventSeq: 3, mainAgentSessionId: "session-1", workspaceSnapshotId: "a".repeat(64), headOid: "b".repeat(40),
+      files: [{ path: "src/parser.ts", status: "modified", snapshotContentHash: "c".repeat(64), additions: 4, deletions: 1 }], createdAt: 20,
+    };
+    const finding = {
+      findingId: "e".repeat(64), roomId: "room-1", reviewPointId: point.reviewPointId, authorId: "member-bob", severity: "high",
+      location: { kind: "line", path: "src/parser.ts", line: 2 }, body: "Recovery skips the token.", state: "open", createdAt: 30,
+    };
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/findings") && init?.method === "POST") return response({ finding }, 201);
+      if (url.includes("/findings?") && init?.method === "GET") return response({ findings: [finding] });
+      if (url.endsWith("/reviewers")) return response({ reviewPoint: { ...point, reviewerIds: ["member-bob"] } });
+      if (url.endsWith("/lifecycle")) return response({ reviewPoint: { ...point, lifecycle: "changes-requested" } });
+      if (url.endsWith(`/findings/${finding.findingId}/state`)) return response({ finding: { ...finding, state: "accepted", decidedBy: "member-host", decidedAt: 31 } });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.createReviewFinding("room-1", point.reviewPointId, { severity: "high", location: { kind: "line", path: "src/parser.ts", line: 2 }, body: "Recovery skips the token." })).resolves.toEqual(finding);
+    await expect(client.listReviewFindings("room-1", point.reviewPointId)).resolves.toEqual({ findings: [finding] });
+    await expect(client.setReviewers("room-1", point.reviewPointId, ["member-bob"])).resolves.toMatchObject({ reviewerIds: ["member-bob"] });
+    await expect(client.setReviewLifecycle("room-1", point.reviewPointId, "changes-requested")).resolves.toMatchObject({ lifecycle: "changes-requested" });
+    await expect(client.setReviewFindingState("room-1", point.reviewPointId, finding.findingId, "accepted")).resolves.toMatchObject({ state: "accepted", decidedBy: "member-host" });
+    expect(requests.filter(({ url }) => url.includes(point.reviewPointId))).toHaveLength(5);
+    client.dispose();
+  });
+
   it("creates, lists and refreshes Review Points through the active room token", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const reviewPoint = {
@@ -25,6 +65,8 @@ describe("browser Gateway client", () => {
       if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       if (url.endsWith("/review-points/refresh")) return response({ snapshotId: "e".repeat(64) });
+      if (url.endsWith(`/review-points/${reviewPoint.reviewPointId}/diffs/0`)) return response({ diff: { path: "src/parser.ts", kind: "text", oldText: "old\n", newText: "new\n" } });
+      if (url.endsWith(`/review-points/${reviewPoint.reviewPointId}/diffs/1`)) return response({ diff: { path: "src/legacy.ts", kind: "unavailable" } });
       if (url.endsWith("/review-points") && init?.method === "POST") return response({ reviewPoint }, 201);
       if (url.includes("/review-points?")) return response({ reviewPoints: [{ reviewPoint, freshness: "current", progress: { roomEventDelta: 2, workspaceChangedFileCount: 1 } }] });
       throw new Error(`unexpected request: ${url}`);
@@ -45,8 +87,10 @@ describe("browser Gateway client", () => {
     await expect(client.createReviewPoint("room-1", { title: "Parser review", focus: "Correctness", files: [{ path: "src/parser.ts", status: "modified", additions: 4, deletions: 1 }] })).resolves.toEqual(reviewPoint);
     await expect(client.listReviewPoints("room-1")).resolves.toMatchObject({ reviewPoints: [{ freshness: "current", progress: { roomEventDelta: 2, workspaceChangedFileCount: 1 } }] });
     await expect(client.refreshReviewPoints("room-1")).resolves.toBe("e".repeat(64));
-    expect(requests.filter(({ url }) => url.includes("review-points"))).toHaveLength(3);
-    expect(requests.filter(({ url, init }) => url.includes("review-points") && init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toHaveLength(3);
+    await expect(client.loadReviewPointDiff("room-1", reviewPoint.reviewPointId, 0)).resolves.toEqual({ path: "src/parser.ts", kind: "text", oldText: "old\n", newText: "new\n" });
+    await expect(client.loadReviewPointDiff("room-1", reviewPoint.reviewPointId, 1)).resolves.toEqual({ path: "src/legacy.ts", kind: "unavailable" });
+    expect(requests.filter(({ url }) => url.includes("review-points"))).toHaveLength(5);
+    expect(requests.filter(({ url, init }) => url.includes("review-points") && init?.headers?.[COLLAB_CAPABILITY_HEADER] === SIDECAR_REVIEW_CAPABILITY)).toHaveLength(5);
     client.dispose();
   });
 
@@ -617,6 +661,13 @@ describe("browser Gateway client", () => {
         { memberId: "member-bob", displayName: "Bob" },
       ],
     });
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "member-suspended", roomId: "room-1", seq: 6, type: "member.suspended",
+      actor: { memberId: "member-host", principalId: "host" }, createdAt: 6,
+      payload: { memberId: "member-bob", status: "suspended" },
+    } }) });
+    expect(client.getSnapshot().members).toEqual([{ memberId: "member-host", displayName: "Local Host" }]);
 
     socket?.onmessage?.({ data: JSON.stringify({
       protocol: "dsh-collab.v1", type: "agent-output", roomId: "room-1",

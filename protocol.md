@@ -107,6 +107,12 @@ The current routes are:
 | `GET` | `/collab/v1/rooms/:roomId/review-points?after=&limit=` | Active member reads persisted Review Point projections; defaults to 50 and caps at 100 |
 | `POST` | `/collab/v1/rooms/:roomId/review-points` | Host captures the current workspace and creates one immutable Review Point |
 | `POST` | `/collab/v1/rooms/:roomId/review-points/refresh` | Host captures a new comparison snapshot used for freshness and workspace progress |
+| `GET` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/diffs/:fileIndex` | Active member reads one immutable historical file diff; Workspace Sharing must be enabled |
+| `GET` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/findings?after=&limit=` | Active member reads persisted findings newest-first; defaults to 50 and caps at 100 |
+| `POST` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/findings` | Active member publishes one idempotent general/file/line finding |
+| `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/reviewers` | Host replaces reviewer assignment metadata with active room members |
+| `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/lifecycle` | Host advances the Review Point lifecycle |
+| `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/findings/:findingId/state` | Host accepts or dismisses an open finding |
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -184,12 +190,20 @@ local content remains readable without the Host.
 Review Point creation accepts `{ clientRequestId, title, focus?, files }`.
 `clientRequestId` is at most 128 characters and makes creation idempotent across
 lost responses and Host restarts. `files` is the Host UI's current changed-file
-projection and contains only `{ path, status, additions, deletions }`; the server
-copies content hashes from the snapshot it captures and rejects non-deleted paths
-that are absent from that snapshot. CM-U08 creates points with an empty
-`reviewerIds` list; assignment and findings are introduced by the next Unit. A
-Review Point requires a Git `HEAD`; an unborn repository is rejected rather than
-inventing a commit identity.
+projection and contains `{ path, previousPath?, status, additions, deletions }`;
+the server copies content hashes from the snapshot it captures and rejects
+non-deleted paths that are absent from that snapshot. `previousPath` is present
+for a rename so the server can read the exact base blob from the pinned `HEAD`.
+At creation time the Host persists an immutable per-file artifact made from
+`HEAD` old text and the captured Workspace Snapshot new text. Text is limited to
+2 MiB per side and 8 MiB per Review Point; binary or larger files persist an
+explicit non-text marker. Both clients therefore read the same historical diff
+after the live workspace changes. Line statistics remain descriptive Host UI
+metadata and are not the authoritative diff. A Review Point requires a Git
+`HEAD`; an unborn repository is rejected rather than inventing a commit identity.
+Review Points restored from the pre-artifact U08 snapshot format expose an
+explicit `unavailable` diff marker instead of failing as if the node did not
+exist; newly persisted Review Point snapshots require one artifact per file.
 
 The list response is `{ reviewPoints, nextCursor? }`, where each item contains
 the immutable `reviewPoint` plus three independent projections:
@@ -207,6 +221,39 @@ accepts `{ clientRequestId }`; it is Host-only because it captures the current
 Host workspace. Active Participants read the most recently persisted comparison
 result and may explicitly reload the list. CM-U08 adds no Review WebSocket frame,
 so old clients and the existing durable room cursor remain unchanged.
+
+Finding creation accepts `{ clientRequestId, severity, location, body }`.
+`clientRequestId` is at most 128 characters and is namespaced by verified room
+principal, so a lost-response retry returns the original finding. `body` is
+trimmed and limited to 4,000 characters. `location` is exactly one of
+`{ kind: "general" }`, `{ kind: "file", path }`, or
+`{ kind: "line", path, line }`; file and line paths must belong to the original
+Review Point and line numbers are positive safe integers. New findings require
+an open room and non-closed Review Point. A retry of the same normalized
+creation payload for an already-created finding remains idempotent after closure.
+
+A room persists at most 1,000 findings. The limit is checked before mutation and
+again during Host snapshot restore; exceeding it returns `RESOURCE_LIMIT` for a
+new request and rejects malformed persisted state. This bound protects the
+Owner's memory, state file and full-snapshot write path from an active member.
+
+`reviewerIds` is assignment/reminder metadata, not an access list. Any active
+room member can publish and read findings; only the Host can assign currently
+active members, decide findings, or advance lifecycle. Finding decisions are
+one-way `open -> accepted | dismissed`. Lifecycle transitions are one-way:
+`open -> changes-requested | approved | closed`,
+`changes-requested -> approved | closed`, and `approved -> closed`.
+`closed` is terminal. The reserved `resolved` finding state is not produced by
+CM-U09 and remains for later re-review/Mainline integration.
+New reviewer assignments, lifecycle transitions and finding decisions require
+both the room and Review Point to remain writable. Exact retries of an already
+applied PUT remain idempotent after either one closes.
+
+Findings remain publishable after Workspace Sharing is disabled because they
+contain review metadata rather than a new code read. Reading the historical diff
+remains under the room-level Workspace Sharing gate. No Review/finding WebSocket
+event is introduced; explicit HTTP reload avoids a second durable cursor and
+remains compatible with older clients.
 
 ## HTTP responses
 

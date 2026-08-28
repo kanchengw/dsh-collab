@@ -14,6 +14,7 @@ import { ActiveRoomRegistry } from "./active-rooms.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-points.js";
+import { ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -45,6 +46,7 @@ export interface DshCollabHostRuntimeOptions {
 export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   resumes?: ResumeCredentialStoreSnapshot;
   reviewPoints?: ReviewPointServiceSnapshot;
+  reviews?: ReviewServiceSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -58,6 +60,7 @@ export interface DshCollabHostRuntime {
   readonly activeRooms: ActiveRoomRegistry;
   readonly workspace: WorkspaceService;
   readonly reviewPoints: ReviewPointService;
+  readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
   dispose(): Promise<void>;
 }
@@ -110,6 +113,10 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const reviewPoints = snapshot?.reviewPoints
     ? ReviewPointService.fromSnapshot(reviewPointOptions, snapshot.reviewPoints)
     : new ReviewPointService(reviewPointOptions);
+  const reviewOptions = { rooms, reviewPoints, now: options.now };
+  const reviews = snapshot?.reviews
+    ? ReviewService.fromSnapshot(reviewOptions, snapshot.reviews)
+    : new ReviewService(reviewOptions);
   if (!snapshot && options.roomId && options.hostSessionId && options.title) activeRooms.activate(options.roomId);
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
@@ -133,7 +140,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
     activeRooms,
     workspace,
-    ...(options.workspaceSnapshots ? { reviewPoints } : {}),
+    ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
@@ -162,8 +169,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, reviewPoints,
-    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot() }),
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, reviewPoints, reviews,
+    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot(), reviews: reviews.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
       unsubscribeWorkspaceSharing();

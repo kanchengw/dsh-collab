@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CollabError } from "./errors.js";
 import { RoomStore } from "./room.js";
-import type { WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import type { ReviewPointDiff, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
 import { WorkspaceSnapshotError } from "./workspace-snapshot.js";
 
@@ -9,6 +9,7 @@ export interface WorkspaceSnapshotProvider {
   capture(input: { roomId: string; hostSessionId: string; roomEventSeq: number; snapshotId: string; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage>;
   load(snapshotId: string): Promise<WorkspaceSnapshotPackage | undefined>;
   readChunk(snapshotId: string, path: string, offset: number, length: number): Promise<Uint8Array>;
+  captureReviewDiffs?(input: { snapshot: WorkspaceSnapshotPackage; files: readonly { path: string; previousPath?: string; status: "added" | "modified" | "deleted" | "renamed" }[] }): Promise<ReviewPointDiff[]>;
 }
 
 export type WorkspaceSnapshotPurpose = "workspace-snapshot" | "review-point" | "review-refresh";
@@ -87,6 +88,19 @@ export class WorkspaceService {
     const snapshot = await this.requireSnapshots().load(input.snapshotId);
     if (!snapshot) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot does not exist");
     return this.assertRoomSnapshot(snapshot, room.roomId);
+  }
+
+  async captureReviewDiffs(input: { roomId: string; principalId: string; snapshot: WorkspaceSnapshotPackage; files: readonly { path: string; previousPath?: string; status: "added" | "modified" | "deleted" | "renamed" }[] }): Promise<ReviewPointDiff[]> {
+    this.requireWorkspaceRead(input);
+    const provider = this.requireSnapshots();
+    const snapshot = this.assertRoomSnapshot(input.snapshot, input.roomId, this.options.rooms.getRoom(input.roomId).hostSessionId);
+    if (!provider.captureReviewDiffs) throw new CollabError("SNAPSHOT_NOT_FOUND", "Review Point diff capture is unavailable");
+    try {
+      return await provider.captureReviewDiffs({ snapshot, files: input.files });
+    } catch (error) {
+      if (error instanceof CollabError) throw error;
+      throw new CollabError("SNAPSHOT_INVALID", "Unable to capture Review Point diff");
+    }
   }
 
   async readSnapshotChunk(input: { roomId: string; principalId: string; snapshotId: string; fileIndex: number; offset: number; length: number }): Promise<{ snapshot: WorkspaceSnapshotPackage; bytes: Uint8Array }> {

@@ -58,6 +58,7 @@ function gatewaySetup() {
     }),
     load: async (snapshotId) => captured.get(snapshotId),
     readChunk: async (_snapshotId, _path, offset, length) => content.subarray(offset, offset + length),
+    captureReviewDiffs: async () => [{ path: "src/value.ts", kind: "text", oldText: "export const value = 0;\n", newText: content.toString("utf8") }],
   };
   const registry = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, registry, snapshots, now: () => 10 });
