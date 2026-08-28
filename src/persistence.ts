@@ -55,7 +55,16 @@ export class HostSnapshotFile {
 
   save(snapshot: DshCollabHostRuntimeSnapshot): Promise<void> {
     const serialized = JSON.stringify(snapshot, null, 2) + "\n";
+    return this.enqueue(() => serialized);
+  }
+
+  saveLatest(snapshot: () => DshCollabHostRuntimeSnapshot): Promise<void> {
+    return this.enqueue(() => JSON.stringify(snapshot(), null, 2) + "\n");
+  }
+
+  private enqueue(serialize: () => string): Promise<void> {
     this.writes = this.writes.catch(() => undefined).then(async () => {
+      const serialized = serialize();
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const temporary = this.path + ".tmp";
       await writeFile(temporary, serialized, { encoding: "utf8", mode: 0o600 });

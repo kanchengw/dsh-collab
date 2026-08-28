@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
 import { classifyMessage } from "../../src/messages.js";
@@ -75,6 +75,10 @@ describe("SideTask publication API", () => {
       headOid: "a".repeat(40), manifestHash: hash(JSON.stringify(files)), files, createdAt: 10,
     };
     const deliveries: Array<{ requestId: string; text: string; contextRefs?: string[] }> = [];
+    let persistenceFails = true;
+    const commitCriticalState = vi.fn(async () => {
+      if (persistenceFails) throw new Error("state write failed");
+    });
     const runtime = createDshCollabHostRuntime({
       roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Release", hostDisplayName: "Host",
       sessions: {
@@ -89,6 +93,7 @@ describe("SideTask publication API", () => {
       },
       maxQueue: 1,
       now: () => 30,
+      commitCriticalState,
     });
     runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 2 });
     const point = runtime.reviewPoints.create({
@@ -126,6 +131,37 @@ describe("SideTask publication API", () => {
     const acceptPath = `${path}/${publicationId}/state`;
     expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: bobHeaders, body: { state: "accepted" } })).toMatchObject({ status: 403 });
     const hostMemberId = runtime.rooms.listMembers("room-1").find((member) => member.principalId === "host")!.memberId;
+
+    const splitSnapshot = runtime.snapshot();
+    const orphanRequestId = `internal:mainline:${hash(`room-1\0${publicationId}\0mainline-integration`)}`;
+    const orphanMessage = classifyMessage({ messageId: orphanRequestId, roomId: "room-1", authorMemberId: hostMemberId, text: "Uncommitted integration", target: "dsh" });
+    if (orphanMessage.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
+    orphanMessage.requestId = orphanRequestId;
+    splitSnapshot.dispatcher.records.push({
+      requestId: orphanRequestId, roomId: "room-1", hostSessionId: "room-1", authorMemberId: hostMemberId,
+      deliveryMode: "followup", status: "queued", queueSeq: splitSnapshot.dispatcher.nextQueueSeq, message: orphanMessage,
+    });
+    splitSnapshot.dispatcher.queue.push(orphanRequestId);
+    splitSnapshot.dispatcher.nextQueueSeq += 1;
+    const recoveredDeliveries: string[] = [];
+    const recovered = createDshCollabHostRuntime({
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Release", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup(input) { recoveredDeliveries.push(input.requestId); }, steer() {}, cancel() {} },
+      workspaceSnapshots: {
+        capture: async () => snapshot,
+        load: async (snapshotId: string) => snapshotId === snapshot.snapshotId ? snapshot : undefined,
+        readChunk: async (_snapshotId: string, _path: string, offset: number, length: number) => content.subarray(offset, offset + length),
+      },
+      snapshot: splitSnapshot,
+      now: () => 31,
+    });
+    expect(recovered.gateway.dispatcher.get(orphanRequestId)).toMatchObject({ status: "failed" });
+    await recovered.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/host", auth: { principalId: "host" }, body: { hostSessionId: "room-1", title: "Release" } });
+    await recovered.gateway.dispatcher.processQueue();
+    expect(recoveredDeliveries).toEqual([]);
+    expect(recovered.ledger.readAfter("room-1", 0, 500)).toContainEqual(expect.objectContaining({ eventId: `${orphanRequestId}:failed`, type: "agent.request.failed" }));
+    await recovered.dispose();
+
     const blocker = classifyMessage({ messageId: "queue-blocker", roomId: "room-1", authorMemberId: hostMemberId, text: "Wait", target: "dsh" });
     if (blocker.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
     await runtime.gateway.dispatcher.submit({ principalId: "host", message: blocker });
@@ -134,6 +170,12 @@ describe("SideTask publication API", () => {
     expect(await runtime.gateway.handle({ method: "GET", path, headers: hostHeaders }))
       .toMatchObject({ status: 200, body: { publications: [{ publicationId, state: "published" }] } });
     await runtime.gateway.dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: "queue-blocker", keepInbox: true });
+
+    expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } }))
+      .toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    expect(deliveries).toEqual([]);
+    expect(commitCriticalState).toHaveBeenCalledOnce();
+    persistenceFails = false;
 
     const accepted = await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } });
     expect(accepted).toMatchObject({

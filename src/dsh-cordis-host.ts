@@ -79,9 +79,11 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
         store: new WorkspaceSnapshotStore(resolveDefaultCollabSnapshotDir()),
       })
     : undefined;
-  const runtime = createDshCollabHostRuntime({ ...config, sessions, snapshot, workspaceSnapshots });
+  let runtime: DshCollabHostRuntime;
+  const commitCriticalState = persistence ? () => persistence.saveLatest(() => runtime.snapshot()) : undefined;
+  runtime = createDshCollabHostRuntime({ ...config, sessions, snapshot, workspaceSnapshots, commitCriticalState });
   const save = (): void => {
-    void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
+    void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   };
   const unsubscribeLedger = persistence ? runtime.ledger.subscribe(save) : undefined;
   const unsubscribeRooms = persistence ? runtime.rooms.subscribe(save) : undefined;
@@ -89,7 +91,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   const unsubscribeReviews = persistence ? runtime.reviews.subscribe(save) : undefined;
   const ready = runtime.http.listen();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
-  void persistence?.save(runtime.snapshot()).catch((error: unknown) => console.warn("dsh-collab state save failed", error));
+  void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   return {
     runtime,
     ...(workspaceSnapshots ? { workspaceSnapshots } : {}),
@@ -101,7 +103,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
       unsubscribeReviewPoints?.();
       unsubscribeReviews?.();
       try {
-        await persistence?.save(runtime.snapshot());
+        await commitCriticalState?.();
       } finally {
         try {
           await runtime.dispose();

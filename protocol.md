@@ -301,6 +301,13 @@ Dispatcher must synchronously accept the deterministic request before the
 publication and its findings become `accepted`; a queue or request-ID conflict
 therefore leaves them `published` and `open`. Exact acceptance retries recreate a
 missing request or return the existing identical request without duplication.
+With default Host persistence enabled, acceptance waits for an atomically
+replaced runtime snapshot that contains both the accepted publication and its
+Dispatcher request before delivery starts or success is returned. A persistence
+failure returns `500 INTERNAL_ERROR` and does not deliver the request; an exact
+retry persists and reuses the same deterministic request. During restoration,
+a queued `internal:mainline:` request that is not referenced by an accepted
+publication is failed rather than delivered.
 For upgrade compatibility, Host snapshot restoration and Browser response
 decoding continue to accept the former unprefixed 64-lowercase-hex integration
 ID, but new acceptance never generates that legacy form.

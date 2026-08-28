@@ -53,6 +53,7 @@ interface GatewayOptions {
   workspace?: WorkspaceService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
+  commitCriticalState?: () => Promise<void>;
 }
 
 const MAX_ROOM_TITLE_LENGTH = 80;
@@ -514,6 +515,7 @@ export class CollabGateway {
         record = this.dispatcher.submitImmediate({ principalId: claims.principalId, message });
       });
       if (!record) throw new Error("Mainline integration request was not created");
+      await this.options.commitCriticalState?.();
       void this.dispatcher.processQueue();
       return { status: 200, body: { publication: accepted.publication, findings: accepted.findings, request: record } };
     }

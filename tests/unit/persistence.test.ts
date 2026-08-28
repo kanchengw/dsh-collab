@@ -57,6 +57,19 @@ describe("Host snapshot file", () => {
     expect(await store.load()).toEqual(second);
   });
 
+  it("captures a lazy snapshot only when its queued write begins", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-state-"));
+    dirs.push(dir);
+    const store = new HostSnapshotFile(join(dir, "state.json"));
+    let current = snapshot();
+
+    const saved = store.saveLatest(() => current);
+    current = { ...snapshot(), dispatcher: { ...snapshot().dispatcher, nextQueueSeq: 2 } };
+
+    await saved;
+    expect(await store.load()).toEqual(current);
+  });
+
   it("recovers the write queue after a transient filesystem failure", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dsh-collab-state-"));
     dirs.push(dir);

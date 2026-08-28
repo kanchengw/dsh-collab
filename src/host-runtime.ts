@@ -14,7 +14,7 @@ import { ActiveRoomRegistry } from "./active-rooms.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-points.js";
-import { ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
+import { MAINLINE_REQUEST_PREFIX, ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -40,6 +40,7 @@ export interface DshCollabHostRuntimeOptions {
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
   approvalAnswerer?: object;
   workspaceSnapshots?: WorkspaceSnapshotProvider;
+  commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
 
@@ -132,9 +133,18 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     activeRooms,
     workspace,
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
+    ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
+    const committedIntegrationRequests = new Set((reviews.snapshot().publications ?? [])
+      .filter((publication) => publication.state === "accepted")
+      .map((publication) => publication.integrationRequestId!));
+    for (const record of gateway.dispatcher.queued()) {
+      if (record.requestId.startsWith(MAINLINE_REQUEST_PREFIX) && !committedIntegrationRequests.has(record.requestId)) {
+        gateway.dispatcher.failQueuedRequest(record.requestId, "Host recovered an uncommitted Mainline integration request");
+      }
+    }
     gateway.dispatcher.interruptActive("Host restarted; delivery outcome is unknown");
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });

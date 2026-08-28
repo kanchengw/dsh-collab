@@ -282,6 +282,18 @@ export class AgentDispatcher {
     return this.get(requestId);
   }
 
+  failQueuedRequest(requestId: string, error: string): QueueRecord | undefined {
+    const entry = this.records.get(requestId);
+    if (!entry || entry.record.status !== "queued") return undefined;
+    const members = this.options.rooms.listMembers(entry.record.roomId);
+    const actor = members.find((member) => member.memberId === entry.record.authorMemberId)
+      ?? members.find((member) => member.role === "host");
+    if (!actor) throw new CollabError("MEMBER_NOT_FOUND", "request room has no active author or Host", { requestId });
+    this.removeFromQueue(requestId);
+    this.failQueued(entry.record, error, actor);
+    return copy(entry.record);
+  }
+
   async cancel(input: { roomId: string; principalId: string; requestId: string; keepInbox: boolean }): Promise<QueueRecord> {
     const entry = this.records.get(input.requestId);
     if (!entry) {
