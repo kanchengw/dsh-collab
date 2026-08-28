@@ -143,10 +143,22 @@ function parseEnvelope(value: unknown): unknown {
   return envelope.data;
 }
 
-function roomData(value: unknown): RoomData {
+function roomData(value: unknown, roomId?: string): RoomData {
   if (!value || typeof value !== "object") throw new Error("Gateway room response is invalid");
   const data = value as RoomData;
-  if (!data.room || !data.member || typeof data.roomToken !== "string") throw new Error("Gateway room response is incomplete");
+  if (!data.room || !data.member || typeof data.roomToken !== "string" || (roomId !== undefined && data.room.roomId !== roomId)) {
+    throw new Error("Gateway room response is incomplete");
+  }
+  return data;
+}
+
+function snapshotData(value: unknown, roomId: string): SnapshotData {
+  if (!value || typeof value !== "object") throw new Error("Gateway room snapshot is invalid");
+  const data = value as SnapshotData;
+  if (!data.room || data.room.roomId !== roomId || !Array.isArray(data.members)
+    || !Number.isSafeInteger(data.lastEventSeq) || data.lastEventSeq < 0) {
+    throw new Error("Gateway room snapshot is invalid");
+  }
   return data;
 }
 
@@ -488,12 +500,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async bootstrap(roomId?: string): Promise<void> {
-    this.base = this.hostBase;
-    this.participantRef = undefined;
-    if (roomId?.trim()) this.roomId = roomId.trim();
-    const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/bootstrap`, undefined, false)));
-    this.applyRoom(data);
-    await this.connect();
+    const nextRoomId = roomId?.trim() || this.roomId;
+    const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(nextRoomId)}/bootstrap`, undefined, false, this.hostBase)), nextRoomId);
+    await this.connect({ base: this.hostBase, roomId: nextRoomId, data });
   }
 
   async shareHostRoom(input: { sessionId: string; title: string }): Promise<void> {
@@ -502,12 +511,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (sessionId === "") throw new Error("sessionId must not be blank");
     if (title === "") throw new Error("Room name must not be blank");
     if (title.length > 80) throw new Error("Room name must be at most 80 characters");
-    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)));
-    this.base = this.hostBase;
-    this.participantRef = undefined;
-    this.roomId = sessionId;
-    this.applyRoom(data);
-    await this.connect();
+    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)), sessionId);
+    await this.connect({ base: this.hostBase, roomId: sessionId, data });
   }
 
   async stopSharing(roomId: string): Promise<void> {
@@ -541,7 +546,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       token: invitation.token,
       memberId: input.memberId?.trim() || randomId("member"),
       displayName: input.displayName,
-    }, false, nextBase)));
+    }, false, nextBase)), nextRoomId);
     if (this.options.participantPersistence) {
       if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
       await this.options.participantPersistence.save({
@@ -553,26 +558,32 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
       });
     }
-    this.base = nextBase;
-    this.roomId = nextRoomId;
-    this.participantRef = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
-    this.applyRoom(data);
-    await this.connect();
+    await this.connect({
+      base: nextBase,
+      roomId: nextRoomId,
+      participantRef: { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId },
+      data,
+    });
   }
 
   async restoreParticipant(ref?: JoinedRoomRef): Promise<boolean> {
     const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
-    this.participantRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
-    this.base = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
-    this.roomId = state.roomId;
+    const nextRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
+    const nextBase = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
+    const preserveCurrentRoom = this.socket?.readyState === OPEN && this.snapshot.connection === "online";
     try {
-      const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/resume`, { credential: state.credential }, false)));
-      this.applyRoom(data);
-      await this.connect();
+      const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(state.roomId)}/resume`, { credential: state.credential }, false, nextBase)), state.roomId);
+      await this.connect({ base: nextBase, roomId: state.roomId, participantRef: nextRef, data });
       return true;
     } catch (error) {
-      this.applyParticipantFailure(state, error);
+      if (!preserveCurrentRoom) {
+        this.base = nextBase;
+        this.roomId = state.roomId;
+        this.participantRef = nextRef;
+        this.token = undefined;
+        this.applyParticipantFailure(state, error);
+      }
       if (error instanceof GatewayRequestError && (error.status === 401 || error.status === 403 || error.status === 404)) {
         if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(state);
         else await this.options.participantPersistence?.clear?.();
@@ -762,58 +773,93 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.listeners.clear();
   }
 
-  private async connect(): Promise<void> {
-    this.manuallyDisconnected = false;
-    if (!this.token) throw new Error("room token is missing");
-    const snapshot = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/snapshot`, undefined, true)) as SnapshotData;
-    await this.recoverEvents(snapshot.lastEventSeq);
+  private async connect(input: { base: string; roomId: string; participantRef?: JoinedRoomRef; data: RoomData }): Promise<void> {
+    const snapshot = snapshotData(parseEnvelope(await this.request(
+      "GET",
+      `/v1/rooms/${encodeURIComponent(input.roomId)}/snapshot`,
+      undefined,
+      true,
+      input.base,
+      input.data.roomToken,
+    )), input.roomId);
+    const events = await this.recoverEvents(input.roomId, snapshot.lastEventSeq, input.base, input.data.roomToken);
+    const lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...events.values()].map((event) => event.seq));
+    const url = new URL(input.base.replace(/^http/, "ws") + "/v1/stream");
+    url.searchParams.set("roomId", input.roomId);
+    url.searchParams.set("after", String(lastEventSeq));
+    url.searchParams.set("connectionId", this.connectionIdFactory());
+    url.searchParams.set("token", input.data.roomToken);
+    url.searchParams.append("feature", "agent-output");
+    url.searchParams.append("feature", SIDECAR_REVIEW_CAPABILITY);
+    const bufferedFrames: string[] = [];
+    const socket = await new Promise<BrowserSocket>((resolve, reject) => {
+      const socket = new this.socketFactory(url.toString());
+      let settled = false;
+      socket.onopen = () => { if (!settled) { settled = true; resolve(socket); } };
+      socket.onmessage = (event) => { bufferedFrames.push(event.data); };
+      socket.onclose = () => { if (!settled) { settled = true; reject(new GatewayConnectionError()); } };
+      socket.onerror = () => {
+        if (!settled) {
+          settled = true;
+          socket.close(1000, "connection_failed");
+          reject(new GatewayConnectionError());
+        }
+      };
+    });
+    if (this.disposed || socket.readyState !== OPEN) {
+      socket.close(1000, "connection_abandoned");
+      throw new GatewayConnectionError();
+    }
+
+    const previousSocket = this.socket;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.clearHeartbeat();
+    this.socket = socket;
+    this.base = input.base;
+    this.roomId = input.roomId;
+    this.participantRef = input.participantRef;
+    this.token = input.data.roomToken;
+    this.lastEventSeq = lastEventSeq;
+    this.events.clear();
+    for (const [eventId, event] of events) this.events.set(eventId, event);
     this.activeAgentOutputs.clear();
-    this.lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...this.events.values()].map((event) => event.seq));
+    const sameRoom = input.roomId === this.snapshot.roomId;
     this.snapshot = {
-      ...this.snapshot,
-      roomId: snapshot.room.roomId,
+      roomId: input.roomId,
+      memberId: input.data.member.memberId,
       roomTitle: snapshot.room.title,
-      hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? this.snapshot.hostDisplayName,
+      hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? input.data.room.hostDisplayName ?? (sameRoom ? this.snapshot.hostDisplayName : ""),
+      role: input.data.member.role === "host" ? "host" : "participant",
+      connection: "online",
       onlineCount: 0,
+      canSteer: input.data.member.role === "host" || input.data.member.role === "lead",
+      unavailableReason: undefined,
       members: snapshot.members.flatMap((member) => (member.status === undefined || member.status === "active") && typeof member.displayName === "string" && member.displayName.trim() !== ""
         ? [{ memberId: member.memberId, displayName: member.displayName }]
         : []),
-      timeline: this.projectTimeline(),
+      timeline: projectTimeline([...events.values()], []),
+      ...(sameRoom && this.snapshot.workspaceSharing ? { workspaceSharing: this.snapshot.workspaceSharing } : {}),
     };
-    this.emit();
-    const previousSocket = this.socket;
-    this.socket = undefined;
-    this.clearHeartbeat();
+    this.manuallyDisconnected = false;
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+    socket.onmessage = (event) => { if (this.socket !== socket) return; this.heartbeatAcknowledged = true; this.applyFrame(event.data); };
+    socket.onclose = () => {
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      this.clearHeartbeat();
+      this.setConnection("offline");
+      this.scheduleReconnect();
+    };
+    socket.onerror = () => {
+      if (this.socket !== socket) return;
+      if (this.snapshot.role === "participant" && !this.snapshot.unavailableReason) this.setUnavailableReason("host-unreachable");
+      this.setConnection("offline");
+    };
     previousSocket?.close(1000, "reconnect");
-    this.setConnection("connecting");
-    const url = new URL(this.base.replace(/^http/, "ws") + "/v1/stream");
-    url.searchParams.set("roomId", this.roomId);
-    url.searchParams.set("after", String(this.lastEventSeq));
-    url.searchParams.set("connectionId", this.connectionIdFactory());
-    url.searchParams.set("token", this.token);
-    url.searchParams.append("feature", "agent-output");
-    url.searchParams.append("feature", SIDECAR_REVIEW_CAPABILITY);
-    await new Promise<void>((resolve, reject) => {
-      const socket = new this.socketFactory(url.toString());
-      this.socket = socket;
-      let settled = false;
-      socket.onopen = () => { this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS; this.startHeartbeat(socket); this.setConnection("online"); settled = true; resolve(); };
-      socket.onmessage = (event) => { if (this.socket !== socket) return; this.heartbeatAcknowledged = true; this.applyFrame(event.data); };
-      socket.onclose = () => {
-        if (this.socket !== socket) return;
-        this.socket = undefined;
-        this.clearHeartbeat();
-        this.setConnection("offline");
-        if (!settled) reject(new GatewayConnectionError());
-        else this.scheduleReconnect();
-      };
-      socket.onerror = () => {
-        if (this.socket !== socket) return;
-        if (!settled) { settled = true; reject(new GatewayConnectionError()); }
-        if (this.snapshot.role === "participant" && !this.snapshot.unavailableReason) this.setUnavailableReason("host-unreachable");
-        this.setConnection("offline");
-      };
-    });
+    this.startHeartbeat(socket);
+    this.emit();
+    for (const frame of bufferedFrames) this.applyFrame(frame);
   }
 
   private startHeartbeat(socket: BrowserSocket): void {
@@ -855,13 +901,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     }, delay);
   }
 
-  private async request(method: string, path: string, body: unknown, withToken: boolean, base = this.base): Promise<unknown> {
+  private async request(method: string, path: string, body: unknown, withToken: boolean, base = this.base, token = this.token): Promise<unknown> {
     const headers: Record<string, string> = {
       accept: "application/json",
       [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
     };
     if (body !== undefined) headers["content-type"] = "application/json";
-    if (withToken && this.token) headers.authorization = `Bearer ${this.token}`;
+    if (withToken && token) headers.authorization = `Bearer ${token}`;
     let response: BrowserResponse;
     try {
       response = await this.fetcher(base + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -871,33 +917,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const envelope = await response.json() as Envelope;
     if (!response.ok) throw new GatewayRequestError(response.status, envelope.error?.code, envelope.error?.message);
     return envelope;
-  }
-
-  private applyRoom(data: RoomData): void {
-    const sameRoom = data.room.roomId === this.snapshot.roomId;
-    if (!sameRoom) {
-      this.events.clear();
-      this.activeAgentOutputs.clear();
-    }
-    this.token = data.roomToken;
-    this.snapshot = {
-      roomId: data.room.roomId,
-      memberId: data.member.memberId,
-      roomTitle: data.room.title,
-      hostDisplayName: data.room.hostDisplayName ?? this.snapshot.hostDisplayName,
-      role: data.member.role === "host" ? "host" : "participant",
-      connection: "connecting",
-      onlineCount: sameRoom ? this.snapshot.onlineCount : 0,
-      canSteer: data.member.role === "host" || data.member.role === "lead",
-      unavailableReason: undefined,
-      members: sameRoom
-        ? this.snapshot.members
-        : typeof data.member.displayName === "string" && data.member.displayName.trim() !== ""
-          ? [{ memberId: data.member.memberId, displayName: data.member.displayName }]
-          : [],
-      timeline: this.projectTimeline(),
-    };
-    this.emit();
   }
 
   private applyFrame(raw: string): void {
@@ -926,6 +945,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     }
     if (frame.kind === "event") {
       const event = frame.event;
+      if (event.roomId !== this.roomId) return;
       if (this.events.has(event.eventId)) return;
       this.events.set(event.eventId, event);
       this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
@@ -953,16 +973,21 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return projectTimeline([...this.events.values()], [...this.activeAgentOutputs.values()]);
   }
 
-  private async recoverEvents(untilSeq: number): Promise<void> {
+  private async recoverEvents(roomId: string, untilSeq: number, base: string, token: string): Promise<Map<string, RoomEvent>> {
+    const events = roomId === this.roomId ? new Map(this.events) : new Map<string, RoomEvent>();
     let after = 0;
     while (after < untilSeq) {
-      const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(this.roomId)}/events?after=${String(after)}&limit=500`, undefined, true)) as EventsData;
+      const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/events?after=${String(after)}&limit=500`, undefined, true, base, token)) as EventsData;
       if (!Array.isArray(data.events) || data.events.length === 0) break;
-      for (const event of data.events) this.events.set(event.eventId, event);
+      for (const event of data.events) {
+        if (event.roomId !== roomId) throw new Error("Gateway room events do not match the requested room");
+        events.set(event.eventId, event);
+      }
       const next = data.nextSeq ?? data.events.at(-1)?.seq ?? after;
       if (next <= after) break;
       after = next;
     }
+    return events;
   }
 
   private setConnection(connection: DshCollabClientSnapshot["connection"]): void {

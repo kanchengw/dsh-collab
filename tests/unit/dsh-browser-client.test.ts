@@ -691,6 +691,98 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
+  it("keeps the current room active when a joined room snapshot cannot be loaded", async () => {
+    const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
+    let currentSocket: BrowserSocket | undefined;
+    let persisted: ParticipantResumeState | undefined;
+    const fetch: BrowserFetch = async (url, init) => {
+      requests.push({ url, init });
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Local" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      if (url.includes("/room-1/snapshot")) return response({ room: { roomId: "room-1", title: "Local" }, members: [], lastEventSeq: 0 });
+      if (url.endsWith("/join")) return response({
+        room: { roomId: "room-2", title: "Remote" },
+        member: { memberId: "member-bob", role: "participant" },
+        roomToken: "participant-token",
+        resumeCredential: "resume-room-2",
+      }, 201);
+      if (url.includes("/room-2/snapshot")) return errorResponse("ROOM_INACTIVE", "room is not shared", 409);
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/messages")) return response({}, 201);
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { currentSocket = this; queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab",
+      roomId: "room-1",
+      fetch,
+      WebSocket,
+      participantPersistence: { load: () => persisted, save: async (state) => { persisted = state; } },
+    });
+    await client.bootstrap();
+    const originalSocket = currentSocket;
+
+    await expect(client.join({
+      invitation: JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100 }),
+      displayName: "Bob",
+    })).rejects.toThrow("room is not shared");
+    await client.send({ text: "still local", target: "room" });
+
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
+    expect(persisted).toMatchObject({ roomId: "room-2", credential: "resume-room-2" });
+    expect(originalSocket?.readyState).toBe(1);
+    expect(requests.at(-1)).toMatchObject({
+      url: "http://127.0.0.1:4310/collab/v1/rooms/room-1/messages",
+      init: { headers: { authorization: "Bearer host-token" } },
+    });
+    client.dispose();
+  });
+
+  it("keeps the current room socket when a joined room socket cannot open", async () => {
+    const sockets: BrowserSocket[] = [];
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Local" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/join")) return response({ room: { roomId: "room-2", title: "Remote" }, member: { memberId: "member-bob", role: "participant" }, roomToken: "participant-token" }, 201);
+      const roomId = url.includes("/room-2/") ? "room-2" : "room-1";
+      if (url.endsWith("/snapshot")) return response({ room: { roomId, title: roomId }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 0; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() {
+        sockets.push(this);
+        const attempt = sockets.length;
+        queueMicrotask(() => {
+          if (attempt === 1) { this.readyState = 1; this.onopen?.(); }
+          else { this.readyState = 3; this.onclose?.(); }
+        });
+      }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.join({
+      invitation: JSON.stringify({ protocol: "dsh-collab.v1", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100 }),
+      displayName: "Bob",
+    })).rejects.toThrow("Gateway is unreachable");
+
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0]?.readyState).toBe(1);
+    client.dispose();
+  });
+
   it("recovers room events and projects live human and Agent output into the timeline", async () => {
     const requests: string[] = [];
     let socket: BrowserSocket | undefined;
@@ -730,6 +822,12 @@ describe("browser Gateway client", () => {
       { kind: "human", text: "hello" },
       { kind: "agent", text: "done", state: "output" },
     ]);
+
+    socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
+      eventId: "foreign", roomId: "room-2", seq: 999, type: "human.message",
+      actor: { memberId: "member-other", principalId: "other" }, createdAt: 3, payload: { text: "wrong room" },
+    } }) });
+    expect(client.getSnapshot().timeline).toHaveLength(2);
 
     socket?.onmessage?.({ data: JSON.stringify({
       protocol: "dsh-collab.v1",
