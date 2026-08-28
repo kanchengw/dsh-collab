@@ -568,3 +568,13 @@ Transient Agent output never advances that cursor.
   filesystem path, tool argument, or approval secret. Invite, room and resume
   credentials appear only in their dedicated authentication fields and must
   not be copied into events, logs or URLs.
+Agent request lifecycle persistence
+-----------------------------------
+
+After an accepted Agent request is queued, the Host persists the `running` claim
+before delivering it to the DSH Agent. Agent output and the `completed` or
+`failed` terminal event are each persisted before the lifecycle operation is
+considered complete. If a persistence barrier fails before delivery, no Agent
+side effect is started; if it fails after delivery, the in-memory record remains
+the authoritative `running`/terminal projection and recovery treats an active
+request with unknown outcome as failed rather than redelivering it.
