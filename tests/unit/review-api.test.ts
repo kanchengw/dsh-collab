@@ -175,6 +175,8 @@ describe("SideTask publication API", () => {
       .toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
     expect(deliveries).toEqual([]);
     expect(commitCriticalState).toHaveBeenCalledOnce();
+    await runtime.gateway.dispatcher.processQueue();
+    expect(deliveries).toEqual([]);
     persistenceFails = false;
 
     const accepted = await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } });

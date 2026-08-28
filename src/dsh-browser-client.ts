@@ -666,14 +666,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async send(input: { text: string; target: ComposerTarget }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
-    if (input.target !== "room") {
-      await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/messages`, {
-        clientMessageId: randomId("message"),
-        text: input.text,
-        target: input.target,
-      }, true);
-      return;
-    }
     const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target });
     const clientMessageId = this.pendingMessageIds.get(pendingKey) ?? randomId("message");
     this.pendingMessageIds.set(pendingKey, clientMessageId);

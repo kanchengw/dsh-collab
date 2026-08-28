@@ -234,6 +234,8 @@ export class CollabGateway {
   private readonly approvals: ApprovalStore | undefined;
   private readonly approvalPolicy: "host-only" | "disabled";
   private readonly submissions = new Map<string, SubmissionRecord>();
+  private readonly pendingSubmissions = new Set<SubmissionRecord>();
+  private readonly unconfirmedRequestIds = new Set<string>();
 
   constructor(private readonly options: GatewayOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -252,7 +254,8 @@ export class CollabGateway {
       rooms: options.rooms,
       ledger: options.ledger,
       agent: options.agent,
-      ...(options.activeRooms ? { canDispatch: (roomId) => options.activeRooms!.isActive(roomId) } : {}),
+      canDispatch: (roomId, requestId) => !this.unconfirmedRequestIds.has(requestId)
+        && (options.activeRooms?.isActive(roomId) ?? true),
     });
   }
 
@@ -521,10 +524,16 @@ export class CollabGateway {
           record = existing;
           return;
         }
-        record = this.dispatcher.submitImmediate({ principalId: claims.principalId, message });
+        this.unconfirmedRequestIds.add(requestId);
+        try {
+          record = this.dispatcher.submitImmediate({ principalId: claims.principalId, message });
+        } catch (error) {
+          this.unconfirmedRequestIds.delete(requestId);
+          throw error;
+        }
       });
       if (!record) throw new Error("Mainline integration request was not created");
-      await this.options.commitCriticalState?.();
+      await this.commitPendingState();
       void this.dispatcher.processQueue();
       return { status: 200, body: { publication: accepted.publication, findings: accepted.findings, request: record } };
     }
@@ -692,8 +701,7 @@ export class CollabGateway {
         throw new CollabError("REQUEST_CONFLICT", "clientMessageId was already used for different data", { clientMessageId });
       }
       if (existing.persistencePending) {
-        await this.options.commitCriticalState?.();
-        existing.persistencePending = false;
+        await this.commitPendingState();
       }
       return copy(existing.response);
     }
@@ -711,17 +719,42 @@ export class CollabGateway {
       const response = { status: 201, body: { message, event } };
       const submission = { fingerprint, response, persistencePending: true };
       this.submissions.set(key, submission);
-      await this.options.commitCriticalState?.();
-      submission.persistencePending = false;
+      this.pendingSubmissions.add(submission);
+      await this.commitPendingState();
       return copy(response);
     }
     message.requestId = requestId;
     this.checkQueue(roomId);
-    const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
+    this.unconfirmedRequestIds.add(requestId);
+    let record: QueueRecord;
+    try {
+      record = await this.dispatcher.submit({ principalId: claims.principalId, message });
+    } catch (error) {
+      this.unconfirmedRequestIds.delete(requestId);
+      throw error;
+    }
     const response = { status: 202, body: { request: record } };
-    this.submissions.set(key, { fingerprint: JSON.stringify({ ...message, requestId: undefined }), response });
-    void this.dispatcher.processQueue();
+    const submission = {
+      fingerprint: JSON.stringify({ ...message, requestId: undefined }),
+      response,
+      persistencePending: true,
+    };
+    this.submissions.set(key, submission);
+    this.pendingSubmissions.add(submission);
+    await this.commitPendingState();
     return copy(response);
+  }
+
+  private async commitPendingState(): Promise<void> {
+    const pendingSubmissions = [...this.pendingSubmissions];
+    const pendingRequestIds = [...this.unconfirmedRequestIds];
+    await this.options.commitCriticalState?.();
+    for (const submission of pendingSubmissions) {
+      submission.persistencePending = false;
+      this.pendingSubmissions.delete(submission);
+    }
+    for (const requestId of pendingRequestIds) this.unconfirmedRequestIds.delete(requestId);
+    if (pendingRequestIds.length > 0) void this.dispatcher.processQueue();
   }
 
   private checkQueue(roomId: string): void {

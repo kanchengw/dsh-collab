@@ -92,6 +92,17 @@ existing event without consuming the member message limit or appending another
 event. Browser clients retain the unconfirmed ID across network and `5xx`
 failures, and release it after success or a deterministic `4xx` rejection.
 
+For an Agent-targeted message, the Gateway creates the deterministic queued
+request and its ledger events, then waits for the same critical-state
+persistence barrier before returning `202` or allowing Host delivery. A failed
+barrier returns `500` and leaves the request non-dispatchable. An exact retry
+with the same `clientMessageId`, or a later successful message/Mainline barrier,
+confirms the existing whole-runtime state without consuming message/queue limits or
+appending duplicate events. Each barrier releases only requests that already
+existed when that barrier began, so a concurrent later request cannot be
+delivered by an earlier snapshot write. Browser clients apply the same ID
+retention rules to human and Agent-targeted messages.
+
 The current routes are:
 
 | Method | Public path | Meaning |
@@ -346,7 +357,9 @@ Dispatcher request before delivery starts or success is returned. A persistence
 failure returns `500 INTERNAL_ERROR` and does not deliver the request; an exact
 retry persists and reuses the same deterministic request. During restoration,
 a queued `internal:mainline:` request that is not referenced by an accepted
-publication is failed rather than delivered.
+publication is failed rather than delivered. In-process Mainline requests use
+the same non-dispatchable persistence gate as ordinary Agent requests, so no
+other queue trigger can deliver a failed or still-pending acceptance.
 For upgrade compatibility, Host snapshot restoration and Browser response
 decoding continue to accept the former unprefixed 64-lowercase-hex integration
 ID, but new acceptance never generates that legacy form.

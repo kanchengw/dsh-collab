@@ -30,7 +30,7 @@ export class AgentDispatcher {
       rooms: RoomStore;
       ledger: EventLedger;
       agent: HostAgentPort;
-      canDispatch?: (roomId: string) => boolean;
+      canDispatch?: (roomId: string, requestId: string) => boolean;
     },
   ) {}
 
@@ -346,7 +346,7 @@ export class AgentDispatcher {
   private nextDispatchableIndex(): number {
     return this.queue.findIndex((requestId) => {
       const roomId = this.records.get(requestId)?.record.roomId;
-      return roomId !== undefined && (this.options.canDispatch?.(roomId) ?? true);
+      return roomId !== undefined && (this.options.canDispatch?.(roomId, requestId) ?? true);
     });
   }
 

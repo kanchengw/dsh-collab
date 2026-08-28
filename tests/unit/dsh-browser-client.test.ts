@@ -635,6 +635,44 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
+  it("reuses an Agent request ID after a lost response", async () => {
+    const messageBodies: Array<Record<string, unknown>> = [];
+    const fetch: BrowserFetch = async (url, init) => {
+      if (url.endsWith("/bootstrap")) return response({
+        room: { roomId: "room-1", title: "Release" },
+        member: { memberId: "member-host", role: "host" },
+        roomToken: "host-token",
+      });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/messages")) {
+        messageBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        if (messageBodies.length === 1) throw new TypeError("network response was lost");
+        return response({ request: { status: "queued" } }, 202);
+      }
+      throw new Error(`unexpected request ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1;
+      onopen?: () => void;
+      onmessage?: (event: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {}
+      close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+
+    await expect(client.send({ text: "run tests", target: "dsh" })).rejects.toThrow("Gateway is unreachable");
+    await client.send({ text: "run tests", target: "dsh" });
+
+    expect(messageBodies).toHaveLength(2);
+    expect(messageBodies[1]?.clientMessageId).toBe(messageBodies[0]?.clientMessageId);
+    client.dispose();
+  });
+
   it("retains saved Joined rooms after opening the local Host room", async () => {
     let persisted: ParticipantResumeState | undefined = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
     const fetch: BrowserFetch = async (url) => url.endsWith("/bootstrap") ? response({

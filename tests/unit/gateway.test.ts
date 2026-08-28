@@ -744,4 +744,89 @@ describe("CollabGateway route contract", () => {
     expect(eventCountAtCommit).toEqual([1, 1]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "human.message")).toHaveLength(1);
   });
+
+  it("confirms an Agent request in persistent state before starting delivery", async () => {
+    let persistenceFails = true;
+    let gateway: CollabGateway | undefined;
+    const statusAtCommit: string[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      statusAtCommit.push(gateway?.dispatcher.get("request:room-1:agent-persist")?.status ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
+      maxMessagesPerMemberPerWindow: 2,
+      messageWindowMs: 60_000,
+      maxQueuedRequestsPerRoom: 2,
+    }));
+    gateway = runtime.gateway;
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const message = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { clientMessageId: "agent-persist", text: "run tests", target: "dsh" },
+    };
+
+    expect(await request(runtime.gateway, message)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    expect(runtime.calls).toEqual([]);
+    expect(runtime.gateway.dispatcher.get("request:room-1:agent-persist")).toMatchObject({ status: "queued" });
+    expect(await request(runtime.gateway, {
+      method: "POST",
+      path: "/v1/rooms/session-new/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-new", title: "New room" },
+    })).toMatchObject({ status: 200 });
+    expect(runtime.calls).toEqual([]);
+
+    persistenceFails = false;
+    expect(await request(runtime.gateway, {
+      ...message,
+      body: { clientMessageId: "agent-second", text: "run lint", target: "dsh" },
+    })).toMatchObject({ status: 202 });
+    await vi.waitFor(() => expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]));
+
+    expect(await request(runtime.gateway, message)).toMatchObject({ status: 202, body: { request: { status: "queued" } } });
+    expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]);
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(statusAtCommit).toEqual(["queued", "queued"]);
+    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.queued")).toHaveLength(2);
+  });
+
+  it("does not let an earlier persistence barrier dispatch a later unconfirmed Agent request", async () => {
+    const releases: Array<() => void> = [];
+    const commitCriticalState = vi.fn(() => new Promise<void>((resolve) => releases.push(resolve)));
+    const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
+      maxMessagesPerMemberPerWindow: 2,
+      messageWindowMs: 60_000,
+      maxQueuedRequestsPerRoom: 2,
+    }));
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const sendAgent = (clientMessageId: string, text: string) => request(runtime.gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { clientMessageId, text, target: "dsh" },
+    });
+
+    const first = sendAgent("agent-first", "run tests");
+    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(1));
+    const second = sendAgent("agent-second", "run lint");
+    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(2));
+
+    releases[0]!();
+    await expect(first).resolves.toMatchObject({ status: 202 });
+    await vi.waitFor(() => expect(runtime.calls).toEqual(["request:room-1:agent-first"]));
+
+    releases[1]!();
+    await expect(second).resolves.toMatchObject({ status: 202 });
+    await vi.waitFor(() => expect(runtime.calls).toEqual([
+      "request:room-1:agent-first",
+      "request:room-1:agent-second",
+    ]));
+  });
 });
