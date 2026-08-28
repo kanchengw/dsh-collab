@@ -18,6 +18,12 @@ function actorFor(room: RoomStore, roomId: string, principalId: string, action: 
   return room.authorize(roomId, principalId, action);
 }
 
+class DispatchPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 export class AgentDispatcher {
   private readonly records = new Map<string, { record: QueueRecord; fingerprint: string }>();
   private readonly queue: string[] = [];
@@ -31,6 +37,7 @@ export class AgentDispatcher {
       ledger: EventLedger;
       agent: HostAgentPort;
       canDispatch?: (roomId: string, requestId: string) => boolean;
+      commitCriticalState?: () => Promise<void>;
     },
   ) {}
 
@@ -127,6 +134,7 @@ export class AgentDispatcher {
     rooms: RoomStore;
     ledger: EventLedger;
     agent: HostAgentPort;
+    commitCriticalState?: () => Promise<void>;
     snapshot: DispatcherSnapshot;
   }): AgentDispatcher {
     if (!input.snapshot || input.snapshot.version !== 1) {
@@ -136,6 +144,7 @@ export class AgentDispatcher {
       rooms: input.rooms,
       ledger: input.ledger,
       agent: input.agent,
+      ...(input.commitCriticalState ? { commitCriticalState: input.commitCriticalState } : {}),
     });
     dispatcher.restore(input.snapshot);
     return dispatcher;
@@ -215,6 +224,14 @@ export class AgentDispatcher {
       actor: { memberId: member.memberId, principalId: member.principalId },
       payload: { requestId, hostSessionId: entry.record.hostSessionId, claimAttempt },
     });
+    try {
+      await this.options.commitCriticalState?.();
+    } catch (error) {
+      entry.record.status = "queued";
+      this.activeRequestId = undefined;
+      this.queue.splice(Math.min(queueIndex, this.queue.length), 0, requestId);
+      throw new DispatchPersistenceError(error);
+    }
 
     const delivery: AgentDelivery = {
       requestId,
@@ -237,6 +254,7 @@ export class AgentDispatcher {
         actor: { memberId: member.memberId, principalId: member.principalId },
         payload: { requestId, error: entry.record.error },
       });
+      await this.options.commitCriticalState?.();
       throw error;
     }
     return copy(entry.record);
@@ -270,15 +288,30 @@ export class AgentDispatcher {
       actor: { memberId: member.memberId, principalId: member.principalId },
       payload: { requestId },
     });
+    await this.options.commitCriticalState?.();
     return copy(entry.record);
   }
 
   interruptActive(error: string): QueueRecord | undefined {
     const requestId = this.activeRequestId;
     if (!requestId) return undefined;
-    const record = this.records.get(requestId)?.record;
-    if (!record) throw new CollabError("REQUEST_NOT_FOUND", "active request does not exist", { requestId });
-    this.failRunning(record, error, requestId + ":interrupted");
+    const entry = this.records.get(requestId);
+    if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "active request does not exist", { requestId });
+    const record = entry.record;
+    entry.record.status = "failed";
+    entry.record.error = error;
+    this.activeRequestId = undefined;
+    const member = this.options.rooms.listMembers(record.roomId).find((candidate) => candidate.memberId === record.authorMemberId);
+    if (!member) throw new CollabError("MEMBER_NOT_FOUND", "request author no longer exists", { requestId });
+    this.options.ledger.append({
+      eventId: requestId + ":interrupted",
+      roomId: record.roomId,
+      type: "agent.request.failed",
+      actor: { memberId: member.memberId, principalId: member.principalId },
+      payload: { requestId, error },
+    });
+    const commit = this.options.commitCriticalState?.();
+    if (commit) void commit.catch(() => undefined);
     return this.get(requestId);
   }
 
@@ -359,7 +392,8 @@ export class AgentDispatcher {
       let record: QueueRecord | undefined;
       try {
         record = await this.drainOne();
-      } catch {
+      } catch (error) {
+        if (error instanceof DispatchPersistenceError) return;
         continue;
       }
       if (!record) return;
@@ -371,25 +405,29 @@ export class AgentDispatcher {
           hostSessionId: record.hostSessionId,
         });
       } catch (error) {
-        this.failRunning(record, error instanceof Error ? error.message : String(error));
+        await this.failRunning(record, error instanceof Error ? error.message : String(error));
         continue;
       }
       if (this.activeRequestId === record.requestId && this.records.get(record.requestId)?.record.status === "running") {
         try {
           if (result?.error) {
-            this.failRunning(record, result.error);
+            await this.failRunning(record, result.error);
             continue;
           }
-          if (result?.text) this.appendAgentOutput(record, result.text);
+          if (result?.text) await this.appendAgentOutput(record, result.text);
           await this.complete(record.requestId);
-        } catch {
+        } catch (error) {
+          if (this.activeRequestId === record.requestId && this.records.get(record.requestId)?.record.status === "running") {
+            await this.failRunning(record, `Agent result persistence failed: ${error instanceof Error ? error.message : String(error)}`)
+              .catch(() => undefined);
+          }
           continue;
         }
       }
     }
   }
 
-  private failRunning(record: QueueRecord, error: string, eventId = record.requestId + ":failed"): void {
+  private async failRunning(record: QueueRecord, error: string, eventId = record.requestId + ":failed"): Promise<void> {
     const entry = this.records.get(record.requestId);
     if (!entry || entry.record.status !== "running" || this.activeRequestId !== record.requestId) return;
     const member = this.options.rooms.listMembers(record.roomId).find((candidate) => candidate.memberId === record.authorMemberId);
@@ -404,6 +442,7 @@ export class AgentDispatcher {
       actor: { memberId: member.memberId, principalId: member.principalId },
       payload: { requestId: record.requestId, error },
     });
+    await this.options.commitCriticalState?.();
   }
 
   private failQueued(record: QueueRecord, error: string, actor: { memberId: string; principalId: string }): void {
@@ -420,7 +459,7 @@ export class AgentDispatcher {
     });
   }
 
-  private appendAgentOutput(record: QueueRecord, text: string): void {
+  private async appendAgentOutput(record: QueueRecord, text: string): Promise<void> {
     const host = this.options.rooms.listMembers(record.roomId).find((member) => member.role === "host");
     if (!host) throw new CollabError("MEMBER_NOT_FOUND", "room host no longer exists", { roomId: record.roomId });
     this.options.ledger.append({
@@ -430,6 +469,7 @@ export class AgentDispatcher {
       actor: { memberId: host.memberId, principalId: host.principalId },
       payload: { requestId: record.requestId, state: "output", text },
     });
+    await this.options.commitCriticalState?.();
   }
 
   private appendCancelled(record: QueueRecord, actor: { memberId: string; principalId: string }): void {

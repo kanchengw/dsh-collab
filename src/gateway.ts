@@ -254,6 +254,7 @@ export class CollabGateway {
       rooms: options.rooms,
       ledger: options.ledger,
       agent: options.agent,
+      ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
       canDispatch: (roomId, requestId) => !this.unconfirmedRequestIds.has(requestId)
         && (options.activeRooms?.isActive(roomId) ?? true),
     });

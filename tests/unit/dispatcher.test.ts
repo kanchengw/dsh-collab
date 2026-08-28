@@ -5,7 +5,7 @@ import { classifyMessage } from "../../src/messages.js";
 import { RoomStore } from "../../src/room.js";
 import type { AgentRequest, HostAgentPort, MessageTarget } from "../../src/types.js";
 
-function createDispatcher(agent: HostAgentPort) {
+function createDispatcher(agent: HostAgentPort, commitCriticalState?: () => Promise<void>) {
   const rooms = new RoomStore();
   rooms.createRoom({
     roomId: "room-1",
@@ -22,7 +22,7 @@ function createDispatcher(agent: HostAgentPort) {
     now: 2,
   });
   const ledger = new EventLedger();
-  return { dispatcher: new AgentDispatcher({ rooms, ledger, agent }), rooms, ledger };
+  return { dispatcher: new AgentDispatcher({ rooms, ledger, agent, ...(commitCriticalState ? { commitCriticalState } : {}) }), rooms, ledger };
 }
 
 function request(messageId: string, text: string, target: MessageTarget = "dsh"): AgentRequest {
@@ -244,20 +244,100 @@ describe("AgentDispatcher", () => {
     ]);
   });
 
+  it("does not deliver when the running claim cannot be persisted", async () => {
+    const calls: string[] = [];
+    let persistenceFails = true;
+    const { dispatcher } = createDispatcher({
+      followup(input) { calls.push(input.requestId); }, steer() {}, cancel() {},
+    }, async () => { if (persistenceFails) throw new Error("state write failed"); });
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-claim-failed", "Reply once") });
+    await expect(dispatcher.drainOne()).rejects.toThrow("state write failed");
+    expect(calls).toEqual([]);
+    expect(dispatcher.get("message-claim-failed")).toMatchObject({ status: "queued", claimAttempt: 1 });
+
+    persistenceFails = false;
+    await dispatcher.processQueue();
+    expect(calls).toEqual(["message-claim-failed"]);
+    expect(dispatcher.get("message-claim-failed")).toMatchObject({ status: "completed", claimAttempt: 2 });
+  });
+
+  it("marks a delivered turn failed when output persistence fails without replaying it", async () => {
+    const commits: Array<{ status: string | undefined; outputEvents: number }> = [];
+    let failOutputCommit = true;
+    let dispatcher!: AgentDispatcher;
+    const fixture = createDispatcher({
+      followup() {}, steer() {}, cancel() {},
+      whenIdle: async () => ({ text: "COLLAB_AGENT_OUTPUT" }),
+    });
+    dispatcher = new AgentDispatcher({
+      rooms: fixture.rooms,
+      ledger: fixture.ledger,
+      agent: {
+        followup() {}, steer() {}, cancel() {},
+        whenIdle: async () => ({ text: "COLLAB_AGENT_OUTPUT" }),
+      },
+      commitCriticalState: async () => {
+        const outputEvents = fixture.ledger.readAfter("room-1", 0).filter((event) => event.type === "agent.state.changed").length;
+        commits.push({ status: dispatcher.get("message-output-persist")?.status, outputEvents });
+        if (outputEvents > 0 && failOutputCommit) {
+          failOutputCommit = false;
+          throw new Error("state write failed");
+        }
+      },
+    });
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-output-persist", "Reply once") });
+    await dispatcher.processQueue();
+
+    expect(commits).toEqual([
+      { status: "running", outputEvents: 0 },
+      { status: "running", outputEvents: 1 },
+      { status: "failed", outputEvents: 1 },
+    ]);
+    expect(dispatcher.get("message-output-persist")).toMatchObject({ status: "failed", error: "Agent result persistence failed: state write failed" });
+    expect(fixture.ledger.readAfter("room-1", 0)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "agent.state.changed", payload: { requestId: "message-output-persist", state: "output", text: "COLLAB_AGENT_OUTPUT" } }),
+      expect.objectContaining({ type: "agent.request.failed", payload: { requestId: "message-output-persist", error: "Agent result persistence failed: state write failed" } }),
+    ]));
+    expect(fixture.ledger.readAfter("room-1", 0).filter((event) => event.type === "agent.request.completed")).toHaveLength(0);
+  });
+
   it("publishes a failed request instead of completing a failed Host turn", async () => {
-    const { dispatcher, ledger } = createDispatcher({
+    const states: string[] = [];
+    let dispatcher!: AgentDispatcher;
+    const fixture = createDispatcher({
       followup() {}, steer() {}, cancel() {},
       whenIdle: async () => ({ error: "Host Agent failed: MISSING_CREDENTIAL" }),
-    });
+    }, async () => { states.push(dispatcher.get("message-failed")?.status ?? "missing"); });
+    dispatcher = fixture.dispatcher;
     await dispatcher.submit({ principalId: "alice", message: request("message-failed", "Reply once") });
 
     await dispatcher.processQueue();
 
     expect(dispatcher.get("message-failed")).toMatchObject({ status: "failed", error: "Host Agent failed: MISSING_CREDENTIAL" });
-    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
+    expect(states).toEqual(["running", "failed"]);
+    expect(fixture.ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
       type: "agent.request.failed",
       payload: { requestId: "message-failed", error: "Host Agent failed: MISSING_CREDENTIAL" },
     });
+  });
+
+  it("confirms a failed terminal state after a Host turn error", async () => {
+    const commits: string[] = [];
+    let dispatcher!: AgentDispatcher;
+    dispatcher = createDispatcher({
+      followup() {}, steer() {}, cancel() {},
+      whenIdle: async () => ({ error: "Host Agent failed" }),
+    }, async () => {
+      commits.push(dispatcher.get("message-failed-persist")?.status ?? "missing");
+    }).dispatcher;
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-failed-persist", "Reply once") });
+    await dispatcher.processQueue();
+
+    expect(commits).toEqual(["running", "failed"]);
+    expect(dispatcher.get("message-failed-persist")).toMatchObject({ status: "failed", error: "Host Agent failed" });
   });
 
   it("fails a queued request once when claim-time membership is inactive", async () => {

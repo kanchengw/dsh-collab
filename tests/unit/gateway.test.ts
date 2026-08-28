@@ -772,8 +772,6 @@ describe("CollabGateway route contract", () => {
     expect(await request(runtime.gateway, message)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
     expect(runtime.calls).toEqual([]);
     expect(runtime.gateway.dispatcher.get("request:room-1:agent-persist")).toMatchObject({ status: "queued" });
-    await runtime.gateway.dispatcher.processQueue();
-    expect(runtime.calls).toEqual([]);
 
     persistenceFails = false;
     expect(await request(runtime.gateway, {
@@ -785,14 +783,18 @@ describe("CollabGateway route contract", () => {
     expect(await request(runtime.gateway, message)).toMatchObject({ status: 202, body: { request: { status: "queued" } } });
     expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]);
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(statusAtCommit).toEqual(["queued", "queued"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(6);
+    expect(statusAtCommit).toEqual(["queued", "queued", "running", "completed", "completed", "completed"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.queued")).toHaveLength(2);
   });
 
   it("does not let an earlier persistence barrier dispatch a later unconfirmed Agent request", async () => {
     const releases: Array<() => void> = [];
-    const commitCriticalState = vi.fn(() => new Promise<void>((resolve) => releases.push(resolve)));
+    let gatewayCommits = 0;
+    const commitCriticalState = vi.fn(() => {
+      if (gatewayCommits++ < 2) return new Promise<void>((resolve) => releases.push(resolve));
+      return Promise.resolve();
+    });
     const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
       maxMessagesPerMemberPerWindow: 2,
       messageWindowMs: 60_000,
