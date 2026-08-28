@@ -79,6 +79,76 @@ describe("real DSH client slot adapter", () => {
     expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "repository/diff", { roomId: "room-owned", path: "src/app.ts", layer: "unstaged" });
   });
 
+  it("keeps private Sidecar prompts and streamed results on the requester's loopback control port", async () => {
+    const sideTask = {
+      task: {
+        taskId: "task-1", roomId: "room-joined", type: "explain" as const, localPrompt: "Explain the retry", executor: "requester-local" as const,
+        context: { roomEventSeq: 4, selectedRoomEventIds: ["event-1"] }, state: { status: "running" as const },
+        publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "The retry",
+      revision: 2,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => ({
+      ok: true,
+      value: { sideTask: endpoint === "sidecar/get" ? { ...sideTask, output: "The retry is safe", revision: 3 } : sideTask },
+    })) };
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+    const port = createDshGatewayControlPort(base, rpc);
+    const input = {
+      roomId: "room-joined", requestedBy: "member-bob", localPrompt: "Explain the retry", roomEventSeq: 4,
+      contextMessages: [{ eventId: "event-1", author: "Alice", text: "Use a stable key" }],
+    };
+
+    await expect(port.startLocalExplain?.(input)).resolves.toEqual(sideTask);
+    await expect(port.getLocalSideTask?.("room-joined")).resolves.toMatchObject({ output: "The retry is safe", revision: 3 });
+    await expect(port.cancelLocalSideTask?.("room-joined", "task-1")).resolves.toEqual(sideTask);
+    expect(rpc.call.mock.calls).toEqual([
+      ["/dsh-collab", "sidecar/start", input],
+      ["/dsh-collab", "sidecar/get", { roomId: "room-joined" }],
+      ["/dsh-collab", "sidecar/cancel", { roomId: "room-joined", taskId: "task-1" }],
+    ]);
+  });
+
+  it("rejects malformed local SideTask projections at the browser boundary", async () => {
+    const rpc = { call: vi.fn(async () => ({ ok: true, value: { sideTask: {
+      task: {
+        taskId: "task-1", roomId: "room-joined", type: "explain", localPrompt: "Explain", executor: "requester-local",
+        context: { roomEventSeq: 4, selectedRoomEventIds: [] }, state: { status: "running" },
+        publication: { status: "private" }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "", revision: 1,
+    } } })) };
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+
+    await expect(createDshGatewayControlPort(base, rpc).getLocalSideTask?.("room-joined")).rejects.toThrow(/invalid local sidetask/i);
+  });
+
+  it("rejects local SideTask projections that do not match the requested room, requester, or task", async () => {
+    const sideTask = {
+      task: {
+        taskId: "task-1", roomId: "room-joined", type: "explain" as const, localPrompt: "Explain", executor: "requester-local" as const,
+        context: { roomEventSeq: 4, selectedRoomEventIds: ["event-1"] }, state: { status: "running" as const },
+        publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 10,
+      },
+      output: "", revision: 1,
+    };
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+    const input = {
+      roomId: "room-joined", requestedBy: "member-bob", localPrompt: "Explain", roomEventSeq: 4,
+      contextMessages: [{ eventId: "event-1", author: "Alice", text: "Context" }],
+    };
+
+    const wrongRoom = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { sideTask: { ...sideTask, task: { ...sideTask.task, roomId: "room-other" } } } })) });
+    await expect(wrongRoom.getLocalSideTask?.("room-joined")).rejects.toThrow(/invalid local sidetask/i);
+
+    const wrongRequester = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { sideTask: { ...sideTask, task: { ...sideTask.task, requestedBy: "member-other" } } } })) });
+    await expect(wrongRequester.startLocalExplain?.(input)).rejects.toThrow(/invalid local sidetask/i);
+
+    const wrongTask = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { sideTask: { ...sideTask, task: { ...sideTask.task, taskId: "task-other" } } } })) });
+    await expect(wrongTask.cancelLocalSideTask?.("room-joined", "task-1")).rejects.toThrow(/invalid local sidetask/i);
+  });
+
   it("preserves class-backed room actions when adding Gateway controls", async () => {
     class BrowserSettings {
       readonly shared: string[] = [];

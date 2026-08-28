@@ -22,6 +22,7 @@ export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed
 
 export interface TimelineItem {
   eventId: string;
+  contextEventId?: string;
   seq: number;
   kind: "human" | "agent-request" | "agent";
   authorMemberId: string;
@@ -158,6 +159,7 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
     if (event.type === "human.message") {
       const item: TimelineItem = {
         eventId: event.eventId,
+        contextEventId: event.eventId,
         seq: event.seq,
         kind: "human",
         authorMemberId: event.actor.memberId,
@@ -178,7 +180,11 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       };
       item.seq = event.seq;
       item.state = typeof payload.state === "string" ? payload.state : undefined;
-      item.text = payloadText(payload) ?? item.text;
+      const text = payloadText(payload);
+      if (text !== undefined) {
+        item.text = text;
+        item.contextEventId = event.eventId;
+      }
       item.streaming = false;
       if (!outputs.has(requestId)) {
         outputs.set(requestId, item);
@@ -207,7 +213,11 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       requestId,
     };
     item.status = status;
-    item.text = payloadText(payload) ?? item.text;
+    const text = payloadText(payload);
+    if (text !== undefined) {
+      item.text = text;
+      item.contextEventId = event.eventId;
+    }
     if (!requests.has(requestId)) {
       requests.set(requestId, item);
       items.push(item);
@@ -216,6 +226,7 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       const failureKey = requestId + ":failure";
       const failure = outputs.get(failureKey) ?? {
         eventId: event.eventId + ":detail",
+        contextEventId: event.eventId,
         seq: event.seq,
         kind: "agent" as const,
         authorMemberId: event.actor.memberId,

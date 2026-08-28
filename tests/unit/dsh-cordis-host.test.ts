@@ -269,6 +269,73 @@ describe("Cordis Host mount", () => {
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
   });
 
+  it("runs private Sidecar Explain tasks through the requester's loopback DSH without starting the Gateway", async () => {
+    const gatewayPort = await freeTcpPort();
+    const disposeEffects: Array<() => void | Promise<void>> = [];
+    const sessionListeners = new Set<(session: { id: string }, event: { seq: number; type: string; data: unknown }) => void>();
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    let sidecarSessionId = "";
+    let prompt = "";
+    const disposed = vi.fn(async () => {});
+    const emit = (event: { seq: number; type: string; data: unknown }): void => {
+      for (const listener of sessionListeners) listener({ id: sidecarSessionId }, event);
+    };
+    let persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: {
+        get: vi.fn(() => undefined),
+        create: vi.fn(async (input: { sessionId: string; setup?: (agentContext: object) => Promise<void> | void }) => {
+          sidecarSessionId = input.sessionId;
+          await input.setup?.({});
+          return {
+            agent: {
+              followup(message: { id: string; content: [{ text: string }] }) {
+                prompt = message.content[0].text;
+                emit({ seq: 1, type: "user/message", data: message });
+              },
+              cancel: vi.fn(),
+              whenIdle: vi.fn(async () => {}),
+            },
+            dispose: disposed,
+          };
+        }),
+      },
+      agentPresets: { mount: vi.fn(async () => {}) },
+      on: (_event: "session/event", listener: (session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) => {
+        sessionListeners.add(listener);
+        return () => { sessionListeners.delete(listener); };
+      },
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; } }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+    apply(context as unknown as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
+
+    expect(await canConnect(gatewayPort)).toBe(false);
+    const started = await control!("sidecar/start", {
+      roomId: "room-remote",
+      requestedBy: "member-bob",
+      localPrompt: "Explain the retry.",
+      roomEventSeq: 4,
+      contextMessages: [{ eventId: "event-1", author: "Alice", text: "Retry uses a stable key." }],
+    }, new AbortController().signal);
+    expect(started).toMatchObject({ ok: true, value: { sideTask: { task: { roomId: "room-remote", state: { status: "running" } } } } });
+    expect(prompt).toContain("Explain the retry.");
+    expect(context.agents.get).not.toHaveBeenCalled();
+    expect(await canConnect(gatewayPort)).toBe(false);
+
+    emit({ seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", text: "The stable key" } } });
+    emit({ seq: 3, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    await vi.waitFor(() => { expect(disposed).toHaveBeenCalledOnce(); });
+    await expect(control!("sidecar/get", { roomId: "room-remote" }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: { sideTask: { output: "The stable key", task: { state: { status: "completed" }, publication: { status: "private" } } } },
+    });
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+  });
+
   it("lists persisted Owned rooms as inactive while the Gateway is stopped", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dsh-collab-owned-rooms-"));
     const stateFile = join(dir, "state.json");

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { DiffBlock, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
+import { DiffBlock, MarkdownText, type DiffHunk } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointProjection, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { DshCollabSettingsPort } from "./dsh-client.js";
+import type { LocalSideTaskSnapshot } from "./local-sidecar.js";
 import type { CollabTranslate } from "./locales.js";
 import { defaultCollabTranslate } from "./locales.js";
 import type { RepositoryChange, RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
+import type { TimelineItem } from "./ui.js";
 import css from "./collab-inspector.module.css";
 
 export interface CollabInspectorState {
@@ -20,10 +22,11 @@ export interface CollabInspectorState {
   reviewFindingNextCursors?: Record<string, string | undefined>;
   reviewDiffs?: Record<string, Record<string, ReviewPointDiff>>;
   selectedReviewDiffPath?: string;
+  sideTask?: LocalSideTaskSnapshot;
   error?: string;
 }
 
-export type CollabInspectorTab = "changes" | "reviews";
+export type CollabInspectorTab = "changes" | "reviews" | "tasks";
 
 export function inspectorRoomState(roomId: string, sharing?: WorkspaceSharingState): CollabInspectorState {
   return { status: "idle", ...(sharing?.roomId === roomId ? { sharing } : {}) };
@@ -32,6 +35,19 @@ export function inspectorRoomState(roomId: string, sharing?: WorkspaceSharingSta
 export function beginInspectorRefresh(current: CollabInspectorState): CollabInspectorState {
   const { diff: _diff, ...state } = current;
   return { ...state, status: "loading", error: undefined };
+}
+
+function replaceSideTask(current: CollabInspectorState, incoming?: LocalSideTaskSnapshot): CollabInspectorState {
+  if (incoming) return { ...current, sideTask: incoming, error: undefined };
+  const { sideTask: _sideTask, ...rest } = current;
+  return { ...rest, error: undefined };
+}
+
+export function mergePolledSideTask(current: CollabInspectorState, incoming: LocalSideTaskSnapshot | undefined, expectedTaskId: string): CollabInspectorState {
+  if (current.sideTask?.task.taskId !== expectedTaskId) return current;
+  if (!incoming || incoming.task.taskId !== expectedTaskId) return replaceSideTask(current, incoming);
+  if (current.sideTask?.task.taskId === expectedTaskId && current.sideTask.revision > incoming.revision) return current;
+  return replaceSideTask(current, incoming);
 }
 
 export function reviewPointFilesFromInspection(inspection: RepositoryInspection): ReviewPointCreateInput["files"] {
@@ -61,6 +77,9 @@ export function useCollabInspector(input: {
   role: "host" | "participant";
   sharing?: WorkspaceSharingState;
   port?: DshCollabSettingsPort;
+  memberId?: string;
+  members: readonly { memberId: string; displayName: string }[];
+  timeline: readonly TimelineItem[];
 }): {
   open: boolean;
   activeTab: CollabInspectorTab;
@@ -83,17 +102,23 @@ export function useCollabInspector(input: {
   setReviewLifecycle(reviewPointId: string, lifecycle: ReviewLifecycle): Promise<void>;
   setReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<void>;
   loadReviewPointDiff(reviewPointId: string, fileIndex: number): Promise<void>;
+  startLocalExplain(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  cancelLocalSideTask(): Promise<void>;
 } {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<CollabInspectorTab>("changes");
   const [state, setState] = useState<CollabInspectorState>(() => inspectorRoomState(input.roomId, input.sharing));
   const roomIdRef = useRef(input.roomId);
+  const sideTaskEpochRef = useRef(0);
+  const sideTaskReadSeqRef = useRef(0);
   roomIdRef.current = input.roomId;
   const updateCurrentRoom = (roomId: string, update: (current: CollabInspectorState) => CollabInspectorState): void => {
     if (roomIdRef.current === roomId) setState(update);
   };
 
   useEffect(() => {
+    sideTaskEpochRef.current += 1;
+    sideTaskReadSeqRef.current += 1;
     setOpen(false);
     setActiveTab("changes");
     setState(inspectorRoomState(input.roomId, input.sharing));
@@ -102,6 +127,34 @@ export function useCollabInspector(input: {
     if (!input.sharing || input.sharing.roomId !== input.roomId) return;
     setState((current) => ({ ...current, sharing: input.sharing }));
   }, [input.roomId, input.sharing]);
+  useEffect(() => {
+    const task = state.sideTask?.task;
+    if (!input.port?.getLocalSideTask || !task || (task.state.status !== "queued" && task.state.status !== "running")) return;
+    const roomId = input.roomId;
+    const taskId = task.taskId;
+    const epoch = sideTaskEpochRef.current;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async (): Promise<void> => {
+      const readSeq = sideTaskReadSeqRef.current + 1;
+      sideTaskReadSeqRef.current = readSeq;
+      try {
+        const sideTask = await input.port!.getLocalSideTask!(roomId);
+        if (sideTaskEpochRef.current !== epoch || sideTaskReadSeqRef.current !== readSeq) return;
+        if (sideTask) updateCurrentRoom(roomId, (current) => mergePolledSideTask(current, sideTask, taskId));
+        else updateCurrentRoom(roomId, (current) => mergePolledSideTask(current, undefined, taskId));
+      } catch (cause) {
+        if (sideTaskEpochRef.current !== epoch || sideTaskReadSeqRef.current !== readSeq) return;
+        updateCurrentRoom(roomId, (current) => current.sideTask?.task.taskId === taskId
+          ? { ...current, error: cause instanceof Error ? cause.message : String(cause) }
+          : current);
+      } finally {
+        if (!stopped && sideTaskEpochRef.current === epoch) timer = setTimeout(() => { void poll(); }, 400);
+      }
+    };
+    timer = setTimeout(() => { void poll(); }, 400);
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [input.port, input.roomId, state.sideTask?.task.taskId, state.sideTask?.task.state.status]);
 
   const refresh = async (): Promise<void> => {
     if (!input.port || input.roomId === "") return;
@@ -330,6 +383,70 @@ export function useCollabInspector(input: {
       updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
     }
   };
+  const loadLocalSideTask = async (): Promise<void> => {
+    if (!input.port?.getLocalSideTask || input.roomId === "") return;
+    const roomId = input.roomId;
+    const epoch = sideTaskEpochRef.current;
+    const readSeq = sideTaskReadSeqRef.current + 1;
+    sideTaskReadSeqRef.current = readSeq;
+    try {
+      const sideTask = await input.port.getLocalSideTask(roomId);
+      if (sideTaskEpochRef.current === epoch && sideTaskReadSeqRef.current === readSeq) {
+        updateCurrentRoom(roomId, (current) => current.sideTask
+          ? mergePolledSideTask(current, sideTask, current.sideTask.task.taskId)
+          : replaceSideTask(current, sideTask));
+      }
+    } catch (cause) {
+      if (sideTaskEpochRef.current === epoch && sideTaskReadSeqRef.current === readSeq) {
+        updateCurrentRoom(roomId, (current) => ({ ...current, error: cause instanceof Error ? cause.message : String(cause) }));
+      }
+    }
+  };
+  const startLocalExplain = async (localPrompt: string, selectedEventIds: string[]): Promise<boolean> => {
+    if (!input.port?.startLocalExplain || !input.memberId || input.roomId === "") return false;
+    const selected = new Set(selectedEventIds);
+    const memberNames = new Map(input.members.map((member) => [member.memberId, member.displayName]));
+    const stableTimeline = input.timeline.filter((item) => item.contextEventId && !item.streaming && !item.eventId.startsWith("stream:"));
+    const contextMessages = stableTimeline.flatMap((item) => item.contextEventId && selected.has(item.contextEventId) && item.text?.trim()
+      ? [{ eventId: item.contextEventId, author: item.kind === "agent" ? "@agent" : memberNames.get(item.authorMemberId) ?? item.authorMemberId, text: item.text }]
+      : []);
+    const roomId = input.roomId;
+    const epoch = sideTaskEpochRef.current + 1;
+    sideTaskEpochRef.current = epoch;
+    sideTaskReadSeqRef.current += 1;
+    setState((current) => ({ ...current, status: "loading", error: undefined }));
+    try {
+      const sideTask = await input.port.startLocalExplain({
+        roomId,
+        requestedBy: input.memberId,
+        localPrompt,
+        roomEventSeq: stableTimeline.reduce((seq, item) => Math.max(seq, item.seq), 0),
+        contextMessages,
+      });
+      if (sideTaskEpochRef.current === epoch) updateCurrentRoom(roomId, (current) => ({ ...current, status: "ready", sideTask, error: undefined }));
+      return roomIdRef.current === roomId && sideTaskEpochRef.current === epoch;
+    } catch (cause) {
+      if (sideTaskEpochRef.current === epoch) updateCurrentRoom(roomId, (current) => ({ ...current, status: "error", error: cause instanceof Error ? cause.message : String(cause) }));
+      return false;
+    }
+  };
+  const cancelLocalSideTask = async (): Promise<void> => {
+    const task = state.sideTask?.task;
+    if (!input.port?.cancelLocalSideTask || !task) return;
+    const roomId = input.roomId;
+    const readSeq = sideTaskReadSeqRef.current + 1;
+    sideTaskReadSeqRef.current = readSeq;
+    try {
+      const sideTask = await input.port.cancelLocalSideTask(roomId, task.taskId);
+      if (sideTaskReadSeqRef.current === readSeq) updateCurrentRoom(roomId, (current) => mergePolledSideTask(current, sideTask, task.taskId));
+    } catch (cause) {
+      if (sideTaskReadSeqRef.current === readSeq) {
+        updateCurrentRoom(roomId, (current) => current.sideTask?.task.taskId === task.taskId
+          ? { ...current, error: cause instanceof Error ? cause.message : String(cause) }
+          : current);
+      }
+    }
+  };
   return {
     open,
     activeTab,
@@ -340,7 +457,7 @@ export function useCollabInspector(input: {
     setSharing,
     loadSnapshot,
     loadDiff,
-    selectTab: (tab) => { setActiveTab(tab); if (tab === "reviews") void reloadReviewPoints(); },
+    selectTab: (tab) => { setActiveTab(tab); if (tab === "reviews") void reloadReviewPoints(); else if (tab === "tasks") void loadLocalSideTask(); },
     createReviewPoint,
     reloadReviewPoints,
     loadMoreReviewPoints,
@@ -358,6 +475,8 @@ export function useCollabInspector(input: {
     },
     setReviewFindingState,
     loadReviewPointDiff,
+    startLocalExplain,
+    cancelLocalSideTask,
   };
 }
 
@@ -544,6 +663,55 @@ function ReviewDetail(props: {
   </section>;
 }
 
+function PrivateSideWork(props: {
+  sideTask?: LocalSideTaskSnapshot;
+  timeline: readonly TimelineItem[];
+  busy: boolean;
+  onStart(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  onCancel(): void;
+  t: CollabTranslate;
+}): ReactNode {
+  const [prompt, setPrompt] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const messages = props.timeline.filter((item) => item.contextEventId && item.text?.trim() && !item.streaming && !item.eventId.startsWith("stream:"));
+  const running = props.sideTask?.task.state.status === "queued" || props.sideTask?.task.state.status === "running";
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const localPrompt = prompt.trim();
+    if (localPrompt === "" || selected.length === 0) return;
+    if (await props.onStart(localPrompt, selected)) setPrompt("");
+  };
+  return <section className={css.sideWork} aria-labelledby="collab-side-work-title">
+    <div className={css.sideWorkHeading}>
+      <div><h3 id="collab-side-work-title">{props.t("inspector.sideWork")}</h3><p>{props.t("inspector.sideWorkHint")}</p></div>
+      <span>{props.t("inspector.privateLocal")}</span>
+    </div>
+    <fieldset className={css.contextPicker} disabled={props.busy || running}>
+      <legend>{props.t("inspector.explainContext")}</legend>
+      <p>{props.t("inspector.explainContextHint")}</p>
+      {messages.length === 0 ? <p className={css.emptyText}>{props.t("inspector.noExplainContext")}</p> : messages.map((item) => <label key={item.eventId}>
+        <input type="checkbox" checked={selected.includes(item.contextEventId!)} onChange={(event) => {
+          setSelected(event.target.checked ? [...selected, item.contextEventId!] : selected.filter((eventId) => eventId !== item.contextEventId));
+        }} />
+        <span>{item.text}</span>
+      </label>)}
+    </fieldset>
+    <form className={css.sideTaskForm} onSubmit={(event) => { void submit(event); }}>
+      <label>{props.t("inspector.localPrompt")}<textarea rows={4} maxLength={16_000} value={prompt} disabled={props.busy || running} onChange={(event) => { setPrompt(event.target.value); }} placeholder={props.t("inspector.localPromptPlaceholder")} /></label>
+      <button type="submit" className={css.primaryAction} disabled={props.busy || running || prompt.trim() === "" || selected.length === 0}>{props.t("inspector.startExplain")}</button>
+    </form>
+    {props.sideTask ? <section className={css.sideTaskResult} aria-live="polite">
+      <div className={css.sideTaskStatus}>
+        <strong>{props.t("inspector.explainResult")}</strong>
+        <span>{props.t(`inspector.taskState.${props.sideTask.task.state.status}`)}</span>
+      </div>
+      {props.sideTask.output ? <MarkdownText text={props.sideTask.output} streaming={running} /> : <p className={css.emptyText}>{props.t(running ? "inspector.waitingForExplain" : "inspector.noExplainOutput")}</p>}
+      {props.sideTask.task.state.status === "failed" ? <p className={css.error}>{props.sideTask.task.state.error}</p> : null}
+      {running ? <button type="button" className={css.secondaryAction} onClick={props.onCancel}>{props.t("inspector.cancelSideTask")}</button> : null}
+    </section> : null}
+  </section>;
+}
+
 export function DshCollabInspector(props: {
   open: boolean;
   roomId: string;
@@ -568,6 +736,9 @@ export function DshCollabInspector(props: {
   onSetReviewLifecycle(reviewPointId: string, lifecycle: ReviewLifecycle): void;
   onSetReviewFindingState(reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): void;
   onLoadReviewPointDiff(reviewPointId: string, fileIndex: number): void;
+  timeline: readonly TimelineItem[];
+  onStartLocalExplain(localPrompt: string, selectedEventIds: string[]): Promise<boolean>;
+  onCancelLocalSideTask(): void;
   t?: CollabTranslate;
 }): ReactNode {
   const [reviewTitle, setReviewTitle] = useState("");
@@ -592,7 +763,7 @@ export function DshCollabInspector(props: {
       <button type="button" className={css.close} aria-label={t("inspector.close")} onClick={props.onClose}>×</button>
     </header>
     <div className={css.tabs} role="tablist" aria-label={t("inspector.title")}>
-      {(["changes", "reviews"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={props.activeTab === tab} onClick={() => { props.onSelectTab(tab); }}>{t(`inspector.${tab}`)}</button>)}
+      {(["changes", "reviews", "tasks"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={props.activeTab === tab} onClick={() => { props.onSelectTab(tab); }}>{t(`inspector.${tab}`)}</button>)}
     </div>
     <div className={css.body}>
       {props.state.error ? <p className={css.error} role="alert">{props.state.error}</p> : null}
@@ -610,7 +781,7 @@ export function DshCollabInspector(props: {
         <button type="button" className={css.primaryAction} disabled={busy} onClick={props.onLoadSnapshot}>{t(busy ? "inspector.loading" : "inspector.loadSnapshot")}</button>
         {props.state.snapshot ? <SnapshotFiles snapshot={props.state.snapshot} t={t} /> : null}
       </section>}
-      </> : <section className={css.reviews} aria-labelledby="collab-review-points-title">
+      </> : props.activeTab === "reviews" ? <section className={css.reviews} aria-labelledby="collab-review-points-title">
         <div className={css.sectionHeading}><div><h3 id="collab-review-points-title">{t("inspector.reviewPoints")}</h3><p>{t("inspector.reviewPointsHint")}</p></div><button type="button" className={css.action} disabled={busy} onClick={props.onReloadReviewPoints}>{t(busy ? "inspector.loading" : "inspector.reloadReviews")}</button></div>
         {props.role === "host" ? <>
           <form className={css.reviewForm} onSubmit={(event) => { void createReview(event); }}>
@@ -645,7 +816,7 @@ export function DshCollabInspector(props: {
             t={t}
           />;
         })() : null}
-      </section>}
+      </section> : <PrivateSideWork key={props.roomId} sideTask={props.state.sideTask} timeline={props.timeline} busy={busy} onStart={props.onStartLocalExplain} onCancel={props.onCancelLocalSideTask} t={t} />}
     </div>
   </aside>;
 }

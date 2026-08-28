@@ -502,7 +502,7 @@ describe("browser Gateway client", () => {
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:3080/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
     expect(client.getSnapshot()).toMatchObject({ members: [{ memberId: "member-host", displayName: "Local Host" }] });
-    expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online", canSteer: true });
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", memberId: "member-host", role: "host", connection: "online", canSteer: true });
     await client.send({ text: "run tests", target: "dsh" });
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
     expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh" });

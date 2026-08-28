@@ -1,6 +1,6 @@
 # dsh-collab
 
-`dsh-collab` is one installable package for human collaboration around one Host-side DSH Agent session. The same package has a Host face and a Participant face; a room's trusted local-session/token evidence selects the role. A Participant never creates a local Agent or accesses the Host workspace.
+`dsh-collab` is one installable package for human collaboration around one Host-side DSH Agent session. The same package has a Host face and a Participant face; a room's trusted local-session/token evidence selects the role. A Participant never replaces the room's Host Agent or directly accesses the Host workspace; explicitly started private Side Work uses the Participant's own local DSH Agent.
 
 ## What is ready
 
@@ -79,7 +79,7 @@ The bundle patch contains one row:
 - insert:
     - id: collab-host
       name: dsh-collab
-      inject: [agents, settings]
+      inject: [agents, agentPresets, settings, connection, fs, subprocess]
       config:
         enabled: true
         roomId: dsh-room
@@ -94,7 +94,7 @@ Participant recovery uses a separate `dsh-collab-participant` settings namespace
 
 ## LAN Participant deployment
 
-Do not expose the DSH listener. In network mode the dedicated Collab Gateway binds `0.0.0.0` on its own port; the invitation advertises a reachable private IP using `ws://<private-ip>:<port>/collab`. The Participant installs the same complete plugin and pastes the invitation. Possession of its one-time token establishes the initial Participant identity; that room never calls the Participant's local Agent.
+Do not expose the DSH listener. In network mode the dedicated Collab Gateway binds `0.0.0.0` on its own port; the invitation advertises a reachable private IP using `ws://<private-ip>:<port>/collab`. The Participant installs the same complete plugin and pastes the invitation. Possession of its one-time token establishes the initial Participant identity; room `@agent` requests always use the Host Agent, while private Side Work runs only after the Participant explicitly starts it on their own local DSH Agent.
 
 Plain `ws://` accepts only literal loopback, RFC1918/link-local, `100.64.0.0/10`, ULA and IPv6 link-local addresses. Public IPs and hostnames require a user-supplied `wss://` endpoint. The plugin does not create a tunnel, configure a router, issue a certificate, or operate an official Relay in this MVP.
 

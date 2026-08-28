@@ -5,6 +5,7 @@ export * from "./room-client.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
+export * from "./local-sidecar.js";
 export * from "./collaboration-types.js";
 export * from "./collaboration-client.js";
 export * from "./dsh-cordis-agent.js";
@@ -34,6 +35,8 @@ import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PAR
 import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
+import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
+import { LocalSidecarService, type StartExplainTaskInput } from "./local-sidecar.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -52,7 +55,9 @@ interface DshConnectionRpc {
   ): () => Promise<void>;
 }
 
-export interface DshCollabCordisContext extends DshCordisHostContext {
+export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agents"> {
+  agents: DshCordisHostContext["agents"] & Partial<DshLocalAgentContext["agents"]>;
+  agentPresets?: DshLocalAgentContext["agentPresets"];
   connection?: { rpc: DshConnectionRpc };
   effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
@@ -119,6 +124,14 @@ function registerGatewayControl(
   if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
   let starting: Promise<{ status: "running"; port: number }> | undefined;
+  const createLocalAgent = context.agents.create;
+  const sidecar = context.agentPresets && context.on && createLocalAgent
+    ? new LocalSidecarService(createDshLocalAgentSessionPort({
+        agents: { create: (input) => createLocalAgent.call(context.agents, input) },
+        agentPresets: context.agentPresets,
+        on: (event, listener) => context.on!(event, listener),
+      }))
+    : undefined;
 
   const stop = async (): Promise<{ status: "stopped" }> => {
     await starting?.catch(() => undefined);
@@ -189,6 +202,22 @@ function registerGatewayControl(
       if (endpoint === "gateway/start") return { ok: true, value: await start() };
       if (endpoint === "gateway/stop") return { ok: true, value: await stop() };
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
+      if (endpoint === "sidecar/start") {
+        if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
+        return { ok: true, value: { sideTask: await sidecar.startExplain(payload as StartExplainTaskInput) } };
+      }
+      if (endpoint === "sidecar/get") {
+        if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { roomId?: unknown }).roomId !== "string") throw new Error("roomId is required");
+        return { ok: true, value: { sideTask: sidecar.get((payload as { roomId: string }).roomId) ?? null } };
+      }
+      if (endpoint === "sidecar/cancel") {
+        if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("roomId and taskId are required");
+        const input = payload as { roomId?: unknown; taskId?: unknown };
+        if (typeof input.roomId !== "string" || typeof input.taskId !== "string") throw new Error("roomId and taskId are required");
+        return { ok: true, value: { sideTask: await sidecar.cancel(input.roomId, input.taskId) } };
+      }
       if (endpoint === "repository/inspect") {
         const { inspector } = activeRepository(payload);
         const inspection = await inspector.inspect(signal);
@@ -207,7 +236,7 @@ function registerGatewayControl(
   }, { authority: "loopback" });
   context.effect?.(() => async () => {
     await removeControl();
-    await stop();
+    await Promise.all([stop(), sidecar?.dispose()]);
   }, "dsh-collab: Gateway control");
 }
 

@@ -11,9 +11,11 @@ import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, Review
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
+import type { LocalSideTaskSnapshot, StartExplainTaskInput } from "./local-sidecar.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
+  memberId?: string;
   roomTitle: string;
   hostDisplayName: string;
   role: "host" | "participant";
@@ -95,6 +97,9 @@ export interface DshCollabSettingsPort {
   setReviewFindingState?(roomId: string, reviewPointId: string, findingId: string, state: "accepted" | "dismissed"): Promise<ReviewFinding>;
   inspectRepository?(roomId: string): Promise<RepositoryInspection>;
   inspectRepositoryDiff?(roomId: string, path: string, layer: "staged" | "unstaged"): Promise<RepositoryDiff>;
+  startLocalExplain?(input: StartExplainTaskInput): Promise<LocalSideTaskSnapshot>;
+  getLocalSideTask?(roomId: string): Promise<LocalSideTaskSnapshot | undefined>;
+  cancelLocalSideTask?(roomId: string, taskId: string): Promise<LocalSideTaskSnapshot>;
 }
 
 interface DshClientConnectionRpc {
@@ -278,6 +283,39 @@ function decodeRepositoryDiffResult(result: unknown): RepositoryDiff {
   return { path: value.path, layer: value.layer, patch: value.patch };
 }
 
+function decodeLocalSideTaskResult(
+  result: unknown,
+  required: boolean,
+  expected: { roomId: string; taskId?: string; requestedBy?: string },
+): LocalSideTaskSnapshot | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid local SideTask response");
+  const envelope = result as { ok?: unknown; value?: { sideTask?: unknown }; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Local SideTask request failed");
+  const value = envelope.value?.sideTask;
+  if (value === null && !required) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid local SideTask response");
+  const snapshot = value as Partial<LocalSideTaskSnapshot>;
+  const task = snapshot.task;
+  const revision = snapshot.revision;
+  if (!task || typeof task !== "object" || typeof task.taskId !== "string" || task.taskId.trim() === ""
+    || typeof task.roomId !== "string" || task.roomId !== expected.roomId || task.roomId.trim() === ""
+    || (expected.taskId !== undefined && task.taskId !== expected.taskId)
+    || task.type !== "explain" || task.executor !== "requester-local"
+    || typeof task.localPrompt !== "string" || task.localPrompt.trim() === "" || typeof task.requestedBy !== "string" || task.requestedBy.trim() === ""
+    || (expected.requestedBy !== undefined && task.requestedBy !== expected.requestedBy)
+    || !Number.isSafeInteger(task.createdAt) || task.createdAt < 0
+    || !task.context || !Number.isSafeInteger(task.context.roomEventSeq) || task.context.roomEventSeq < 0
+    || !Array.isArray(task.context.selectedRoomEventIds) || task.context.selectedRoomEventIds.length < 1
+    || task.context.selectedRoomEventIds.some((eventId) => typeof eventId !== "string" || eventId.trim() === "")
+    || !task.state || !["queued", "running", "completed", "failed", "cancelled"].includes(task.state.status)
+    || (task.state.status === "failed" && (typeof task.state.error !== "string" || task.state.error.trim() === ""))
+    || !task.publication || task.publication.status !== "private"
+    || typeof snapshot.output !== "string" || !Number.isSafeInteger(revision) || typeof revision !== "number" || revision < 1) {
+    throw new Error("Invalid local SideTask response");
+  }
+  return value as LocalSideTaskSnapshot;
+}
+
 export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
   let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
   let ownedRooms: DshCollabOwnedRoom[] = [];
@@ -307,6 +345,15 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     refreshOwnedRooms,
     inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
     inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),
+    startLocalExplain: async (input: StartExplainTaskInput) => decodeLocalSideTaskResult(
+      await rpc.call("/dsh-collab", "sidecar/start", input), true, { roomId: input.roomId, requestedBy: input.requestedBy },
+    )!,
+    getLocalSideTask: async (roomId: string) => decodeLocalSideTaskResult(
+      await rpc.call("/dsh-collab", "sidecar/get", { roomId }), false, { roomId },
+    ),
+    cancelLocalSideTask: async (roomId: string, taskId: string) => decodeLocalSideTaskResult(
+      await rpc.call("/dsh-collab", "sidecar/cancel", { roomId, taskId }), true, { roomId, taskId },
+    )!,
   });
 }
 
@@ -415,6 +462,9 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     setReviewFindingState: actions.setReviewFindingState?.bind(actions),
     inspectRepository: actions.inspectRepository?.bind(actions),
     inspectRepositoryDiff: actions.inspectRepositoryDiff?.bind(actions),
+    startLocalExplain: actions.startLocalExplain?.bind(actions),
+    getLocalSideTask: actions.getLocalSideTask?.bind(actions),
+    cancelLocalSideTask: actions.cancelLocalSideTask?.bind(actions),
   };
 }
 
@@ -614,7 +664,15 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
   const selectedRole = selection?.kind === "owned" ? "host" : "participant";
-  const inspector = useCollabInspector({ roomId: selection?.roomId ?? "", role: selectedRole, sharing: snapshot.workspaceSharing, port: props.settingsPort });
+  const inspector = useCollabInspector({
+    roomId: selection?.roomId ?? "",
+    role: selectedRole,
+    sharing: snapshot.workspaceSharing,
+    port: props.settingsPort,
+    memberId: snapshot.memberId,
+    members: snapshot.members ?? [],
+    timeline: snapshot.timeline ?? [],
+  });
   useEffect(() => {
     setRoomName(selection?.roomTitle ?? "");
     setInvitation("");
@@ -692,7 +750,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       ),
       createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(view.connection, t), count: view.onlineCount })),
       createElement("div", { className: roomCss.surfaceActions },
-        active ? createElement("button", { type: "button", className: roomCss.toolbarButton, "aria-expanded": inspector.open, onClick: inspector.show }, t("inspector.changes")) : null,
+        active ? createElement("button", { type: "button", className: roomCss.toolbarButton, "aria-expanded": inspector.open, onClick: inspector.show }, t("inspector.title")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.createInvite || gatewayEndpoint === "", onClick: () => { void createInvitation(); } }, t(busy === "invite" ? "share.creating" : "share.createInvitation")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.stopSharing, onClick: () => { void perform("stop", async () => { await props.settingsPort?.stopSharing?.(selection.roomId); }, t("share.stoppedNotice")); } }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")) : null,
         active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { props.settingsPort?.disconnectJoinedRoom?.(); } }, t("joined.disconnect")) : null,
@@ -733,6 +791,9 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         onSetReviewLifecycle: (reviewPointId: string, lifecycle: ReviewLifecycle) => { void inspector.setReviewLifecycle(reviewPointId, lifecycle); },
         onSetReviewFindingState: (reviewPointId: string, findingId: string, state: "accepted" | "dismissed") => { void inspector.setReviewFindingState(reviewPointId, findingId, state); },
         onLoadReviewPointDiff: (reviewPointId: string, fileIndex: number) => { void inspector.loadReviewPointDiff(reviewPointId, fileIndex); },
+        timeline: view.timeline ?? [],
+        onStartLocalExplain: inspector.startLocalExplain,
+        onCancelLocalSideTask: () => { void inspector.cancelLocalSideTask(); },
         t,
       }),
     ),

@@ -792,6 +792,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.token = data.roomToken;
     this.snapshot = {
       roomId: data.room.roomId,
+      memberId: data.member.memberId,
       roomTitle: data.room.title,
       hostDisplayName: data.room.hostDisplayName ?? this.snapshot.hostDisplayName,
       role: data.member.role === "host" ? "host" : "participant",
@@ -900,6 +901,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.snapshot = {
       ...this.snapshot,
       roomId: state.roomId,
+      memberId: state.memberId,
       roomTitle: state.roomTitle ?? this.snapshot.roomTitle,
       hostDisplayName: state.hostDisplayName ?? this.snapshot.hostDisplayName,
       role: "participant",

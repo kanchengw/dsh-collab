@@ -24,8 +24,9 @@ describe("collab timeline projection", () => {
 
     expect(items).toHaveLength(3);
     expect(items[0]).toMatchObject({ kind: "human", text: "hello" });
-    expect(items[1]).toMatchObject({ kind: "agent-request", authorMemberId: "member-1", requestId: "req-1", status: "completed", text: "@agent summarize" });
-    expect(items[2]).toMatchObject({ kind: "agent", authorMemberId: "member-host", requestId: "req-1", state: "output", text: "Summary" });
+    expect(items[0]).toMatchObject({ contextEventId: "h-1" });
+    expect(items[1]).toMatchObject({ kind: "agent-request", authorMemberId: "member-1", requestId: "req-1", status: "completed", text: "@agent summarize", contextEventId: "r-1" });
+    expect(items[2]).toMatchObject({ kind: "agent", authorMemberId: "member-host", requestId: "req-1", state: "output", text: "Summary", contextEventId: "out-1" });
     expect(renderTimeline(items)).toContain('data-status="completed"');
   });
 
@@ -60,7 +61,7 @@ describe("collab timeline projection", () => {
 
     expect(failed).toEqual([
       expect.objectContaining({ kind: "agent-request", status: "failed" }),
-      expect.objectContaining({ kind: "agent", state: "failed", text: "Host Agent failed: MISSING_CREDENTIAL" }),
+      expect.objectContaining({ kind: "agent", state: "failed", text: "Host Agent failed: MISSING_CREDENTIAL", contextEventId: "failed-1" }),
     ]);
   });
 });

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { beginInspectorRefresh, DshCollabInspector, inspectorRoomState, reviewPointFilesFromInspection, type CollabInspectorState } from "../../src/collab-inspector.js";
+import { beginInspectorRefresh, DshCollabInspector, inspectorRoomState, mergePolledSideTask, reviewPointFilesFromInspection, type CollabInspectorState } from "../../src/collab-inspector.js";
 import type { DshCollabClientSnapshot } from "../../src/dsh-client.js";
 
 const room: DshCollabClientSnapshot = {
@@ -16,7 +16,7 @@ const room: DshCollabClientSnapshot = {
   canSteer: true,
 };
 
-function render(state: CollabInspectorState, role: "host" | "participant" = "host", activeTab: "changes" | "reviews" = "changes"): string {
+function render(state: CollabInspectorState, role: "host" | "participant" = "host", activeTab: "changes" | "reviews" | "tasks" = "changes"): string {
   return renderToStaticMarkup(createElement(DshCollabInspector, {
     open: true,
     roomId: room.roomId,
@@ -40,6 +40,12 @@ function render(state: CollabInspectorState, role: "host" | "participant" = "hos
     onSetReviewLifecycle: vi.fn(),
     onSetReviewFindingState: vi.fn(),
     onLoadReviewPointDiff: vi.fn(),
+    timeline: [
+      { eventId: "event-1", contextEventId: "event-1", seq: 1, kind: "human", authorMemberId: "member-host", text: "The retry uses a stable key." },
+      { eventId: "event-2", contextEventId: "event-2", seq: 2, kind: "agent", authorMemberId: "agent", text: "The key is room-scoped." },
+    ],
+    onStartLocalExplain: vi.fn(async () => true),
+    onCancelLocalSideTask: vi.fn(),
   }));
 }
 
@@ -213,6 +219,49 @@ describe("Collab Changes Inspector", () => {
       reviewDiffs: { [reviewPoint.reviewPointId]: { "src/parser.ts": { path: "src/parser.ts", kind: "unavailable" } } },
     }, "participant", "reviews");
     expect(legacy).toContain("predates historical diff capture");
+  });
+
+  it("gives both roles a private requester-local Explain task with explicit room context selection", () => {
+    const sideTask = {
+      task: {
+        taskId: "task-1", roomId: room.roomId, type: "explain" as const, localPrompt: "Explain the retry", executor: "requester-local" as const,
+        context: { roomEventSeq: 2, selectedRoomEventIds: ["event-1"] }, state: { status: "running" as const },
+        publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 20,
+      },
+      output: "The retry is safe because",
+      revision: 3,
+    };
+    const participant = render({ status: "ready", sideTask }, "participant", "tasks");
+
+    expect(participant).toContain('data-collab-inspector="tasks"');
+    expect(participant).toContain("Private Side Work");
+    expect(participant).toContain("The retry uses a stable key.");
+    expect(participant).toContain("The key is room-scoped.");
+    expect(participant).toContain('type="checkbox"');
+    expect(participant).toContain("Ask your local Agent");
+    expect(participant).toContain("The retry is safe because");
+    expect(participant).toContain("Running");
+    expect(participant).toContain("Cancel");
+    expect(participant).not.toContain("Publish");
+    expect(render({ status: "ready" }, "host", "tasks")).toContain("Private Side Work");
+  });
+
+  it("does not let delayed polling replace or regress the active local SideTask", () => {
+    const task = (taskId: string, revision: number, status: "running" | "completed") => ({
+      task: {
+        taskId, roomId: room.roomId, type: "explain" as const, localPrompt: "Explain", executor: "requester-local" as const,
+        context: { roomEventSeq: 2, selectedRoomEventIds: ["event-1"] }, state: { status },
+        publication: { status: "private" as const }, requestedBy: "member-bob", createdAt: 20,
+      },
+      output: status === "completed" ? "done" : "partial",
+      revision,
+    });
+    const completed: CollabInspectorState = { status: "ready", sideTask: task("task-1", 4, "completed") };
+
+    expect(mergePolledSideTask(completed, task("task-1", 3, "running"), "task-1")).toBe(completed);
+    expect(mergePolledSideTask(completed, task("task-new", 1, "running"), "task-1")).toMatchObject({ sideTask: { task: { taskId: "task-new" } } });
+    expect(mergePolledSideTask(completed, undefined, "task-1")).not.toHaveProperty("sideTask");
+    expect(mergePolledSideTask(completed, task("task-1", 5, "completed"), "task-1")).toMatchObject({ sideTask: { revision: 5 } });
   });
 
   it("uses a room drawer at narrow widths instead of a floating window", () => {
