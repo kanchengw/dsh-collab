@@ -126,6 +126,58 @@ describe("AgentDispatcher", () => {
     expect(calls).toEqual(["message-1", "message-2"]);
   });
 
+  it("dispatches an active room without letting an earlier inactive room block it", async () => {
+    const activeRooms = new Set(["room-b"]);
+    const calls: string[] = [];
+    const rooms = new RoomStore();
+    const ledger = new EventLedger();
+    for (const roomId of ["room-a", "room-b"]) {
+      rooms.createRoom({
+        roomId,
+        hostId: "host",
+        hostSessionId: roomId,
+        title: roomId,
+        hostDisplayName: "Host",
+        now: 1,
+      });
+      rooms.addMember(roomId, {
+        memberId: `member-${roomId}`,
+        principalId: `principal-${roomId}`,
+        displayName: roomId,
+        now: 2,
+      });
+    }
+    const dispatcher = new AgentDispatcher({
+      rooms,
+      ledger,
+      canDispatch: (roomId) => activeRooms.has(roomId),
+      agent: {
+        followup(input) { calls.push(input.requestId); },
+        steer() {},
+        cancel() {},
+        whenIdle: async () => ({}),
+      },
+    });
+    const makeRequest = (roomId: string): AgentRequest => ({
+      kind: "agent-request",
+      messageId: `message-${roomId}`,
+      requestId: `request-${roomId}`,
+      roomId,
+      authorMemberId: `member-${roomId}`,
+      text: roomId,
+      target: "dsh",
+      deliveryMode: "followup",
+    });
+
+    await dispatcher.submit({ principalId: "principal-room-a", message: makeRequest("room-a") });
+    await dispatcher.submit({ principalId: "principal-room-b", message: makeRequest("room-b") });
+    await dispatcher.processQueue();
+
+    expect(calls).toEqual(["request-room-b"]);
+    expect(dispatcher.get("request-room-a")?.status).toBe("queued");
+    expect(dispatcher.get("request-room-b")?.status).toBe("completed");
+  });
+
   it("treats retrying the same request as idempotent", async () => {
     const { dispatcher } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
     const message = request("message-1", "Retry me");

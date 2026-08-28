@@ -30,6 +30,7 @@ export class AgentDispatcher {
       rooms: RoomStore;
       ledger: EventLedger;
       agent: HostAgentPort;
+      canDispatch?: (roomId: string) => boolean;
     },
   ) {}
 
@@ -168,7 +169,9 @@ export class AgentDispatcher {
 
   async drainOne(): Promise<QueueRecord | undefined> {
     if (this.activeRequestId !== undefined) return undefined;
-    const requestId = this.queue.shift();
+    const queueIndex = this.nextDispatchableIndex();
+    if (queueIndex < 0) return undefined;
+    const [requestId] = this.queue.splice(queueIndex, 1);
     if (!requestId) return undefined;
     const entry = this.records.get(requestId);
     if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "queued request disappeared", { requestId });
@@ -234,7 +237,7 @@ export class AgentDispatcher {
     this.processing = processing;
     void processing.finally(() => {
       if (this.processing === processing) this.processing = undefined;
-      if (this.queue.length > 0) void this.processQueue();
+      if (this.hasDispatchableRequest()) void this.processQueue();
     });
     return processing;
   }
@@ -257,6 +260,15 @@ export class AgentDispatcher {
       payload: { requestId },
     });
     return copy(entry.record);
+  }
+
+  interruptActive(error: string): QueueRecord | undefined {
+    const requestId = this.activeRequestId;
+    if (!requestId) return undefined;
+    const record = this.records.get(requestId)?.record;
+    if (!record) throw new CollabError("REQUEST_NOT_FOUND", "active request does not exist", { requestId });
+    this.failRunning(record, error, requestId + ":interrupted");
+    return this.get(requestId);
   }
 
   async cancel(input: { roomId: string; principalId: string; requestId: string; keepInbox: boolean }): Promise<QueueRecord> {
@@ -308,6 +320,17 @@ export class AgentDispatcher {
     if (index >= 0) this.queue.splice(index, 1);
   }
 
+  private nextDispatchableIndex(): number {
+    return this.queue.findIndex((requestId) => {
+      const roomId = this.records.get(requestId)?.record.roomId;
+      return roomId !== undefined && (this.options.canDispatch?.(roomId) ?? true);
+    });
+  }
+
+  private hasDispatchableRequest(): boolean {
+    return this.nextDispatchableIndex() >= 0;
+  }
+
   private async drainQueue(): Promise<void> {
     while (this.activeRequestId === undefined && this.queue.length > 0) {
       let record: QueueRecord | undefined;
@@ -343,7 +366,7 @@ export class AgentDispatcher {
     }
   }
 
-  private failRunning(record: QueueRecord, error: string): void {
+  private failRunning(record: QueueRecord, error: string, eventId = record.requestId + ":failed"): void {
     const entry = this.records.get(record.requestId);
     if (!entry || entry.record.status !== "running" || this.activeRequestId !== record.requestId) return;
     const member = this.options.rooms.listMembers(record.roomId).find((candidate) => candidate.memberId === record.authorMemberId);
@@ -352,7 +375,7 @@ export class AgentDispatcher {
     entry.record.error = error;
     this.activeRequestId = undefined;
     this.options.ledger.append({
-      eventId: record.requestId + ":failed",
+      eventId,
       roomId: record.roomId,
       type: "agent.request.failed",
       actor: { memberId: member.memberId, principalId: member.principalId },

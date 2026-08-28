@@ -72,15 +72,6 @@ function rebindSnapshot(snapshot: DshCollabHostRuntimeSnapshot, roomId: string, 
   for (const record of rebound.dispatcher.records) {
     if (record.roomId === roomId) record.hostSessionId = hostSessionId;
   }
-  if (rebound.dispatcher.activeRequestId) {
-    const active = rebound.dispatcher.records.find((record) => record.requestId === rebound.dispatcher.activeRequestId);
-    if (active?.status === "running") {
-      active.claimAttempt ??= 1;
-      active.status = "queued";
-      if (!rebound.dispatcher.queue.includes(active.requestId)) rebound.dispatcher.queue.unshift(active.requestId);
-      delete rebound.dispatcher.activeRequestId;
-    }
-  }
   return rebound;
 }
 
@@ -144,7 +135,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
-    void gateway.dispatcher.processQueue();
+    gateway.dispatcher.interruptActive("Host restarted; delivery outcome is unknown");
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });

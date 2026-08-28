@@ -163,7 +163,7 @@ describe("host runtime factory", () => {
     await runtime.dispose();
   });
 
-  it("snapshots and restores room state, ledger events and queued requests", async () => {
+  it("snapshots room state and fails a running request when restoring", async () => {
     const options = {
       roomId: "room-1",
       hostId: "host",
@@ -195,18 +195,23 @@ describe("host runtime factory", () => {
     const restored = createDshCollabHostRuntime({ ...options, hostSessionId: "session-2", snapshot });
     expect(restored.rooms.listMembers("room-1")).toHaveLength(2);
     expect(restored.ledger.readAfter("room-1", 0, 10)).toEqual(expect.arrayContaining([expect.objectContaining({ eventId: "event-1", seq: 1 })]));
-    expect(restored.gateway.dispatcher.get("request-1")).toMatchObject({ status: "running", roomId: "room-1", claimAttempt: 2 });
+    expect(restored.gateway.dispatcher.get("request-1")).toMatchObject({
+      status: "failed",
+      roomId: "room-1",
+      claimAttempt: 1,
+      error: "Host restarted; delivery outcome is unknown",
+    });
     expect(restored.rooms.getRoom("room-1").hostSessionId).toBe("session-2");
     expect(restored.gateway.dispatcher.get("request-1")?.hostSessionId).toBe("session-2");
     await restored.dispose();
   });
 
-  it("automatically resumes an interrupted Agent request after restore", async () => {
+  it("fails interrupted work and waits for explicit room sharing before resuming queued requests", async () => {
     const delivered: string[] = [];
     const options = {
       roomId: "room-1",
       hostId: "host",
-      hostSessionId: "session-1",
+      hostSessionId: "room-1",
       title: "Room",
       hostDisplayName: "Host",
       sessions: { owns: () => true, followup: () => {}, steer: () => {}, cancel: () => {} },
@@ -218,22 +223,40 @@ describe("host runtime factory", () => {
       principalId: "bob",
       message: { kind: "agent-request", messageId: "message-1", requestId: "request-1", roomId: "room-1", authorMemberId: "member-bob", text: "continue", target: "dsh", deliveryMode: "followup" },
     });
+    await runtime.gateway.dispatcher.submit({
+      principalId: "bob",
+      message: { kind: "agent-request", messageId: "message-2", requestId: "request-2", roomId: "room-1", authorMemberId: "member-bob", text: "queued", target: "dsh", deliveryMode: "followup" },
+    });
     await runtime.gateway.dispatcher.drainOne();
     const snapshot = runtime.snapshot();
-    delete snapshot.dispatcher.records.find((record) => record.requestId === "request-1")?.claimAttempt;
     await runtime.dispose();
 
     const restored = createDshCollabHostRuntime({
-      ...options,
-      hostSessionId: "session-2",
+      hostId: "host",
+      hostDisplayName: "Host",
       snapshot,
-      sessions: { owns: () => true, followup: (input) => { delivered.push(input.requestId); }, steer: () => {}, cancel: () => {} },
+      sessions: { owns: (sessionId) => sessionId === "room-1", followup: (input) => { delivered.push(input.requestId); }, steer: () => {}, cancel: () => {} },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(delivered).toEqual(["request-1"]);
-    expect(restored.gateway.dispatcher.get("request-1")?.status).toBe("completed");
-    expect(restored.ledger.readAfter("room-1", 0, 20)).toContainEqual(expect.objectContaining({ eventId: "request-1:claimed:2" }));
+    expect(delivered).toEqual([]);
+    expect(restored.gateway.dispatcher.get("request-1")).toMatchObject({ status: "failed", error: "Host restarted; delivery outcome is unknown" });
+    expect(restored.gateway.dispatcher.get("request-2")?.status).toBe("queued");
+    expect(restored.ledger.readAfter("room-1", 0, 20)).toContainEqual(expect.objectContaining({
+      eventId: "request-1:interrupted",
+      type: "agent.request.failed",
+      payload: expect.objectContaining({ requestId: "request-1" }),
+    }));
+
+    expect(await restored.gateway.handle({
+      method: "POST",
+      path: "/v1/rooms/room-1/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "room-1", title: "Room" },
+    })).toMatchObject({ status: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(delivered).toEqual(["request-2"]);
+    expect(restored.gateway.dispatcher.get("request-2")?.status).toBe("completed");
     await restored.dispose();
   });
 

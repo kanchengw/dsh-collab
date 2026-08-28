@@ -245,7 +245,12 @@ export class CollabGateway {
       ttlMs: options.tokenTtlMs,
     });
     this.resumes = options.resumes ?? new ResumeCredentialStore(options.rooms);
-    this.dispatcher = new AgentDispatcher({ rooms: options.rooms, ledger: options.ledger, agent: options.agent });
+    this.dispatcher = new AgentDispatcher({
+      rooms: options.rooms,
+      ledger: options.ledger,
+      agent: options.agent,
+      ...(options.activeRooms ? { canDispatch: (roomId) => options.activeRooms!.isActive(roomId) } : {}),
+    });
   }
 
   async handle(request: GatewayRequest): Promise<GatewayResponse> {
@@ -363,6 +368,7 @@ export class CollabGateway {
       now: this.now(),
     });
     this.options.activeRooms?.activate(roomId);
+    void this.dispatcher.processQueue();
     const member = this.options.rooms.authorize(roomId, principalId, "read");
     const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
     return { status: 200, body: { room, member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
