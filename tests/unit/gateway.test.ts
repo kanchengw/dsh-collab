@@ -67,7 +67,7 @@ function setup(
     ...(commitCriticalState ? { commitCriticalState } : {}),
     ...(limits ? { limits } : {}),
   });
-  return { gateway, calls, rooms, ledger, workspaceSharing, activeRooms };
+  return { gateway, calls, rooms, ledger, approvals, workspaceSharing, activeRooms };
 }
 
 async function request(gateway: CollabGateway, input: GatewayRequest) {
@@ -646,5 +646,70 @@ describe("CollabGateway route contract", () => {
     expect(commitCriticalState).toHaveBeenCalledTimes(2);
     expect(roleAtCommit).toEqual(["observer", "observer"]);
     expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.roleChanged")).toHaveLength(1);
+  });
+
+  it("confirms approval requests in persistent state before reporting success", async () => {
+    let persistenceFails = true;
+    let approvals: ApprovalStore | undefined;
+    const stateAtCommit: string[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      stateAtCommit.push(approvals?.snapshot().records.find((record) => record.approvalId === "approval-persist")?.state ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, true, commitCriticalState);
+    approvals = runtime.approvals;
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const approvalRequest = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/approvals",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { approvalId: "approval-persist", toolName: "shell", reason: "run tests", expiresAt: 100 },
+    };
+
+    expect(await request(runtime.gateway, approvalRequest)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    persistenceFails = false;
+    expect(await request(runtime.gateway, approvalRequest)).toMatchObject({ status: 201, body: { approval: { state: "pending" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(stateAtCommit).toEqual(["pending", "pending"]);
+    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "approval.requested")).toHaveLength(1);
+  });
+
+  it("confirms approval decisions in persistent state before reporting success", async () => {
+    let persistenceFails = false;
+    let approvals: ApprovalStore | undefined;
+    const stateAtCommit: string[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      const approval = approvals?.snapshot().records.find((record) => record.approvalId === "approval-persist");
+      stateAtCommit.push(approval?.state === "decided" ? `${approval.state}:${approval.outcome}` : approval?.state ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, true, commitCriticalState);
+    approvals = runtime.approvals;
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const headers = bearer((host.body as { roomToken: string }).roomToken);
+    await request(runtime.gateway, {
+      method: "POST", path: "/v1/rooms/room-1/approvals", headers,
+      body: { approvalId: "approval-persist", toolName: "shell", reason: "run tests", expiresAt: 100 },
+    });
+    const decision = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/actions",
+      headers,
+      body: { action: "decideApproval", approvalId: "approval-persist", outcome: "allowed-once" },
+    };
+
+    persistenceFails = true;
+    expect(await request(runtime.gateway, decision)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    persistenceFails = false;
+    expect(await request(runtime.gateway, decision)).toMatchObject({ status: 200, body: { approval: { state: "decided", outcome: "allowed-once" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(stateAtCommit).toEqual(["pending", "decided:allowed-once", "decided:allowed-once"]);
+    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "approval.decided")).toHaveLength(1);
   });
 });

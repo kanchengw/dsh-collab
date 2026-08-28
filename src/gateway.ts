@@ -287,7 +287,7 @@ export class CollabGateway {
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
       if (request.method === "GET" && resource === "approvals") return this.listApprovals(roomId, request);
-      if (request.method === "POST" && resource === "approvals") return this.createApproval(roomId, request);
+      if (request.method === "POST" && resource === "approvals") return await this.createApproval(roomId, request);
       if (request.method === "POST" && resource === "actions") return await this.action(roomId, request);
       if (request.method === "POST" && resource === "messages") return await this.message(roomId, request);
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
@@ -728,7 +728,7 @@ export class CollabGateway {
     return { status: 200, body: { approvals: this.approvals.list(roomId, this.now()) } };
   }
 
-  private createApproval(roomId: string, request: GatewayRequest): GatewayResponse {
+  private async createApproval(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
     const claims = this.claims(roomId, request);
     const body = objectBody(request.body);
@@ -741,6 +741,7 @@ export class CollabGateway {
       expiresAt: numberField(body, "expiresAt"),
       now: this.now(),
     });
+    await this.options.commitCriticalState?.();
     return { status: 201, body: { approval } };
   }
 
@@ -809,6 +810,7 @@ export class CollabGateway {
         outcome: requiredText(body.outcome, "outcome") as "allowed-once" | "allowed-always" | "rejected" | "cancelled" | "unavailable",
         now: this.now(),
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { approval } };
     }
     throw invalidInput("action is not supported", { action });

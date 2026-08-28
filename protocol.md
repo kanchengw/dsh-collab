@@ -194,6 +194,11 @@ or role waits for persistence again without appending a duplicate event.
 ```
 
 Approval requests are created and listed at `/collab/v1/rooms/:roomId/approvals`.
+Approval creation and decisions append their idempotent event and wait for the
+same critical-state persistence barrier before returning `201` or `200`.
+Retrying an identical `approvalId` request or decision after a `500` returns
+the existing state without a second requested/decided event; a conflicting
+payload or outcome remains rejected.
 All actions are authorized from the room token principal; body-level actor
 fields are ignored because they are not part of the contract.
 
