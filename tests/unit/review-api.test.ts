@@ -103,6 +103,13 @@ describe("SideTask publication API", () => {
     const bobHeaders = headers((bob.body as { roomToken: string }).roomToken);
     const path = `/v1/rooms/room-1/review-points/${point.reviewPointId}/publications`;
 
+    expect(await runtime.gateway.handle({
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers: hostHeaders,
+      body: { messageId: `internal:mainline:${"f".repeat(64)}`, text: "reserved", target: "dsh" },
+    })).toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+
     expect(runtime.workspace.getState({ roomId: "room-1", principalId: "bob" })).toMatchObject({ enabled: false });
     const published = await runtime.gateway.handle({
       method: "POST", path, headers: bobHeaders,
@@ -131,7 +138,10 @@ describe("SideTask publication API", () => {
     const accepted = await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } });
     expect(accepted).toMatchObject({
       status: 200,
-      body: { publication: { state: "accepted", integrationRequestId: expect.any(String) }, request: { status: expect.stringMatching(/queued|running|completed/) } },
+      body: {
+        publication: { state: "accepted", integrationRequestId: expect.stringMatching(/^internal:mainline:[a-f0-9]{64}$/) },
+        request: { status: expect.stringMatching(/queued|running|completed/) },
+      },
     });
     await runtime.gateway.dispatcher.processQueue();
 
@@ -147,6 +157,40 @@ describe("SideTask publication API", () => {
     await runtime.gateway.dispatcher.processQueue();
     expect(retried).toMatchObject({ status: 200, body: { request: { requestId: deliveries[0]!.requestId } } });
     expect(deliveries).toHaveLength(1);
+
+    runtime.rooms.setRoomState("room-1", "closed");
+    expect(await runtime.gateway.handle({ method: "PUT", path: acceptPath, headers: hostHeaders, body: { state: "accepted" } }))
+      .toMatchObject({ status: 200, body: { request: { requestId: deliveries[0]!.requestId } } });
+    runtime.rooms.setRoomState("room-1", "open");
+
+    const conflictingPublication = await runtime.gateway.handle({
+      method: "POST", path, headers: bobHeaders,
+      body: {
+        taskId: "task-review-conflict", workspaceSnapshotId: point.workspaceSnapshotId, summary: "Conflicting request.",
+        findings: [{ severity: "note", location: { kind: "general" }, body: "Keep this publication pending." }],
+      },
+    });
+    const conflictingPublicationId = (conflictingPublication.body as { publication: { publicationId: string } }).publication.publicationId;
+    const conflictingRequestId = `internal:mainline:${hash(`room-1\0${conflictingPublicationId}\0mainline-integration`)}`;
+    const conflictingMessage = classifyMessage({
+      messageId: conflictingRequestId,
+      roomId: "room-1",
+      authorMemberId: hostMemberId,
+      text: "Conflicting internal request",
+      target: "dsh",
+    });
+    if (conflictingMessage.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
+    conflictingMessage.requestId = conflictingRequestId;
+    await runtime.gateway.dispatcher.submit({ principalId: "host", message: conflictingMessage });
+    await runtime.gateway.dispatcher.cancel({ roomId: "room-1", principalId: "host", requestId: conflictingRequestId, keepInbox: true });
+    expect(await runtime.gateway.handle({
+      method: "PUT", path: `${path}/${conflictingPublicationId}/state`, headers: hostHeaders, body: { state: "accepted" },
+    })).toMatchObject({ status: 409, body: { error: { code: "REQUEST_CONFLICT" } } });
+    const afterConflict = await runtime.gateway.handle({ method: "GET", path, headers: hostHeaders });
+    expect(afterConflict.status).toBe(200);
+    expect((afterConflict.body as { publications: Array<{ publicationId: string; state: string }> }).publications
+      .find((item) => item.publicationId === conflictingPublicationId)).toMatchObject({ state: "published" });
+
     const persisted = runtime.snapshot();
     await runtime.dispose();
 

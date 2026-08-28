@@ -286,6 +286,17 @@ restart. The Mainline request treats Review content as untrusted data, identifie
 the historical Review Point/snapshot, and requires the Main Agent to inspect and
 reimplement against current Host code rather than applying a Sidecar patch.
 
+New Mainline Integration Tasks use the reserved
+`internal:mainline:<64 lowercase hex>` request-ID namespace. External messages
+using the legacy raw `messageId` contract cannot claim that namespace. The
+Dispatcher must synchronously accept the deterministic request before the
+publication and its findings become `accepted`; a queue or request-ID conflict
+therefore leaves them `published` and `open`. Exact acceptance retries recreate a
+missing request or return the existing identical request without duplication.
+For upgrade compatibility, Host snapshot restoration and Browser response
+decoding continue to accept the former unprefixed 64-lowercase-hex integration
+ID, but new acceptance never generates that legacy form.
+
 ## HTTP responses
 
 Successful responses use:

@@ -19,6 +19,7 @@ const MAX_PAGE_SIZE = 100;
 const MAX_FINDINGS_PER_ROOM = 1_000;
 const MAX_PUBLICATION_FINDINGS = 100;
 const MAX_PUBLICATION_CONTENT_LENGTH = 8_000;
+export const MAINLINE_REQUEST_PREFIX = "internal:mainline:";
 
 export interface ReviewServiceSnapshot {
   version: 1;
@@ -52,7 +53,15 @@ function publicationId(roomId: string, principalId: string, taskId: string): str
 }
 
 function integrationRequestId(roomId: string, id: string): string {
+  return MAINLINE_REQUEST_PREFIX + legacyIntegrationRequestId(roomId, id);
+}
+
+function legacyIntegrationRequestId(roomId: string, id: string): string {
   return createHash("sha256").update(`${roomId}\0${id}\0mainline-integration`).digest("hex");
+}
+
+function isIntegrationRequestId(roomId: string, publicationId: string, value: unknown): value is string {
+  return value === integrationRequestId(roomId, publicationId) || value === legacyIntegrationRequestId(roomId, publicationId);
 }
 
 function severity(value: ReviewFinding["severity"]): ReviewFinding["severity"] {
@@ -116,7 +125,7 @@ function validateRestoredPublication(
     })
     || !["published", "accepted"].includes(value.state) || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
     || (accepted
-      ? typeof value.acceptedBy !== "string" || !Number.isSafeInteger(value.acceptedAt) || !/^[a-f0-9]{64}$/.test(String(value.integrationRequestId))
+      ? typeof value.acceptedBy !== "string" || !Number.isSafeInteger(value.acceptedAt) || typeof value.integrationRequestId !== "string"
       : value.acceptedBy !== undefined || value.acceptedAt !== undefined || value.integrationRequestId !== undefined)) {
     throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
   }
@@ -124,7 +133,7 @@ function validateRestoredPublication(
   if (!publisher) throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
   if (value.publicationId !== publicationId(value.roomId, publisher.principalId, value.taskId)
     || value.findingIds.some((id, index) => id !== findingId(value.roomId, publisher.principalId, `${value.publicationId}:${String(index)}`))
-    || (accepted && value.integrationRequestId !== integrationRequestId(value.roomId, value.publicationId))) {
+    || (accepted && !isIntegrationRequestId(value.roomId, value.publicationId, value.integrationRequestId))) {
     throw new CollabError("SNAPSHOT_INVALID", "Review publication snapshot is invalid");
   }
   if (value.summary.length + value.findingIds.reduce((total, id) => total + findings.get(id)!.body.length, 0) > MAX_PUBLICATION_CONTENT_LENGTH) {
@@ -318,7 +327,7 @@ export class ReviewService {
     principalId: string;
     reviewPointId: string;
     publicationId: string;
-  }): AcceptedReviewPublication {
+  }, commitIntegrationRequest: (accepted: AcceptedReviewPublication) => void): AcceptedReviewPublication {
     const host = this.requireHost(input.roomId, input.principalId);
     const point = this.options.reviewPoints.get(input);
     const publication = this.publicationsById.get(input.publicationId);
@@ -326,13 +335,33 @@ export class ReviewService {
       throw new CollabError("SNAPSHOT_NOT_FOUND", "Review publication does not exist");
     }
     const findings = publication.findingIds.map((id) => this.byId.get(id)!);
-    if (publication.state === "accepted") return { publication: structuredClone(publication), findings: structuredClone(findings) };
+    if (publication.state === "accepted") {
+      const accepted = { publication: structuredClone(publication), findings: structuredClone(findings) };
+      commitIntegrationRequest(structuredClone(accepted));
+      return accepted;
+    }
     this.requireOpenRoom(input.roomId);
     this.requireOpenReviewPoint(point);
     if (findings.some((finding) => finding.state !== "open")) {
       throw new CollabError("REQUEST_CONFLICT", "Review publication findings already have a decision");
     }
     const decidedAt = this.now();
+    const prepared: AcceptedReviewPublication = {
+      publication: {
+        ...structuredClone(publication),
+        state: "accepted",
+        acceptedBy: host.memberId,
+        acceptedAt: decidedAt,
+        integrationRequestId: integrationRequestId(input.roomId, publication.publicationId),
+      },
+      findings: findings.map((finding) => ({
+        ...structuredClone(finding),
+        state: "accepted",
+        decidedBy: host.memberId,
+        decidedAt,
+      })),
+    };
+    commitIntegrationRequest(structuredClone(prepared));
     for (const finding of findings) {
       finding.state = "accepted";
       finding.decidedBy = host.memberId;
@@ -341,7 +370,7 @@ export class ReviewService {
     publication.state = "accepted";
     publication.acceptedBy = host.memberId;
     publication.acceptedAt = decidedAt;
-    publication.integrationRequestId = integrationRequestId(input.roomId, publication.publicationId);
+    publication.integrationRequestId = prepared.publication.integrationRequestId;
     this.emit();
     return { publication: structuredClone(publication), findings: structuredClone(findings) };
   }

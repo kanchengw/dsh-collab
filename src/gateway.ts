@@ -13,13 +13,14 @@ import { ActiveRoomRegistry } from "./active-rooms.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
-import type { ReviewService } from "./reviews.js";
+import { MAINLINE_REQUEST_PREFIX, type ReviewService } from "./reviews.js";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
 import type {
   GatewayRequest,
   GatewayResponse,
   HostAgentPort,
   MessageTarget,
+  QueueRecord,
   RoomTokenClaims,
 } from "./types.js";
 
@@ -479,29 +480,40 @@ export class CollabGateway {
       if (current && (current.state !== "accepted" || !this.dispatcher.get(current.integrationRequestId!))) {
         this.checkQueue(roomId);
       }
+      let record: QueueRecord | undefined;
       const accepted = reviews.acceptSideTaskPublication({
         roomId,
         principalId: claims.principalId,
         reviewPointId,
         publicationId,
+      }, (prepared) => {
+        const requestId = prepared.publication.integrationRequestId!;
+        const message = classifyMessage({
+          messageId: requestId,
+          roomId,
+          authorMemberId: prepared.publication.acceptedBy!,
+          text: integrationPrompt({
+            reviewPointId,
+            workspaceSnapshotId: prepared.publication.workspaceSnapshotId,
+            summary: prepared.publication.summary,
+            findings: prepared.findings,
+          }),
+          target: "dsh",
+          contextRefs: [reviewPointId, prepared.publication.workspaceSnapshotId, prepared.publication.publicationId],
+        });
+        if (message.kind !== "agent-request") throw new Error("Mainline integration message is invalid");
+        message.requestId = requestId;
+        const existing = this.dispatcher.get(requestId);
+        if (existing) {
+          if (JSON.stringify(existing.message) !== JSON.stringify(message)) {
+            throw new CollabError("REQUEST_CONFLICT", "request id was already used for different data", { requestId });
+          }
+          record = existing;
+          return;
+        }
+        record = this.dispatcher.submitImmediate({ principalId: claims.principalId, message });
       });
-      const requestId = accepted.publication.integrationRequestId!;
-      const message = classifyMessage({
-        messageId: requestId,
-        roomId,
-        authorMemberId: accepted.publication.acceptedBy!,
-        text: integrationPrompt({
-          reviewPointId,
-          workspaceSnapshotId: accepted.publication.workspaceSnapshotId,
-          summary: accepted.publication.summary,
-          findings: accepted.findings,
-        }),
-        target: "dsh",
-        contextRefs: [reviewPointId, accepted.publication.workspaceSnapshotId, accepted.publication.publicationId],
-      });
-      if (message.kind !== "agent-request") throw new Error("Mainline integration message is invalid");
-      message.requestId = requestId;
-      const record = await this.dispatcher.submit({ principalId: claims.principalId, message });
+      if (!record) throw new Error("Mainline integration request was not created");
       void this.dispatcher.processQueue();
       return { status: 200, body: { publication: accepted.publication, findings: accepted.findings, request: record } };
     }
@@ -640,6 +652,9 @@ export class CollabGateway {
     const body = objectBody(request.body);
     const hasClientMessageId = body.clientMessageId !== undefined;
     const clientMessageId = requiredText(body.clientMessageId ?? body.messageId, "clientMessageId");
+    if (!hasClientMessageId && clientMessageId.startsWith(MAINLINE_REQUEST_PREFIX)) {
+      throw invalidInput("messageId uses a reserved internal namespace", { field: "messageId" });
+    }
     const messageId = hasClientMessageId
       ? "message:" + roomId + ":" + clientMessageId
       : requiredText(body.messageId, "messageId");

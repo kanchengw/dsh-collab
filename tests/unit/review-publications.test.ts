@@ -87,24 +87,33 @@ describe("ReviewService SideTask publications", () => {
 
     expect(() => reviews.acceptSideTaskPublication({
       roomId: "room-1", principalId: "bob", reviewPointId: point.reviewPointId, publicationId: publication.publicationId,
-    })).toThrow("Host");
+    }, () => {})).toThrow("Host");
     expect(() => reviews.setFindingState({
       roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId,
       findingId: publication.findingIds[0]!, state: "accepted",
     })).toThrow("one publication");
+    expect(() => reviews.acceptSideTaskPublication({
+      roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, publicationId: publication.publicationId,
+    }, () => { throw new Error("integration request conflict"); })).toThrow("integration request conflict");
+    expect(reviews.listPublications({ roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId }))
+      .toMatchObject({ publications: [{ state: "published" }] });
+    expect(reviews.listFindings({ roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId }))
+      .toMatchObject({ findings: [{ state: "open" }, { state: "open" }] });
+    const committed: string[] = [];
     const accepted = reviews.acceptSideTaskPublication({
       roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, publicationId: publication.publicationId,
-    });
+    }, (prepared) => { committed.push(prepared.publication.integrationRequestId!); });
 
     expect(accepted.publication).toMatchObject({
       state: "accepted", acceptedBy: "member-host", acceptedAt: 30,
-      integrationRequestId: expect.stringMatching(/^[a-f0-9]{64}$/),
+      integrationRequestId: expect.stringMatching(/^internal:mainline:[a-f0-9]{64}$/),
     });
     expect(accepted.findings).toHaveLength(2);
     expect(accepted.findings.every((finding) => finding.state === "accepted" && finding.decidedBy === "member-host")).toBe(true);
     expect(reviews.acceptSideTaskPublication({
       roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, publicationId: publication.publicationId,
-    })).toEqual(accepted);
+    }, (prepared) => { committed.push(prepared.publication.integrationRequestId!); })).toEqual(accepted);
+    expect(committed).toEqual([accepted.publication.integrationRequestId, accepted.publication.integrationRequestId]);
   });
 
   it("restores publications and their Mainline linkage without duplication", () => {
@@ -116,13 +125,21 @@ describe("ReviewService SideTask publications", () => {
     });
     reviews.acceptSideTaskPublication({
       roomId: "room-1", principalId: "host", reviewPointId: point.reviewPointId, publicationId: publication.publicationId,
-    });
+    }, () => {});
 
     const restored = ReviewService.fromSnapshot({ rooms, reviewPoints, now: () => 40 }, reviews.snapshot());
     expect(restored.listPublications({ roomId: "room-1", principalId: "bob", reviewPointId: point.reviewPointId })).toMatchObject({
       publications: [{ publicationId: publication.publicationId, state: "accepted", integrationRequestId: expect.any(String) }],
     });
     expect(restored.snapshot()).toEqual(reviews.snapshot());
+
+    const legacy = reviews.snapshot();
+    legacy.publications![0] = {
+      ...legacy.publications![0]!,
+      integrationRequestId: hash(`room-1\0${publication.publicationId}\0mainline-integration`),
+    };
+    const restoredLegacy = ReviewService.fromSnapshot({ rooms, reviewPoints, now: () => 40 }, legacy);
+    expect(restoredLegacy.snapshot()).toEqual(legacy);
 
     const malformed = reviews.snapshot();
     malformed.publications![0] = { ...malformed.publications![0]!, acceptedAt: 41 };

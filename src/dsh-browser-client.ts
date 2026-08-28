@@ -370,7 +370,7 @@ function reviewPublication(value: unknown, roomId: string, reviewPointId: string
     || (accepted
       ? typeof publication.acceptedBy !== "string" || publication.acceptedBy.trim() === ""
         || !Number.isSafeInteger(publication.acceptedAt) || (publication.acceptedAt as number) < 0
-        || typeof publication.integrationRequestId !== "string" || !/^[a-f0-9]{64}$/.test(publication.integrationRequestId)
+        || typeof publication.integrationRequestId !== "string" || !/^(?:[a-f0-9]{64}|internal:mainline:[a-f0-9]{64})$/.test(publication.integrationRequestId)
       : publication.acceptedBy !== undefined || publication.acceptedAt !== undefined || publication.integrationRequestId !== undefined)) {
     throw new Error("Gateway Review publication response is invalid");
   }

@@ -179,14 +179,36 @@ describe("AgentDispatcher", () => {
   });
 
   it("treats retrying the same request as idempotent", async () => {
-    const { dispatcher } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
+    const { dispatcher, ledger } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
     const message = request("message-1", "Retry me");
 
-    const first = await dispatcher.submit({ principalId: "alice", message });
-    const retry = await dispatcher.submit({ principalId: "alice", message });
+    const first = dispatcher.submitImmediate({ principalId: "alice", message });
+    const immediateRetry = dispatcher.submitImmediate({ principalId: "alice", message });
+    const asyncRetry = await dispatcher.submit({ principalId: "alice", message });
 
-    expect(retry).toEqual(first);
+    expect(immediateRetry).toEqual(first);
+    expect(asyncRetry).toEqual(first);
     expect(dispatcher.queued()).toHaveLength(1);
+    expect(ledger.readAfter("room-1", 0).filter((event) => event.eventId === "message-1:created")).toHaveLength(1);
+    expect(ledger.readAfter("room-1", 0).filter((event) => event.eventId === "message-1:queued")).toHaveLength(1);
+  });
+
+  it("rolls back the queue record when publishing its ledger events fails", () => {
+    const { dispatcher, ledger } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
+    ledger.append({
+      eventId: "message-partial:queued",
+      roomId: "room-1",
+      type: "agent.request.queued",
+      actor: { memberId: "member-alice", principalId: "alice" },
+      payload: { requestId: "message-partial", queueSeq: 99 },
+    });
+
+    expect(() => dispatcher.submitImmediate({ principalId: "alice", message: request("message-partial", "Must stay out") }))
+      .toThrow(expect.objectContaining({ code: "EVENT_CONFLICT" }));
+    expect(dispatcher.get("message-partial")).toBeUndefined();
+    expect(dispatcher.queued()).toEqual([]);
+    expect(dispatcher.submitImmediate({ principalId: "alice", message: request("message-next", "Run next") }))
+      .toMatchObject({ queueSeq: 1 });
   });
 
   it("does not allow a participant to smuggle a steer into the queue", async () => {

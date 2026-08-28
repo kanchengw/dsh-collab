@@ -15,6 +15,7 @@ describe("browser Gateway client", () => {
   it("publishes, lists and accepts SideTask findings through validated contracts", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const reviewPointId = "d".repeat(64);
+    let integrationRequestId = "9".repeat(64);
     const publication = {
       publicationId: "f".repeat(64), roomId: "room-1", reviewPointId, taskId: "task-review-1",
       workspaceSnapshotId: "a".repeat(64), publishedBy: "member-bob", summary: "One issue.",
@@ -33,7 +34,7 @@ describe("browser Gateway client", () => {
       if (url.endsWith("/publications") && init?.method === "POST") return response({ publication }, 201);
       if (url.endsWith("/publications") && init?.method === "GET") return response({ publications: [publication] });
       if (url.endsWith(`/publications/${publication.publicationId}/state`)) return response({
-        publication: { ...publication, state: "accepted", acceptedBy: "member-host", acceptedAt: 31, integrationRequestId: "9".repeat(64) },
+        publication: { ...publication, state: "accepted", acceptedBy: "member-host", acceptedAt: 31, integrationRequestId },
         findings: [finding],
       });
       throw new Error(`unexpected request: ${url}`);
@@ -55,7 +56,11 @@ describe("browser Gateway client", () => {
     await expect(client.acceptReviewPublication("room-1", reviewPointId, publication.publicationId)).resolves.toMatchObject({
       publication: { state: "accepted", integrationRequestId: "9".repeat(64) }, findings: [{ state: "accepted" }],
     });
-    expect(requests.filter(({ url }) => url.includes("/publications"))).toHaveLength(3);
+    integrationRequestId = `internal:mainline:${"8".repeat(64)}`;
+    await expect(client.acceptReviewPublication("room-1", reviewPointId, publication.publicationId)).resolves.toMatchObject({
+      publication: { state: "accepted", integrationRequestId }, findings: [{ state: "accepted" }],
+    });
+    expect(requests.filter(({ url }) => url.includes("/publications"))).toHaveLength(4);
     client.dispose();
   });
 

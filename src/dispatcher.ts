@@ -35,6 +35,10 @@ export class AgentDispatcher {
   ) {}
 
   async submit(input: { principalId: string; message: AgentRequest }): Promise<QueueRecord> {
+    return this.submitImmediate(input);
+  }
+
+  submitImmediate(input: { principalId: string; message: AgentRequest }): QueueRecord {
     const message = input.message;
     if (message.kind !== "agent-request" || message.target !== "dsh") {
       throw invalidInput("dispatcher accepts only agent requests");
@@ -72,20 +76,27 @@ export class AgentDispatcher {
     this.records.set(requestId, { record, fingerprint });
     this.queue.push(requestId);
     const actor = { memberId: member.memberId, principalId: member.principalId };
-    this.options.ledger.append({
-      eventId: requestId + ":created",
-      roomId: message.roomId,
-      type: "agent.request.created",
-      actor,
-      payload: { requestId, deliveryMode: message.deliveryMode, text: message.text },
-    });
-    this.options.ledger.append({
-      eventId: requestId + ":queued",
-      roomId: message.roomId,
-      type: "agent.request.queued",
-      actor,
-      payload: { requestId, queueSeq: record.queueSeq },
-    });
+    try {
+      this.options.ledger.append({
+        eventId: requestId + ":created",
+        roomId: message.roomId,
+        type: "agent.request.created",
+        actor,
+        payload: { requestId, deliveryMode: message.deliveryMode, text: message.text },
+      });
+      this.options.ledger.append({
+        eventId: requestId + ":queued",
+        roomId: message.roomId,
+        type: "agent.request.queued",
+        actor,
+        payload: { requestId, queueSeq: record.queueSeq },
+      });
+    } catch (error) {
+      this.records.delete(requestId);
+      this.removeFromQueue(requestId);
+      if (this.nextQueueSeq === record.queueSeq + 1) this.nextQueueSeq = record.queueSeq;
+      throw error;
+    }
     return copy(record);
   }
 
