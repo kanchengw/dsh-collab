@@ -728,12 +728,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async refreshReviewPoints(roomId: string): Promise<string> {
     this.assertActiveRoom(roomId);
+    const commandKey = JSON.stringify({ resource: "review-refresh", roomId });
+    const clientRequestId = this.pendingCommandIds.get(commandKey) ?? randomId("review_refresh");
+    this.pendingCommandIds.set(commandKey, clientRequestId);
     const data = record(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/review-points/refresh`, {
-      clientRequestId: randomId("review_refresh"),
+      clientRequestId,
     }, true)));
     if (!data || typeof data.snapshotId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(data.snapshotId)) {
       throw new Error("Gateway Review Point refresh response is invalid");
     }
+    this.pendingCommandIds.delete(commandKey);
     return data.snapshotId;
   }
 

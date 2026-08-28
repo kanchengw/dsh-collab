@@ -290,6 +290,14 @@ Host workspace. Active Participants read the most recently persisted comparison
 result and may explicitly reload the list. CM-U08 adds no Review WebSocket frame,
 so old clients and the existing durable room cursor remain unchanged.
 
+Review Point creation, refresh, reviewer assignment and lifecycle updates wait
+for critical-state persistence before returning success. A persistence failure
+returns `500` while retaining the in-process projection. Retrying creation with
+the same `clientRequestId` confirms the existing point without capturing a
+second artifact; reviewer/lifecycle PUTs re-confirm their already-applied target
+state. Browser clients also retain a refresh `clientRequestId` across network or
+`5xx` failures, so the deterministic Workspace Snapshot artifact is reused.
+
 Finding creation accepts `{ clientRequestId, severity, location, body }`.
 `clientRequestId` is at most 128 characters and is namespaced by verified room
 principal, so a lost-response retry returns the original finding. `body` is

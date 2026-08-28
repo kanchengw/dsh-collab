@@ -64,6 +64,94 @@ describe("Human Review API", () => {
       .toMatchObject({ status: 200, body: { findings: [{ findingId, state: "accepted" }] } });
     await restored.dispose();
   });
+
+  it("confirms Review Point creation, refresh and workflow state before reporting success", async () => {
+    const content = Buffer.from("line 1\nline 2\n");
+    const files = [{ path: "src/parser.ts", contentHash: hash(content), size: content.byteLength, source: "tracked" as const }];
+    const snapshot: WorkspaceSnapshotPackage = {
+      snapshotId: "snapshot-review", roomId: "room-1", hostSessionId: "room-1", roomEventSeq: 0,
+      headOid: "a".repeat(40), manifestHash: hash(JSON.stringify(files)), files, createdAt: 10,
+    };
+    let captureCalls = 0;
+    const snapshots = new Map<string, WorkspaceSnapshotPackage>();
+    let persistenceFails = true;
+    let runtime: ReturnType<typeof createDshCollabHostRuntime> | undefined;
+    const statesAtCommit: Array<{ count: number; reviewers: string[]; lifecycle?: string }> = [];
+    const commitCriticalState = vi.fn(async () => {
+      const points = runtime?.reviewPoints.snapshot().reviewPoints ?? [];
+      statesAtCommit.push({
+        count: points.length,
+        reviewers: [...(points[0]?.reviewerIds ?? [])],
+        ...(points[0] ? { lifecycle: points[0].lifecycle } : {}),
+      });
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    runtime = createDshCollabHostRuntime({
+      roomId: "room-1", hostId: "host", hostSessionId: "room-1", title: "Release", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+      workspaceSnapshots: {
+        capture: async (input) => {
+          captureCalls += 1;
+          const captured = { ...snapshot, snapshotId: input.snapshotId };
+          snapshots.set(captured.snapshotId, captured);
+          return captured;
+        },
+        load: async (snapshotId) => snapshots.get(snapshotId),
+        readChunk: async (_snapshotId, _path, offset, length) => content.subarray(offset, offset + length),
+        captureReviewDiffs: async () => [{ path: "src/parser.ts", kind: "text", oldText: "line 1\n", newText: "line 1\nline 2\n" }],
+      },
+      commitCriticalState,
+      now: () => 30,
+    });
+    runtime.rooms.addMember("room-1", { memberId: "member-bob", principalId: "bob", displayName: "Bob", now: 2 });
+    runtime.workspace.setSharing({ roomId: "room-1", principalId: "host", enabled: true });
+    const host = await runtime.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = {
+      authorization: `Bearer ${(host.body as { roomToken: string }).roomToken}`,
+      [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
+    };
+    const create = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/review-points",
+      headers,
+      body: {
+        clientRequestId: "point-persist", title: "Parser review",
+        files: [{ path: "src/parser.ts", status: "modified", additions: 2, deletions: 1 }],
+      },
+    };
+
+    expect(await runtime.gateway.handle(create)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    const retried = await runtime.gateway.handle(create);
+    expect(retried).toMatchObject({ status: 201, body: { reviewPoint: { lifecycle: "open" } } });
+    expect(captureCalls).toBe(1);
+    const reviewPointId = (retried.body as { reviewPoint: { reviewPointId: string } }).reviewPoint.reviewPointId;
+
+    persistenceFails = true;
+    const reviewers = { method: "PUT" as const, path: `/v1/rooms/room-1/review-points/${reviewPointId}/reviewers`, headers, body: { reviewerIds: ["member-bob"] } };
+    expect(await runtime.gateway.handle(reviewers)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await runtime.gateway.handle(reviewers)).toMatchObject({ status: 200 });
+
+    persistenceFails = true;
+    const lifecycle = { method: "PUT" as const, path: `/v1/rooms/room-1/review-points/${reviewPointId}/lifecycle`, headers, body: { lifecycle: "changes-requested" } };
+    expect(await runtime.gateway.handle(lifecycle)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await runtime.gateway.handle(lifecycle)).toMatchObject({ status: 200, body: { reviewPoint: { lifecycle: "changes-requested" } } });
+
+    persistenceFails = true;
+    const refresh = { method: "POST" as const, path: "/v1/rooms/room-1/review-points/refresh", headers, body: { clientRequestId: "refresh-persist" } };
+    expect(await runtime.gateway.handle(refresh)).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await runtime.gateway.handle(refresh)).toMatchObject({ status: 200, body: { snapshotId: expect.any(String) } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(8);
+    expect(captureCalls).toBe(2);
+    expect(statesAtCommit.map((state) => state.count)).toEqual(Array(8).fill(1));
+    expect(statesAtCommit.slice(2).map((state) => state.reviewers)).toEqual(Array(6).fill(["member-bob"]));
+    expect(statesAtCommit.slice(4).map((state) => state.lifecycle)).toEqual(Array(4).fill("changes-requested"));
+    await runtime.dispose();
+  });
 });
 
 describe("SideTask publication API", () => {

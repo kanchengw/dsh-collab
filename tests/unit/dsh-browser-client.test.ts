@@ -178,6 +178,7 @@ describe("browser Gateway client", () => {
 
   it("reuses a Review Point command ID after a lost response", async () => {
     const bodies: string[] = [];
+    const refreshBodies: string[] = [];
     let attempts = 0;
     const reviewPoint = {
       reviewPointId: "d".repeat(64), roomId: "room-1", title: "Parser review", createdBy: "member-host", reviewerIds: [], lifecycle: "open",
@@ -188,6 +189,11 @@ describe("browser Gateway client", () => {
       if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
       if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/review-points/refresh")) {
+        refreshBodies.push(String(init?.body));
+        if (refreshBodies.length === 1) throw new Error("response lost");
+        return response({ snapshotId: "e".repeat(64) });
+      }
       if (url.endsWith("/review-points")) {
         bodies.push(String(init?.body));
         attempts += 1;
@@ -208,6 +214,9 @@ describe("browser Gateway client", () => {
     await expect(client.createReviewPoint("room-1", input)).rejects.toThrow("Gateway");
     await expect(client.createReviewPoint("room-1", input)).resolves.toEqual(reviewPoint);
     expect(JSON.parse(bodies[0]!).clientRequestId).toBe(JSON.parse(bodies[1]!).clientRequestId);
+    await expect(client.refreshReviewPoints("room-1")).rejects.toThrow("Gateway");
+    await expect(client.refreshReviewPoints("room-1")).resolves.toBe("e".repeat(64));
+    expect(JSON.parse(refreshBodies[0]!).clientRequestId).toBe(JSON.parse(refreshBodies[1]!).clientRequestId);
     client.dispose();
   });
 

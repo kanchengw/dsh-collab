@@ -571,6 +571,7 @@ export class CollabGateway {
         reviewPointId,
         reviewerIds: body.reviewerIds.map((value) => requiredText(value, "reviewerId")),
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { reviewPoint } };
     }
     if (request.method === "PUT" && reviewPointId && tail.length === 2 && tail[1] === "lifecycle" && reviews) {
@@ -580,6 +581,7 @@ export class CollabGateway {
         reviewPointId,
         lifecycle: reviewLifecycle(objectBody(request.body).lifecycle),
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { reviewPoint } };
     }
     if (request.method === "PUT" && reviewPointId && tail.length === 4 && tail[1] === "findings" && tail[3] === "state" && reviews) {
@@ -613,7 +615,10 @@ export class CollabGateway {
         files: reviewPointFiles(body.files),
       } : undefined;
       const existing = createInput ? reviewPoints.findCreated(createInput) : undefined;
-      if (existing) return { status: 201, body: { reviewPoint: existing } };
+      if (existing) {
+        await this.options.commitCriticalState?.();
+        return { status: 201, body: { reviewPoint: existing } };
+      }
       const snapshot = await this.options.workspace!.captureLatest({
         roomId,
         principalId: claims.principalId,
@@ -623,6 +628,7 @@ export class CollabGateway {
       });
       if (tail.length === 1) {
         reviewPoints.observeSnapshot({ roomId, principalId: claims.principalId, snapshot });
+        await this.options.commitCriticalState?.();
         return { status: 200, body: { snapshotId: snapshot.snapshotId } };
       }
       const reviewPoint = reviewPoints.create({
@@ -635,6 +641,7 @@ export class CollabGateway {
           files: createInput!.files,
         }),
       });
+      await this.options.commitCriticalState?.();
       return { status: 201, body: { reviewPoint } };
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
