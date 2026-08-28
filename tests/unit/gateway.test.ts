@@ -712,4 +712,36 @@ describe("CollabGateway route contract", () => {
     expect(stateAtCommit).toEqual(["pending", "decided:allowed-once", "decided:allowed-once"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "approval.decided")).toHaveLength(1);
   });
+
+  it("confirms a human message in persistent state before reporting success", async () => {
+    let persistenceFails = true;
+    let ledger: EventLedger | undefined;
+    const eventCountAtCommit: number[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      eventCountAtCommit.push(ledger?.readAfter("room-1", 0, 500).filter((event) => event.type === "human.message").length ?? -1);
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
+      maxMessagesPerMemberPerWindow: 1,
+      messageWindowMs: 60_000,
+    }));
+    ledger = runtime.ledger;
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const message = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { clientMessageId: "human-persist", text: "hello team", target: "room" },
+    };
+
+    expect(await request(runtime.gateway, message)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    persistenceFails = false;
+    expect(await request(runtime.gateway, message)).toMatchObject({ status: 201, body: { message: { text: "hello team" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(eventCountAtCommit).toEqual([1, 1]);
+    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "human.message")).toHaveLength(1);
+  });
 });

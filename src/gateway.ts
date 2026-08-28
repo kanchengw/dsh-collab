@@ -31,6 +31,7 @@ interface ErrorBody {
 interface SubmissionRecord {
   fingerprint: string;
   response: GatewayResponse;
+  persistencePending?: boolean;
 }
 
 interface GatewayOptions {
@@ -690,6 +691,10 @@ export class CollabGateway {
       if (existing.fingerprint !== fingerprint) {
         throw new CollabError("REQUEST_CONFLICT", "clientMessageId was already used for different data", { clientMessageId });
       }
+      if (existing.persistencePending) {
+        await this.options.commitCriticalState?.();
+        existing.persistencePending = false;
+      }
       return copy(existing.response);
     }
     this.options.limits?.consumeMessage(roomId, claims.memberId, this.now());
@@ -704,7 +709,10 @@ export class CollabGateway {
         payload: message,
       });
       const response = { status: 201, body: { message, event } };
-      this.submissions.set(key, { fingerprint, response });
+      const submission = { fingerprint, response, persistencePending: true };
+      this.submissions.set(key, submission);
+      await this.options.commitCriticalState?.();
+      submission.persistencePending = false;
       return copy(response);
     }
     message.requestId = requestId;

@@ -457,6 +457,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private participantRef: JoinedRoomRef | undefined;
   private readonly pendingCommandIds = new Map<string, string>();
   private readonly pendingJoins = new Map<string, { memberId: string; credential: string }>();
+  private readonly pendingMessageIds = new Map<string, string>();
 
   constructor(private readonly options: DshBrowserCollabOptions) {
     this.hostBase = normalizeBase(options.gatewayUrl);
@@ -665,11 +666,28 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async send(input: { text: string; target: ComposerTarget }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
-    await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/messages`, {
-      clientMessageId: randomId("message"),
-      text: input.text,
-      target: input.target,
-    }, true);
+    if (input.target !== "room") {
+      await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/messages`, {
+        clientMessageId: randomId("message"),
+        text: input.text,
+        target: input.target,
+      }, true);
+      return;
+    }
+    const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target });
+    const clientMessageId = this.pendingMessageIds.get(pendingKey) ?? randomId("message");
+    this.pendingMessageIds.set(pendingKey, clientMessageId);
+    try {
+      await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/messages`, {
+        clientMessageId,
+        text: input.text,
+        target: input.target,
+      }, true);
+      this.pendingMessageIds.delete(pendingKey);
+    } catch (error) {
+      if (error instanceof GatewayRequestError && error.status >= 400 && error.status < 500) this.pendingMessageIds.delete(pendingKey);
+      throw error;
+    }
   }
 
   async getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> {

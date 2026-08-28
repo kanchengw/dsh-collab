@@ -85,6 +85,13 @@ Content-Type: application/json       # requests with a body
 has a body-level `clientMessageId`; it is the room-scoped idempotency key and
 is intentionally different from the request correlation ID.
 
+For a human room message, the Gateway appends the durable `human.message`
+event and waits for critical-state persistence before returning `201`. If that
+confirmation fails, an exact retry with the same `clientMessageId` confirms the
+existing event without consuming the member message limit or appending another
+event. Browser clients retain the unconfirmed ID across network and `5xx`
+failures, and release it after success or a deterministic `4xx` rejection.
+
 The current routes are:
 
 | Method | Public path | Meaning |
