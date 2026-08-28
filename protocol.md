@@ -179,6 +179,12 @@ The current implementation exposes the following explicit v1 actions:
 { "action": "setMemberStatus", "memberId": "member-2", "status": "suspended" }
 ```
 
+Member status and role actions mutate durable authorization state. The Gateway
+applies the room member change, credential revocation and single audit event,
+then waits for its configured critical-state persistence barrier before returning
+success. A persistence failure returns `500`; retrying the same resulting status
+or role waits for persistence again without appending a duplicate event.
+
 ```json
 { "action": "setMemberRole", "memberId": "member-2", "role": "lead" }
 ```

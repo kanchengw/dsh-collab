@@ -11,7 +11,13 @@ import { WorkspaceService } from "../../src/workspace-service.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 import { ResourceLimiter } from "../../src/limits.js";
 
-function setup(agentOverride?: HostAgentPort, withApprovals = false, commitCriticalState?: () => Promise<void>, limits?: ResourceLimiter) {
+function setup(
+  agentOverride?: HostAgentPort,
+  withApprovals = false,
+  commitCriticalState?: () => Promise<void>,
+  limits?: ResourceLimiter,
+  now: () => number = () => 10,
+) {
   const rooms = new RoomStore();
   rooms.createRoom({
     roomId: "room-1",
@@ -52,7 +58,7 @@ function setup(agentOverride?: HostAgentPort, withApprovals = false, commitCriti
   const workspaceSharing = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, now: () => 10 });
   const gateway = new CollabGateway({
-    rooms, ledger, invites, agent: agentOverride ?? agent, now: () => 10, approvals,
+    rooms, ledger, invites, agent: agentOverride ?? agent, now, approvals,
     hostPrincipalId: "host",
     hostDisplayName: "Host",
     ownsHostSession: (sessionId) => sessionId !== "session-missing",
@@ -578,5 +584,67 @@ describe("CollabGateway route contract", () => {
     });
     expect(resumed.status).toBe(401);
     expect(resumed.body).toMatchObject({ error: { code: "AUTH_INVALID" } });
+  });
+
+  it("confirms member authority changes in persistent state before reporting success", async () => {
+    let persistenceFails = true;
+    let clock = 10;
+    let rooms: RoomStore | undefined;
+    const statusAtCommit: string[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      statusAtCommit.push(rooms?.listMembers("room-1").find((member) => member.memberId === "member-alice")?.status ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState, undefined, () => clock++);
+    rooms = runtime.rooms;
+    const { gateway, ledger } = runtime;
+    const host = await request(gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const action = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { action: "setMemberStatus", memberId: "member-alice", status: "suspended" },
+    };
+
+    expect(await request(gateway, action)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    persistenceFails = false;
+    expect(await request(gateway, action)).toMatchObject({ status: 200, body: { member: { status: "suspended" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(statusAtCommit).toEqual(["suspended", "suspended"]);
+    expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.suspended")).toHaveLength(1);
+  });
+
+  it("confirms member role changes in persistent state before reporting success", async () => {
+    let persistenceFails = true;
+    let clock = 10;
+    let rooms: RoomStore | undefined;
+    const roleAtCommit: string[] = [];
+    const commitCriticalState = vi.fn(async () => {
+      roleAtCommit.push(rooms?.listMembers("room-1").find((member) => member.memberId === "member-alice")?.role ?? "missing");
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState, undefined, () => clock++);
+    rooms = runtime.rooms;
+    const { gateway, ledger } = runtime;
+    const host = await request(gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const action = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/actions",
+      headers: bearer((host.body as { roomToken: string }).roomToken),
+      body: { action: "setMemberRole", memberId: "member-alice", role: "observer" },
+    };
+
+    expect(await request(gateway, action)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
+    persistenceFails = false;
+    expect(await request(gateway, action)).toMatchObject({ status: 200, body: { member: { role: "observer" } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(roleAtCommit).toEqual(["observer", "observer"]);
+    expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.roleChanged")).toHaveLength(1);
   });
 });

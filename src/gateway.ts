@@ -762,30 +762,42 @@ export class CollabGateway {
       const memberId = requiredText(body.memberId, "memberId");
       const status = requiredText(body.status, "status");
       if (status !== "suspended" && status !== "removed") throw invalidInput("member status action must suspend or remove a member", { status });
-      const member = this.options.rooms.setMemberStatus(roomId, memberId, status, this.now());
-      this.tokens.revokeMember(roomId, member.memberId, this.now());
-      this.resumes.revokeMember(roomId, member.memberId, this.now());
-      this.options.ledger.append({
-        eventId: roomId + ":member.status:" + member.memberId + ":" + status + ":" + String(this.now()),
-        roomId,
-        type: status === "suspended" ? "member.suspended" : "member.removed",
-        actor: { memberId: actor.memberId, principalId: actor.principalId },
-        createdAt: this.now(),
-        payload: { memberId: member.memberId, status },
-      });
+      const changed = this.options.rooms.listMembers(roomId).find((member) => member.memberId === memberId)?.status !== status;
+      const now = this.now();
+      const member = this.options.rooms.setMemberStatus(roomId, memberId, status, now);
+      this.tokens.revokeMember(roomId, member.memberId, now);
+      this.resumes.revokeMember(roomId, member.memberId, now);
+      if (changed) {
+        this.options.ledger.append({
+          eventId: roomId + ":member.status:" + member.memberId + ":" + status + ":" + String(now),
+          roomId,
+          type: status === "suspended" ? "member.suspended" : "member.removed",
+          actor: { memberId: actor.memberId, principalId: actor.principalId },
+          createdAt: now,
+          payload: { memberId: member.memberId, status },
+        });
+      }
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { member } };
     }
     if (action === "setMemberRole") {
       const actor = this.options.rooms.authorize(roomId, claims.principalId, "manageMembers");
-      const member = this.options.rooms.setMemberRole(roomId, requiredText(body.memberId, "memberId"), requiredText(body.role, "role") as "lead" | "participant" | "observer");
-      this.options.ledger.append({
-        eventId: roomId + ":member.role:" + member.memberId + ":" + member.role + ":" + String(this.now()),
-        roomId,
-        type: "member.roleChanged",
-        actor: { memberId: actor.memberId, principalId: actor.principalId },
-        createdAt: this.now(),
-        payload: { memberId: member.memberId, role: member.role },
-      });
+      const memberId = requiredText(body.memberId, "memberId");
+      const role = requiredText(body.role, "role") as "lead" | "participant" | "observer";
+      const changed = this.options.rooms.listMembers(roomId).find((member) => member.memberId === memberId)?.role !== role;
+      const member = this.options.rooms.setMemberRole(roomId, memberId, role);
+      if (changed) {
+        const now = this.now();
+        this.options.ledger.append({
+          eventId: roomId + ":member.role:" + member.memberId + ":" + member.role + ":" + String(now),
+          roomId,
+          type: "member.roleChanged",
+          actor: { memberId: actor.memberId, principalId: actor.principalId },
+          createdAt: now,
+          payload: { memberId: member.memberId, role: member.role },
+        });
+      }
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { member } };
     }
     if (action === "decideApproval") {
