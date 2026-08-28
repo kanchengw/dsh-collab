@@ -381,6 +381,7 @@ export class CollabGateway {
       hostDisplayName: this.options.hostDisplayName ?? "Host",
       now: this.now(),
     });
+    await this.options.commitCriticalState?.();
     this.options.activeRooms?.activate(roomId);
     void this.dispatcher.processQueue();
     const member = this.options.rooms.authorize(roomId, principalId, "read");

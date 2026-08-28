@@ -772,12 +772,7 @@ describe("CollabGateway route contract", () => {
     expect(await request(runtime.gateway, message)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
     expect(runtime.calls).toEqual([]);
     expect(runtime.gateway.dispatcher.get("request:room-1:agent-persist")).toMatchObject({ status: "queued" });
-    expect(await request(runtime.gateway, {
-      method: "POST",
-      path: "/v1/rooms/session-new/host",
-      auth: { principalId: "host" },
-      body: { hostSessionId: "session-new", title: "New room" },
-    })).toMatchObject({ status: 200 });
+    await runtime.gateway.dispatcher.processQueue();
     expect(runtime.calls).toEqual([]);
 
     persistenceFails = false;
@@ -865,5 +860,44 @@ describe("CollabGateway route contract", () => {
     expect(commitCriticalState).toHaveBeenCalledTimes(2);
     expect(statusAtCommit).toEqual(["cancelled", "cancelled"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.cancelled")).toHaveLength(1);
+  });
+
+  it("confirms owned room metadata in persistent state before reporting Host sharing success", async () => {
+    let persistenceFails = true;
+    let rooms: RoomStore | undefined;
+    const roomAtCommit: Array<{ title: string; revision: number }> = [];
+    const commitCriticalState = vi.fn(async () => {
+      const room = rooms?.getRoom("session-persist");
+      if (room) roomAtCommit.push({ title: room.title, revision: room.revision });
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const runtime = setup(undefined, false, commitCriticalState);
+    rooms = runtime.rooms;
+    const share = (title: string) => request(runtime.gateway, {
+      method: "POST",
+      path: "/v1/rooms/session-persist/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-persist", title },
+    });
+
+    expect(await share("Release room")).toMatchObject({ status: 500 });
+    expect(runtime.activeRooms.isActive("session-persist")).toBe(false);
+    persistenceFails = false;
+    expect(await share("Release room")).toMatchObject({ status: 200, body: { room: { title: "Release room", revision: 1 } } });
+
+    persistenceFails = true;
+    expect(await share("Planning room")).toMatchObject({ status: 500 });
+    persistenceFails = false;
+    expect(await share("Planning room")).toMatchObject({ status: 200, body: { room: { title: "Planning room", revision: 2 } } });
+
+    expect(commitCriticalState).toHaveBeenCalledTimes(4);
+    expect(roomAtCommit).toEqual([
+      { title: "Release room", revision: 1 },
+      { title: "Release room", revision: 1 },
+      { title: "Planning room", revision: 2 },
+      { title: "Planning room", revision: 2 },
+    ]);
+    expect(runtime.rooms.listMembers("session-persist")).toHaveLength(1);
+    expect(runtime.activeRooms.isActive("session-persist")).toBe(true);
   });
 });

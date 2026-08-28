@@ -103,6 +103,14 @@ existed when that barrier began, so a concurrent later request cannot be
 delivered by an earlier snapshot write. Browser clients apply the same ID
 retention rules to human and Agent-targeted messages.
 
+For Host room creation, resume, or rename, the Gateway persists the complete
+Owned room metadata before activating sharing or returning `200`. A failed
+persistence barrier returns `500` and leaves that room inactive. An exact retry
+reconfirms the existing metadata without increasing its revision or creating a
+second Host member. Sharing activation remains runtime-only: it is excluded
+from Host snapshots, so every new DSH process starts with all Owned rooms not
+sharing even though their metadata is restored.
+
 The current routes are:
 
 | Method | Public path | Meaning |
