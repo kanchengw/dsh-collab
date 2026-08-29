@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client.js";
-import type { DshCollabClientSnapshot, DshCollabGatewayRuntimeSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
+import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-rooms.module.css";
 
@@ -63,16 +63,6 @@ function usePanelOpen(): boolean {
   return open;
 }
 
-function useGateway(port: DshCollabSettingsPort | undefined): DshCollabGatewayRuntimeSnapshot {
-  const [gateway, setGateway] = useState<DshCollabGatewayRuntimeSnapshot>(() => port?.getGatewaySnapshot?.() ?? { status: "stopped" });
-  useEffect(() => {
-    const update = (): void => { setGateway(port?.getGatewaySnapshot?.() ?? { status: "stopped" }); };
-    update();
-    return port?.subscribeGateway?.(update);
-  }, [port]);
-  return gateway;
-}
-
 function useOwnedRooms(port: DshCollabSettingsPort | undefined): readonly DshCollabOwnedRoom[] {
   const [rooms, setRooms] = useState<readonly DshCollabOwnedRoom[]>(() => port?.getOwnedRooms?.() ?? []);
   useEffect(() => {
@@ -93,7 +83,7 @@ function useJoinedRooms(port: DshCollabSettingsPort | undefined): readonly Parti
   return rooms;
 }
 
-function useActiveRoom(port: DshCollabSettingsPort | undefined): Pick<DshCollabClientSnapshot, "roomId" | "role" | "connection"> | undefined {
+function useActiveRoom(port: DshCollabSettingsPort | undefined): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "role" | "connection"> | undefined {
   const [room, setRoom] = useState(() => port?.getRoomSnapshot?.());
   useEffect(() => {
     const update = (): void => { setRoom(port?.getRoomSnapshot?.()); };
@@ -130,7 +120,6 @@ export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { w
 
 export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
-  const gateway = useGateway(port);
   const ownedRooms = useOwnedRooms(port);
   const joinedRooms = useJoinedRooms(port);
   const activeRoom = useActiveRoom(port);
@@ -147,7 +136,7 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
     closeRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape") setDshCollabRoomsOpen(false); };
     window.addEventListener("keydown", closeOnEscape);
-    void Promise.all([port?.refreshGateway?.(), port?.refreshOwnedRooms?.()]).catch((cause) => {
+    void Promise.resolve(port?.refreshOwnedRooms?.()).catch((cause) => {
       setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.refreshError") });
     });
     return () => { window.removeEventListener("keydown", closeOnEscape); };
@@ -168,7 +157,7 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
     }
   };
   const startSharing = async (room: DshCollabOwnedRoom): Promise<void> => {
-    if (gateway.status !== "running") await port?.startGateway?.();
+    if (port?.getGatewaySnapshot?.().status !== "running") await port?.startGateway?.();
     if (!port?.shareHostRoom) throw new Error(t("owned.unavailable"));
     await port.shareHostRoom({ sessionId: room.hostSessionId, title: room.title });
   };
@@ -180,8 +169,6 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
       setInvitation("");
     }, t("join.savedNotice"));
   };
-  const startGateway = port?.startGateway;
-  const stopGateway = port?.stopGateway;
   const stopSharing = port?.stopSharing;
   const connectJoinedRoom = port?.connectJoinedRoom;
   const forgetJoinedRoom = port?.forgetJoinedRoom;
@@ -204,16 +191,6 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
           <button ref={closeRef} type="button" className={css.close} aria-label={t("rooms.close")} onClick={() => { setDshCollabRoomsOpen(false); }}><span className={css.closeIcon} aria-hidden="true" /></button>
         </header>
         <div className={css.body}>
-          <section className={css.gatewaySection} aria-labelledby="collab-gateway-title">
-            <div className={css.sectionHeading}>
-              <div><h3 id="collab-gateway-title">{t("gateway.title")}</h3><p>{t("gateway.description")}</p></div>
-              <Status tone={gateway.status === "running" ? "active" : gateway.status === "starting" ? "pending" : "neutral"}>{gateway.status === "running" ? t("gateway.runningOn", { port: gateway.port }) : t(gateway.status === "starting" ? "gateway.starting" : "gateway.stopped")}</Status>
-            </div>
-            {gateway.status === "running"
-              ? <Action disabled={!stopGateway || busy !== undefined} onClick={() => { void perform("gateway", async () => { await stopGateway?.(); }, t("gateway.stoppedNotice")); }}>{t("gateway.stop")}</Action>
-              : <Action primary disabled={!startGateway || gateway.status === "starting" || busy !== undefined} onClick={() => { void perform("gateway", async () => { await startGateway?.(); }, t("gateway.startedNotice")); }}>{t(gateway.status === "starting" ? "gateway.startingAction" : "gateway.start")}</Action>}
-          </section>
-
           <section className={css.roomSection} aria-labelledby="owned-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="owned-rooms-title">{t("owned.title")}</h3><p>{t("owned.description")}</p></div><span className={css.count}>{ownedRooms.length}</span></div>
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>
@@ -230,7 +207,8 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
           <section className={css.roomSection} aria-labelledby="joined-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="joined-rooms-title">{t("joined.title")}</h3><p>{t("joined.description")}</p></div><span className={css.count}>{joinedRooms.length}</span></div>
             {joinedRooms.length === 0 ? <p className={css.empty}>{t("joined.empty")}</p> : <ul className={css.roomList}>{joinedRooms.map((room) => {
-              const active = participantConnected && activeRoom.roomId === room.roomId;
+              const active = participantConnected && activeRoom.roomId === room.roomId
+                && (activeRoom.gatewayEndpoint === undefined || activeRoom.gatewayEndpoint === room.gatewayEndpoint);
               const ref: JoinedRoomRef = { gatewayEndpoint: room.gatewayEndpoint, roomId: room.roomId };
               return <li key={`${room.gatewayEndpoint}:${room.roomId}`} className={css.roomRow}>
                 <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span></div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>

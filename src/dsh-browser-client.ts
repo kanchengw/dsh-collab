@@ -1,9 +1,9 @@
 import type { ComposerTarget } from "./ui.js";
-import { projectTimeline } from "./ui.js";
+import { projectAgentQueue, projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js";
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
-import type { AgentOutputFrame, RoomEvent } from "./types.js";
+import type { AgentOutputFrame, AgentQueueItem, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 import type { LocalSnapshotAccess } from "./local-sidecar.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
@@ -102,6 +102,7 @@ type SnapshotData = {
   room: { roomId: string; title: string; hostDisplayName?: string };
   members: Array<{ memberId: string; role: string; displayName?: string; status?: string }>;
   lastEventSeq: number;
+  agentQueue?: AgentQueueItem[];
 };
 
 type EventsData = { events: RoomEvent[]; nextSeq?: number };
@@ -142,6 +143,12 @@ function normalizeBase(value: string): string {
   return base;
 }
 
+function gatewayWebSocketUrl(base: string): string {
+  const endpoint = new URL(normalizeBase(base));
+  endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+  return endpoint.toString();
+}
+
 function parseEnvelope(value: unknown): unknown {
   if (!value || typeof value !== "object") throw new Error("invalid Gateway response");
   const envelope = value as Envelope;
@@ -165,7 +172,25 @@ function snapshotData(value: unknown, roomId: string): SnapshotData {
     || !Number.isSafeInteger(data.lastEventSeq) || data.lastEventSeq < 0) {
     throw new Error("Gateway room snapshot is invalid");
   }
+  if (data.agentQueue !== undefined) data.agentQueue = agentQueue(data.agentQueue, roomId);
   return data;
+}
+
+function agentQueue(value: unknown, roomId: string): AgentQueueItem[] {
+  if (!Array.isArray(value)) throw new Error("Gateway Agent queue snapshot is invalid");
+  return value.map((entry) => {
+    const item = record(entry);
+    if (!item || item.roomId !== roomId || typeof item.requestId !== "string" || typeof item.messageId !== "string"
+      || typeof item.authorMemberId !== "string" || typeof item.text !== "string"
+      || (item.deliveryMode !== "followup" && item.deliveryMode !== "steer")
+      || (item.status !== "queued" && item.status !== "running")
+      || !Number.isSafeInteger(item.queueSeq) || (item.queueSeq as number) < 1
+      || !Number.isSafeInteger(item.position) || (item.position as number) < 1
+      || (item.priority !== "host" && item.priority !== "participant")) {
+      throw new Error("Gateway Agent queue item is invalid");
+    }
+    return item as unknown as AgentQueueItem;
+  });
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -477,6 +502,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       canSteer: options.role === "host",
       members: [],
       timeline: [],
+      agentQueue: [],
     };
   }
 
@@ -502,9 +528,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess {
     this.assertActiveRoom(roomId);
-    const endpoint = new URL(this.base);
-    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
-    return { gatewayEndpoint: endpoint.toString(), roomToken: this.token! };
+    return { gatewayEndpoint: gatewayWebSocketUrl(this.base), roomToken: this.token! };
   }
 
   async bootstrap(roomId?: string): Promise<void> {
@@ -540,7 +564,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.socket = undefined;
     this.token = undefined;
     this.activeAgentOutputs.clear();
-    this.snapshot = { ...this.snapshot, unavailableReason: undefined, timeline: this.projectTimeline() };
+    this.snapshot = { ...this.snapshot, unavailableReason: undefined, timeline: this.projectTimeline(), agentQueue: [] };
     socket?.close(1000, "client_disconnected");
     this.setConnection("offline");
   }
@@ -664,9 +688,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     }) };
   }
 
-  async send(input: { text: string; target: ComposerTarget }): Promise<void> {
+  async send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
-    const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target });
+    const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target, contextRefs: input.contextRefs });
     const clientMessageId = this.pendingMessageIds.get(pendingKey) ?? randomId("message");
     this.pendingMessageIds.set(pendingKey, clientMessageId);
     try {
@@ -674,12 +698,30 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         clientMessageId,
         text: input.text,
         target: input.target,
+        ...(input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
       }, true);
       this.pendingMessageIds.delete(pendingKey);
     } catch (error) {
       if (error instanceof GatewayRequestError && error.status >= 400 && error.status < 500) this.pendingMessageIds.delete(pendingKey);
       throw error;
     }
+  }
+
+  async editAgentRequest(requestId: string, text: string): Promise<void> {
+    this.assertActiveRoom(this.roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/actions`, {
+      action: "editAgentRequest",
+      requestId,
+      text,
+    }, true);
+  }
+
+  async withdrawAgentRequest(requestId: string): Promise<void> {
+    this.assertActiveRoom(this.roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/actions`, {
+      action: "withdrawAgentRequest",
+      requestId,
+    }, true);
   }
 
   async getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> {
@@ -827,7 +869,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     )), input.roomId);
     const events = await this.recoverEvents(input.roomId, snapshot.lastEventSeq, input.base, input.data.roomToken);
     const lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...events.values()].map((event) => event.seq));
-    const url = new URL(input.base.replace(/^http/, "ws") + "/v1/stream");
+    const url = new URL(gatewayWebSocketUrl(input.base) + "/v1/stream");
     url.searchParams.set("roomId", input.roomId);
     url.searchParams.set("after", String(lastEventSeq));
     url.searchParams.set("connectionId", this.connectionIdFactory());
@@ -870,6 +912,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const sameRoom = input.roomId === this.snapshot.roomId;
     this.snapshot = {
       roomId: input.roomId,
+      gatewayEndpoint: input.participantRef?.gatewayEndpoint ?? gatewayWebSocketUrl(input.base),
       memberId: input.data.member.memberId,
       roomTitle: snapshot.room.title,
       hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? input.data.room.hostDisplayName ?? (sameRoom ? this.snapshot.hostDisplayName : ""),
@@ -882,6 +925,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         ? [{ memberId: member.memberId, displayName: member.displayName }]
         : []),
       timeline: projectTimeline([...events.values()], []),
+      agentQueue: projectAgentQueue([...events.values()]),
       ...(sameRoom && this.snapshot.workspaceSharing ? { workspaceSharing: this.snapshot.workspaceSharing } : {}),
     };
     this.manuallyDisconnected = false;
@@ -1016,7 +1060,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         const memberId = (event.payload as Record<string, unknown>).memberId;
         if (typeof memberId === "string") members = (members ?? []).filter((member) => member.memberId !== memberId);
       }
-      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline() };
+      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline(), agentQueue: projectAgentQueue([...this.events.values()]) };
       this.emit();
     }
   }
@@ -1115,7 +1159,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } {
     return this.client.getSettingsSnapshot();
   }
-  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection"> { return this.client.getSnapshot(); }
+  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection"> { return this.client.getSnapshot(); }
   subscribeRoom(listener: () => void): () => void { return this.client.subscribe(listener); }
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }

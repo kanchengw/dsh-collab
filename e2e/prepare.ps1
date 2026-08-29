@@ -1,6 +1,5 @@
 param(
-  [string]$DshRepo = (Resolve-Path (Join-Path $PSScriptRoot "../../deepseek-harness")).Path,
-  [string]$PrivateAddress = ""
+  [string]$DshRepo = (Resolve-Path (Join-Path $PSScriptRoot "../../deepseek-harness")).Path
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,29 +9,6 @@ $clients = @(
   @{ Id = "client-a" },
   @{ Id = "client-b" }
 )
-
-function Test-PrivateIpv4([string]$Address) {
-  $parsed = $null
-  if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$parsed)) { return $false }
-  if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { return $false }
-  $bytes = $parsed.GetAddressBytes()
-  return $bytes[0] -eq 10 `
-    -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) `
-    -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168) `
-    -or ($bytes[0] -eq 100 -and $bytes[1] -ge 64 -and $bytes[1] -le 127)
-}
-
-if ($PrivateAddress -ne "" -and -not (Test-PrivateIpv4 $PrivateAddress)) {
-  throw "PrivateAddress must be a private IPv4 address"
-}
-if ($PrivateAddress -eq "") {
-  $PrivateAddress = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) `
-    | Where-Object { Test-PrivateIpv4 $_.IPAddressToString } `
-    | Select-Object -First 1 -ExpandProperty IPAddressToString
-}
-if ($null -eq $PrivateAddress) {
-  throw "No private IPv4 address found. Pass one explicitly with -PrivateAddress."
-}
 
 try {
   Push-Location $projectRoot
@@ -65,7 +41,7 @@ try {
     $cordisPath = Join-Path $clientHome "profiles/web/cordis.patch.yml"
     [System.IO.File]::WriteAllText($cordisPath, $cordisTemplate, [System.Text.UTF8Encoding]::new($false))
 
-    $settingsPatch = $settingsTemplate.Replace("__PRIVATE_ADDRESS__", $PrivateAddress).Trim()
+    $settingsPatch = $settingsTemplate.Trim()
     $settingsPath = Join-Path $clientHome "settings.yaml"
     $beginMarker = "# BEGIN dsh-collab same-machine E2E"
     $endMarker = "# END dsh-collab same-machine E2E"

@@ -42,8 +42,8 @@ export class RoomTokenStore {
     const roomId = requiredText(input.roomId, "roomId");
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
-    const ttlMs = this.options.ttlMs ?? DEFAULT_TTL_MS;
-    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw invalidInput("ttlMs must be a positive integer", { ttlMs });
+    const ttlMs = this.options.ttlMs === undefined ? DEFAULT_TTL_MS : this.options.ttlMs;
+    if (ttlMs !== null && (!Number.isSafeInteger(ttlMs) || ttlMs < 1)) throw invalidInput("ttlMs must be a positive integer or null", { ttlMs });
     const authorized = this.rooms.authorize(roomId, input.member.principalId, "read");
     if (authorized.memberId !== input.member.memberId) {
       throw new CollabError("AUTH_INVALID", "token member does not match room membership");
@@ -52,18 +52,18 @@ export class RoomTokenStore {
       this.options.tokenFactory?.() ?? randomBytes(32).toString("base64url"),
       "token",
     );
-    const expiresAt = now + ttlMs;
-    if (!Number.isSafeInteger(expiresAt)) throw invalidInput("token expiry exceeds safe integer range", { expiresAt });
+    const expiresAt = ttlMs === null ? undefined : now + ttlMs;
+    if (expiresAt !== undefined && !Number.isSafeInteger(expiresAt)) throw invalidInput("token expiry exceeds safe integer range", { expiresAt });
     const claims: RoomTokenClaims = {
       roomId,
       memberId: authorized.memberId,
       principalId: authorized.principalId,
       role: authorized.role,
-      expiresAt,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
     };
     if (input.deviceId !== undefined) claims.deviceId = requiredText(input.deviceId, "deviceId");
     this.tokens.set(digest(token), { claims });
-    return { token, expiresAt };
+    return { token, ...(expiresAt === undefined ? {} : { expiresAt }) };
   }
 
   verify(input: { roomId: string; token: string; now?: number }): RoomTokenClaims {
@@ -77,7 +77,7 @@ export class RoomTokenStore {
     }
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
-    if (now >= record.claims.expiresAt) throw new CollabError("AUTH_INVALID", "room token has expired");
+    if (record.claims.expiresAt !== undefined && now >= record.claims.expiresAt) throw new CollabError("AUTH_INVALID", "room token has expired");
     const member = this.rooms.authorize(roomId, record.claims.principalId, "read");
     if (member.memberId !== record.claims.memberId || member.role !== record.claims.role) {
       throw new CollabError("AUTH_INVALID", "room token membership binding is invalid");

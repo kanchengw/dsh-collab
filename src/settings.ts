@@ -1,6 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
+import { COLLAB_TOKEN_TTL_OPTIONS, defaultCollabSettings, tokenTtlOptionFromMs, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
 export * from "./settings-shared.js";
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
@@ -17,7 +17,7 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
     advertisedEndpoint: z.string().default(""),
   }).default(undefined as unknown as NonNullable<DshCollabPersistedSettings["appliedGateway"]>).hidden(),
   security: z.object({
-    tokenTtlMs: z.number().step(1).min(1).required(),
+    tokenTtlMs: z.union([z.number().step(1).min(1), z.const(null)]).required(),
     approvalPolicy: z.union([z.const("host-only"), z.const("disabled")]).required(),
     maxMembers: z.number().step(1).min(1).required(),
     maxMessageBytes: z.number().step(1).min(1).required(),
@@ -50,7 +50,6 @@ export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.
 
 function validateAdvertisedEndpoint(gateway: DshCollabPersistedSettings["gateway"]): void {
   if (gateway.advertisedEndpoint === "") {
-    if (gateway.exposeMode === "network") throw new Error("advertisedEndpoint is required in network mode");
     return;
   }
   normalizeAdvertisedGatewayEndpoint(gateway.advertisedEndpoint, gateway.exposeMode);
@@ -94,7 +93,7 @@ export function validateDshCollabParticipantSettings(settings: DshCollabParticip
 
 export function validateCollabSettings(settings: CollabSettings): void {
   if (!Number.isSafeInteger(settings.gatewayPort) || settings.gatewayPort < 1 || settings.gatewayPort > 65535) throw new Error("gatewayPort must be between 1 and 65535");
-  if (!Number.isSafeInteger(settings.tokenTtlMs) || settings.tokenTtlMs < 1) throw new Error("tokenTtlMs must be positive");
+  if (settings.tokenTtlMs !== null && (!Number.isSafeInteger(settings.tokenTtlMs) || settings.tokenTtlMs < 1)) throw new Error("tokenTtlMs must be positive or null");
   if (!Number.isSafeInteger(settings.maxMembers) || settings.maxMembers < 1) throw new Error("maxMembers must be positive");
   if (!Number.isSafeInteger(settings.maxMessageBytes) || settings.maxMessageBytes < 1) throw new Error("maxMessageBytes must be positive");
   if (!Number.isSafeInteger(settings.maxQueue) || settings.maxQueue < 0) throw new Error("maxQueue must be non-negative");
@@ -113,10 +112,12 @@ export function renderCollabSettings(settings: CollabSettings): string {
   const warning = connectionMethod === "private-network"
     ? `<p class="collab-settings__warning" role="alert">Anyone on this trusted network can reach the Gateway; invite and room tokens still control access.</p>`
     : connectionMethod === "unconfigured" ? `<p class="collab-settings__safe" role="status">Not configured: choose a connection method before creating invitations.</p>` : "";
-  const endpointField = connectionMethod === "private-network"
-    ? `<label>Invitation address <input name="derivedEndpoint" readonly value="${escapeHtml(settings.advertisedEndpoint)}"></label>`
-    : connectionMethod === "custom-wss"
-      ? `<label>Invitation address <input name="customWssEndpoint" type="url" value="${escapeHtml(settings.advertisedEndpoint)}"></label>`
-      : `<p>Invitation address is configured after choosing a connection method.</p>`;
-  return `<section class="collab-settings" data-settings-namespace="collab"><h2>dsh-collab</h2><p>Configure the dedicated Host Gateway.</p><fieldset><legend>Host gateway</legend><label><input type="checkbox" name="enabled"${settings.enabled ? " checked" : ""}> Enable collaboration</label><label>Connection method <select name="connectionMethod"><option value="unconfigured"${connectionMethod === "unconfigured" ? " selected" : ""} disabled>Not configured</option><option value="private-network"${connectionMethod === "private-network" ? " selected" : ""}>Private network</option><option value="custom-wss"${connectionMethod === "custom-wss" ? " selected" : ""}>Custom WSS endpoint</option></select></label>${endpointField}${warning}</fieldset><fieldset><legend>Room safety</legend><label>Token lifetime (ms) <input name="tokenTtlMs" type="number" min="1" value="${String(settings.tokenTtlMs)}"></label><label>Approval policy <select name="approvalPolicy"><option value="host-only"${settings.approvalPolicy === "host-only" ? " selected" : ""}>Host only</option><option value="disabled"${settings.approvalPolicy === "disabled" ? " selected" : ""}>Disabled</option></select></label><label>Max members <input name="maxMembers" type="number" min="1" value="${String(settings.maxMembers)}"></label><label>Max message bytes <input name="maxMessageBytes" type="number" min="1" value="${String(settings.maxMessageBytes)}"></label><label>Max queued Agent requests <input name="maxQueue" type="number" min="0" value="${String(settings.maxQueue)}"></label></fieldset><button type="submit" data-action="save-settings">Save</button></section>`;
+  const endpointField = connectionMethod === "custom-wss"
+    ? `<label>Custom WSS endpoint <input name="customWssEndpoint" type="url" value="${escapeHtml(settings.advertisedEndpoint)}"></label>`
+    : "";
+  const tokenTtlOption = tokenTtlOptionFromMs(settings.tokenTtlMs);
+  const tokenTtlOptions = COLLAB_TOKEN_TTL_OPTIONS.map((option) => `<option value="${option.value}"${option.value === tokenTtlOption ? " selected" : ""}>${option.value === "never" ? "Never" : option.value.slice(0, -1) + " day" + (option.value === "1d" ? "" : "s")}</option>`).join("");
+  const connectionField = `<label>Connection method <select name="connectionMethod"><option value="unconfigured"${connectionMethod === "unconfigured" ? " selected" : ""} disabled>Not configured</option><option value="private-network"${connectionMethod === "private-network" ? " selected" : ""}>Private network</option><option value="custom-wss"${connectionMethod === "custom-wss" ? " selected" : ""}>Custom WSS endpoint</option></select></label>`;
+  const lanSettings = `<fieldset><legend>LAN settings</legend>${connectionField}${endpointField}${connectionMethod === "private-network" ? warning : ""}<p>Private network discovery and the invitation endpoint are handled automatically when the Gateway starts.</p></fieldset>`;
+  return `<section class="collab-settings" data-settings-namespace="collab"><h2>dsh-collab</h2><p>Configure the dedicated Host Gateway.</p><fieldset><legend>Host gateway</legend><label><input type="checkbox" name="enabled"${settings.enabled ? " checked" : ""}> Enable collaboration</label></fieldset><details><summary>Advanced options</summary><fieldset><legend>Security</legend><label>Token lifetime <select name="tokenTtl">${tokenTtlOptions}</select></label></fieldset><fieldset><legend>Chat</legend><label>Max members <input name="maxMembers" type="number" min="1" value="${String(settings.maxMembers)}"></label><label>Max message bytes <input name="maxMessageBytes" type="number" min="1" value="${String(settings.maxMessageBytes)}"></label><label>Max queued Agent requests <input name="maxQueue" type="number" min="0" value="${String(settings.maxQueue)}"></label></fieldset>${lanSettings}</details><button type="submit" data-action="save-settings">Save</button></section>`;
 }

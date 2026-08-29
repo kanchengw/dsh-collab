@@ -7,7 +7,7 @@ import type {
 } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 10_000;
-const MAX_CONTEXT_REFS = 64;
+export const MAX_CONTEXT_REFS = 3;
 
 function requiredText(value: string, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {

@@ -33,7 +33,7 @@ function createInvites() {
 }
 
 describe("InviteStore", () => {
-  it("lets only the Host create a one-time invite without exposing its digest", () => {
+  it("lets only the Host create an invite without exposing its digest", () => {
     const { invites, rooms } = createInvites();
     rooms.addMember("room-1", {
       memberId: "member-alice",
@@ -77,7 +77,7 @@ describe("InviteStore", () => {
     })).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
   });
 
-  it("accepts an invite once and binds the new member to the presented principal", () => {
+  it("reuses an invite for multiple members and keeps each member retry idempotent", () => {
     const { invites, rooms } = createInvites();
     const created = invites.createInvite({
       roomId: "room-1",
@@ -103,21 +103,31 @@ describe("InviteStore", () => {
       role: "participant",
       status: "active",
     });
-    expect(invites.getInvite("invite-1")).toMatchObject({
-      state: "accepted",
-      acceptedPrincipalId: "alice",
-      acceptedMemberId: "member-alice",
-    });
+    expect(invites.getInvite("invite-1")).toMatchObject({ state: "active", acceptedPrincipalId: "alice", acceptedMemberId: "member-alice" });
     expect(rooms.listMembers("room-1")).toContainEqual(expect.objectContaining({ principalId: "alice" }));
-    expect(() => invites.acceptInvite({
+
+    const retry = invites.acceptInvite({
+      roomId: "room-1",
+      inviteId: "invite-1",
+      token: created.token,
+      principalId: "alice",
+      memberId: "member-alice",
+      displayName: "Alice",
+      now: 3,
+    });
+    expect(retry).toEqual(member);
+
+    const second = invites.acceptInvite({
       roomId: "room-1",
       inviteId: "invite-1",
       token: created.token,
       principalId: "bob",
       memberId: "member-bob",
       displayName: "Bob",
-      now: 3,
-    })).toThrowError(expect.objectContaining({ code: "INVITE_USED" }));
+      now: 4,
+    });
+    expect(second).toMatchObject({ memberId: "member-bob", principalId: "bob", role: "participant" });
+    expect(rooms.listMembers("room-1")).toHaveLength(3);
   });
 
   it("rejects wrong tokens and tokens presented for another room", () => {

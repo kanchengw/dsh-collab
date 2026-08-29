@@ -3,6 +3,8 @@ import { EventLedger } from "./events.js";
 import { RoomStore } from "./room.js";
 import type {
   AgentDelivery,
+  AgentQueueItem,
+  AgentQueuePriority,
   AgentRequest,
   DispatcherSnapshot,
   HostAgentPort,
@@ -77,6 +79,8 @@ export class AgentDispatcher {
       deliveryMode: message.deliveryMode,
       status: "queued",
       queueSeq: this.nextQueueSeq,
+      priority: member.role === "host" ? "host" : "participant",
+      messageRevision: 0,
       message: copy(message),
     };
     this.nextQueueSeq += 1;
@@ -89,14 +93,20 @@ export class AgentDispatcher {
         roomId: message.roomId,
         type: "agent.request.created",
         actor,
-        payload: { requestId, deliveryMode: message.deliveryMode, text: message.text },
+        payload: {
+          requestId,
+          messageId: message.messageId,
+          deliveryMode: message.deliveryMode,
+          text: message.text,
+          priority: record.priority,
+        },
       });
       this.options.ledger.append({
         eventId: requestId + ":queued",
         roomId: message.roomId,
         type: "agent.request.queued",
         actor,
-        payload: { requestId, queueSeq: record.queueSeq },
+        payload: { requestId, messageId: message.messageId, queueSeq: record.queueSeq, priority: record.priority },
       });
     } catch (error) {
       this.records.delete(requestId);
@@ -112,6 +122,29 @@ export class AgentDispatcher {
       .map((requestId) => this.records.get(requestId)?.record)
       .filter((record): record is QueueRecord => record !== undefined)
       .map(copy);
+  }
+
+  queueView(roomId?: string): AgentQueueItem[] {
+    const active = [
+      ...(this.activeRequestId ? [this.records.get(this.activeRequestId)?.record] : []),
+      ...this.queue.map((requestId) => this.records.get(requestId)?.record),
+    ]
+      .filter((record): record is QueueRecord => record !== undefined)
+      .filter((record, index, records) => records.findIndex((candidate) => candidate.requestId === record.requestId) === index)
+      .filter((record) => roomId === undefined || record.roomId === roomId)
+      .sort(compareQueueRecords);
+    return active.map((record, index) => ({
+      requestId: record.requestId,
+      messageId: record.message.messageId,
+      roomId: record.roomId,
+      authorMemberId: record.authorMemberId,
+      text: record.message.text,
+      deliveryMode: record.deliveryMode,
+      status: record.status === "running" ? "running" : "queued",
+      queueSeq: record.queueSeq,
+      position: index + 1,
+      priority: record.priority,
+    }));
   }
 
   get(requestId: string): QueueRecord | undefined {
@@ -158,7 +191,12 @@ export class AgentDispatcher {
       throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher queue sequence");
     }
     const records = new Map<string, { record: QueueRecord; fingerprint: string }>();
-    for (const record of snapshot.records) {
+    for (const rawRecord of snapshot.records) {
+      const record = {
+        ...rawRecord,
+        priority: rawRecord.priority ?? this.recordPriority(rawRecord),
+        messageRevision: rawRecord.messageRevision ?? 0,
+      };
       if (!record.requestId || records.has(record.requestId) || !isQueueStatus(record.status)
         || (record.claimAttempt !== undefined && (!Number.isSafeInteger(record.claimAttempt) || record.claimAttempt < 1))) {
         throw new CollabError("SNAPSHOT_INVALID", "invalid dispatcher record");
@@ -240,7 +278,17 @@ export class AgentDispatcher {
       authorMemberId: entry.record.authorMemberId,
       text: entry.record.message.text,
     };
-    if (entry.record.message.contextRefs) delivery.contextRefs = [...entry.record.message.contextRefs];
+    if (entry.record.message.contextRefs) {
+      delivery.contextRefs = [...entry.record.message.contextRefs];
+      const contextContent = entry.record.message.contextRefs.flatMap((reference) => {
+        const event = this.options.ledger.readAfter(entry.record.roomId, 0, 500).find((candidate) => candidate.eventId === reference);
+        const payload = event?.payload;
+        return payload && typeof payload === "object" && !Array.isArray(payload) && typeof (payload as { text?: unknown }).text === "string"
+          ? [(payload as { text: string }).text]
+          : [];
+      });
+      if (contextContent.length > 0) delivery.contextContent = contextContent;
+    }
     try {
       await this.options.agent[entry.record.deliveryMode](delivery);
     } catch (error) {
@@ -287,6 +335,53 @@ export class AgentDispatcher {
       type: "agent.request.completed",
       actor: { memberId: member.memberId, principalId: member.principalId },
       payload: { requestId },
+    });
+    await this.options.commitCriticalState?.();
+    return copy(entry.record);
+  }
+
+  async edit(input: { roomId: string; principalId: string; requestId: string; text: string }): Promise<QueueRecord> {
+    const entry = this.records.get(input.requestId);
+    if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "request does not exist", { requestId: input.requestId });
+    if (entry.record.roomId !== input.roomId) throw new CollabError("TOKEN_SCOPE", "request is scoped to another room", { roomId: input.roomId });
+    const member = this.options.rooms.authorize(input.roomId, input.principalId, "agentRequest");
+    this.assertCanManageMessage(entry.record, member.memberId, member.role);
+    if (entry.record.status !== "queued") throw new CollabError("REQUEST_STATE", "only queued requests can be edited", { requestId: input.requestId });
+    entry.record.messageRevision += 1;
+    entry.record.message = { ...entry.record.message, text: input.text };
+    entry.fingerprint = JSON.stringify(entry.record.message);
+    this.options.ledger.append({
+      eventId: input.requestId + ":edited:" + String(entry.record.messageRevision),
+      roomId: input.roomId,
+      type: "agent.request.edited",
+      actor: { memberId: member.memberId, principalId: member.principalId },
+      payload: {
+        requestId: input.requestId,
+        messageId: entry.record.message.messageId,
+        text: input.text,
+        revision: entry.record.messageRevision,
+      },
+    });
+    await this.options.commitCriticalState?.();
+    return copy(entry.record);
+  }
+
+  async withdraw(input: { roomId: string; principalId: string; requestId: string }): Promise<QueueRecord> {
+    const entry = this.records.get(input.requestId);
+    if (!entry) throw new CollabError("REQUEST_NOT_FOUND", "request does not exist", { requestId: input.requestId });
+    if (entry.record.roomId !== input.roomId) throw new CollabError("TOKEN_SCOPE", "request is scoped to another room", { roomId: input.roomId });
+    const member = this.options.rooms.authorize(input.roomId, input.principalId, "agentRequest");
+    this.assertCanManageMessage(entry.record, member.memberId, member.role);
+    if (entry.record.status === "withdrawn") return copy(entry.record);
+    if (entry.record.status !== "queued") throw new CollabError("REQUEST_STATE", "only queued requests can be withdrawn", { requestId: input.requestId });
+    this.removeFromQueue(input.requestId);
+    entry.record.status = "withdrawn";
+    this.options.ledger.append({
+      eventId: input.requestId + ":withdrawn",
+      roomId: input.roomId,
+      type: "agent.request.withdrawn",
+      actor: { memberId: member.memberId, principalId: member.principalId },
+      payload: { requestId: input.requestId, messageId: entry.record.message.messageId },
     });
     await this.options.commitCriticalState?.();
     return copy(entry.record);
@@ -376,10 +471,16 @@ export class AgentDispatcher {
   }
 
   private nextDispatchableIndex(): number {
-    return this.queue.findIndex((requestId) => {
+    let bestIndex = -1;
+    for (let index = 0; index < this.queue.length; index += 1) {
+      const requestId = this.queue[index]!;
       const roomId = this.records.get(requestId)?.record.roomId;
-      return roomId !== undefined && (this.options.canDispatch?.(roomId, requestId) ?? true);
-    });
+      if (roomId === undefined || !(this.options.canDispatch?.(roomId, requestId) ?? true)) continue;
+      if (bestIndex < 0 || compareQueueRecords(this.records.get(requestId)!.record, this.records.get(this.queue[bestIndex]!)!.record) < 0) {
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
   }
 
   private hasDispatchableRequest(): boolean {
@@ -486,6 +587,22 @@ export class AgentDispatcher {
       payload: { requestId: record.requestId },
     });
   }
+
+  private recordPriority(record: QueueRecord): AgentQueuePriority {
+    const member = this.options.rooms.listMembers(record.roomId).find((candidate) => candidate.memberId === record.authorMemberId);
+    return member?.role === "host" ? "host" : "participant";
+  }
+
+  private assertCanManageMessage(record: QueueRecord, memberId: string, role: string): void {
+    if (role !== "host" && record.authorMemberId !== memberId) {
+      throw new CollabError("ACTION_FORBIDDEN", "members can only manage their own Agent requests", { requestId: record.requestId });
+    }
+  }
+}
+
+function compareQueueRecords(left: QueueRecord, right: QueueRecord): number {
+  const priority = (right.priority === "host" ? 1 : 0) - (left.priority === "host" ? 1 : 0);
+  return priority || left.queueSeq - right.queueSeq;
 }
 
 function isQueueStatus(value: string): value is QueueStatus {
@@ -493,5 +610,6 @@ function isQueueStatus(value: string): value is QueueStatus {
     || value === "running"
     || value === "completed"
     || value === "failed"
-    || value === "cancelled";
+    || value === "cancelled"
+    || value === "withdrawn";
 }

@@ -58,7 +58,10 @@ describe("dsh-collab locale dictionaries", () => {
     expect(html).toContain("协作网关");
     expect(html).toContain("连接方式");
     expect(html).toContain("私有网络");
-    expect(html).toContain("房间安全与限制");
+    expect(html).toContain("高级选项");
+    expect(html).toContain("安全");
+    expect(html).toContain("聊天");
+    expect(html).toContain("局域网设置");
   });
 
   it("renders Collab Rooms and session sharing controls in Simplified Chinese", () => {
@@ -75,7 +78,7 @@ describe("dsh-collab locale dictionaries", () => {
     expect(rooms).toContain("协作房间");
     expect(rooms).toContain("我创建的房间");
     expect(rooms).toContain("我加入的房间");
-    expect(rooms).toContain("启动网关");
+    expect(rooms).not.toContain("启动网关");
     expect(action).toContain("共享为协作房间");
   });
 });

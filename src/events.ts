@@ -150,6 +150,8 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "agent.request.queued"
     || value === "agent.request.claimed"
     || value === "agent.request.rejected"
+    || value === "agent.request.edited"
+    || value === "agent.request.withdrawn"
     || value === "agent.request.failed"
     || value === "agent.request.cancelled"
     || value === "agent.request.completed"

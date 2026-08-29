@@ -12,7 +12,8 @@ import type {
   RoomMember,
 } from "./types.js";
 
-type InviteRecord = InviteView & { tokenDigest: Buffer };
+type InviteAcceptance = { memberId: string; displayName: string };
+type InviteRecord = InviteView & { tokenDigest: Buffer; acceptedMembers: Map<string, InviteAcceptance> };
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -76,6 +77,7 @@ export class InviteStore {
       createdAt: now,
       expiresAt: input.expiresAt,
       tokenDigest: tokenDigest(token),
+      acceptedMembers: new Map(),
     };
     this.invites.set(inviteId, record);
     return { invite: this.view(record), token };
@@ -102,19 +104,22 @@ export class InviteStore {
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now) || now < 0) throw invalidInput("now must be a non-negative integer", { now });
     this.refreshExpiry(record, now);
-    if (record.state === "accepted") {
-      if (!sameToken(token, record.tokenDigest)) throw new CollabError("INVITE_INVALID", "invite token is invalid");
-      const member = this.rooms.listMembers(roomId).find((candidate) => candidate.memberId === record.acceptedMemberId);
-      if (!member || record.acceptedPrincipalId !== principalId || member.memberId !== memberId
-        || member.principalId !== principalId || member.displayName !== displayName) {
-        throw new CollabError("INVITE_USED", "invite has already been accepted", { inviteId });
-      }
-      return member;
-    }
     if (record.state === "expired") throw new CollabError("INVITE_EXPIRED", "invite has expired", { inviteId });
     if (record.state === "revoked") throw new CollabError("INVITE_REVOKED", "invite has been revoked", { inviteId });
     if (!sameToken(token, record.tokenDigest)) {
       throw new CollabError("INVITE_INVALID", "invite token is invalid");
+    }
+
+    const accepted = record.acceptedMembers.get(principalId);
+    if (accepted) {
+      if (accepted.memberId !== memberId || accepted.displayName !== displayName) {
+        throw new CollabError("INVITE_USED", "invite is already bound to another member identity", { inviteId });
+      }
+      const member = this.rooms.listMembers(roomId).find((candidate) => candidate.memberId === accepted.memberId);
+      if (!member || member.principalId !== principalId || member.displayName !== displayName) {
+        throw new CollabError("INVITE_USED", "invite member binding is no longer valid", { inviteId });
+      }
+      return member;
     }
 
     const member = this.rooms.addMember(roomId, {
@@ -123,10 +128,12 @@ export class InviteStore {
       displayName,
       now,
     });
-    record.state = "accepted";
-    record.acceptedAt = now;
-    record.acceptedPrincipalId = principalId;
-    record.acceptedMemberId = member.memberId;
+    record.acceptedMembers.set(principalId, { memberId: member.memberId, displayName: member.displayName });
+    if (record.acceptedAt === undefined) {
+      record.acceptedAt = now;
+      record.acceptedPrincipalId = principalId;
+      record.acceptedMemberId = member.memberId;
+    }
     return member;
   }
 

@@ -53,6 +53,8 @@ const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "agent.request.queued",
   "agent.request.claimed",
   "agent.request.rejected",
+  "agent.request.edited",
+  "agent.request.withdrawn",
   "agent.request.failed",
   "agent.request.cancelled",
   "agent.request.completed",

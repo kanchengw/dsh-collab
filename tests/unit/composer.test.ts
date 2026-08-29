@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerKeyAction, composerTargetForText, createComposerSubmission, insertAgentMention, renderComposer, shouldSuggestAgentMention } from "../../src/ui.js";
+import { composerKeyAction, composerTargetForGesture, composerTargetForText, createComposerSubmission, insertAgentMention, renderComposer, shouldSuggestAgentMention } from "../../src/ui.js";
 
 describe("collab composer mentions", () => {
   it("routes only the canonical lowercase @agent mention to the Host Agent", () => {
@@ -34,6 +34,8 @@ describe("collab composer mentions", () => {
       text: "ask @Alice",
     });
     expect(createComposerSubmission({ messageId: "m-2", roomId: "room-1", authorMemberId: "member-1", text: "run tests", target: "dsh" })).toMatchObject({ target: "dsh" });
+    expect(createComposerSubmission({ messageId: "m-2b", roomId: "room-1", authorMemberId: "member-1", text: "hello", target: "room", contextRefs: ["message-1"] })).not.toHaveProperty("contextRefs");
+    expect(createComposerSubmission({ messageId: "m-2c", roomId: "room-1", authorMemberId: "member-1", text: "@agent summarize", target: "dsh", contextRefs: ["message-1", "message-2", "message-3"] })).toMatchObject({ contextRefs: ["message-1", "message-2", "message-3"] });
   });
 
   it("rejects a steer submission when the caller lacks the capability", () => {
@@ -47,5 +49,11 @@ describe("collab composer mentions", () => {
     expect(composerKeyAction({ key: "Enter", keyCode: 229 })).toBe("native");
     expect(composerKeyAction({ key: "Enter", repeat: true })).toBe("suppress");
     expect(composerKeyAction({ key: "a" })).toBe("native");
+  });
+
+  it("uses Shift+Enter as steer only for an Agent request while busy", () => {
+    expect(composerTargetForGesture("@agent continue", false, true)).toBe("dsh");
+    expect(composerTargetForGesture("@agent continue", true, true)).toBe("dsh-steer");
+    expect(composerTargetForGesture("hello", true, true)).toBe("room");
   });
 });

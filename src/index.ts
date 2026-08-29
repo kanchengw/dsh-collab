@@ -33,8 +33,8 @@ export * from "./workspace-snapshot-store.js";
 export * from "./snapshot-workspace.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
-import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, migrateLegacyMaxQueue, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
+import { privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
@@ -42,6 +42,7 @@ import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskInput } from "./local-sidecar.js";
 import { LocalSideTaskFile } from "./local-sidecar-store.js";
 import { DshLocalSidecarWorkspace } from "./local-sidecar-workspace.js";
+import { detectPrivateNetworkAddress } from "./network-address.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -91,7 +92,7 @@ export function registerDshCollabSettings(
           advertisedEndpoint: "",
         },
         security: {
-          tokenTtlMs: config.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+          tokenTtlMs: config.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : config.tokenTtlMs,
           approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
           maxMembers: config.maxMembers ?? defaultCollabSettings.maxMembers,
           maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
@@ -115,10 +116,11 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
     host: settings.gateway.gatewayHost,
     port: settings.gateway.gatewayPort,
     tokenTtlMs: security.tokenTtlMs,
-    approvalPolicy: security.approvalPolicy,
+    // MVP approval is always delegated to DSH's native Host approval chain.
+    approvalPolicy: "host-only",
     maxMembers: security.maxMembers,
     maxMessageBytes: security.maxMessageBytes,
-    maxQueue: security.maxQueue,
+    maxQueue: migrateLegacyMaxQueue(security.maxQueue),
   };
 }
 
@@ -182,10 +184,15 @@ function registerGatewayControl(
       try {
         const gatewayPort = await next.ready;
         const advertisedEndpoint = settings.gateway.exposeMode === "network"
-          ? privateGatewayEndpoint(privateAddressFromGatewayEndpoint(settings.gateway.advertisedEndpoint), gatewayPort)
+          ? privateGatewayEndpoint(detectPrivateNetworkAddress() || (() => { throw new Error("No private network address is available") })(), gatewayPort)
           : settings.gateway.advertisedEndpoint;
-        const appliedGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint };
-        await scope.update({ gateway: appliedGateway, appliedGateway });
+        // Keep an empty advertisedEndpoint empty so the next start can detect
+        // the current LAN address again instead of treating this result as a
+        // user-pinned address. The hidden applied snapshot is the runtime
+        // result shown in invitations and diagnostics.
+        const configuredGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint: settings.gateway.exposeMode === "network" ? "" : settings.gateway.advertisedEndpoint };
+        const appliedGateway = { ...configuredGateway, advertisedEndpoint };
+        await scope.update({ gateway: configuredGateway, appliedGateway });
         return { status: "running", port: gatewayPort };
       } catch (error) {
         if (mounted === next) mounted = undefined;

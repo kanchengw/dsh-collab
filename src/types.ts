@@ -90,18 +90,18 @@ export interface RoomTokenClaims {
   memberId: string;
   principalId: string;
   role: MemberRole;
-  expiresAt: number;
+  expiresAt?: number;
   deviceId?: string;
 }
 
 export interface IssuedRoomToken {
   token: string;
-  expiresAt: number;
+  expiresAt?: number;
 }
 
 export interface RoomTokenStoreOptions {
   tokenFactory?: () => string;
-  ttlMs?: number;
+  ttlMs?: number | null;
 }
 
 export interface GatewayRequest {
@@ -197,6 +197,7 @@ export interface AgentDelivery {
   authorMemberId: string;
   text: string;
   contextRefs?: string[];
+  contextContent?: string[];
 }
 
 export interface AgentDeliveryResult {
@@ -211,7 +212,21 @@ export interface HostAgentPort {
   whenIdle?(input: { requestId: string; roomId: string; hostSessionId: string }): Promise<AgentDeliveryResult | void>;
 }
 
-export type QueueStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type QueueStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "withdrawn";
+export type AgentQueuePriority = "host" | "participant";
+
+export interface AgentQueueItem {
+  requestId: string;
+  messageId: string;
+  roomId: string;
+  authorMemberId: string;
+  text: string;
+  deliveryMode: "followup" | "steer";
+  status: "queued" | "running";
+  queueSeq: number;
+  position: number;
+  priority: AgentQueuePriority;
+}
 
 export interface QueueRecord {
   requestId: string;
@@ -221,6 +236,8 @@ export interface QueueRecord {
   deliveryMode: "followup" | "steer";
   status: QueueStatus;
   queueSeq: number;
+  priority: AgentQueuePriority;
+  messageRevision: number;
   claimAttempt?: number;
   message: AgentRequest;
   error?: string;
@@ -245,6 +262,8 @@ export type RoomEventType =
   | "agent.request.queued"
   | "agent.request.claimed"
   | "agent.request.rejected"
+  | "agent.request.edited"
+  | "agent.request.withdrawn"
   | "agent.request.failed"
   | "agent.request.cancelled"
   | "agent.request.completed"

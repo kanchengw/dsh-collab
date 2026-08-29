@@ -63,4 +63,13 @@ describe("classifyMessage", () => {
     expect(() => classifyMessage({ ...base, text: "  " })).toThrow(/text/i);
     expect(() => classifyMessage({ ...base, text: "x".repeat(10_001) })).toThrow(/text/i);
   });
+
+  it("limits Agent context references to three messages", () => {
+    expect(() => classifyMessage({
+      ...base,
+      text: "@agent compare these",
+      target: "dsh",
+      contextRefs: ["message-1", "message-2", "message-3", "message-4"],
+    })).toThrow(/context references/i);
+  });
 });

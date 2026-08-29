@@ -40,7 +40,7 @@ interface GatewayOptions {
   invites: InviteStore;
   agent: HostAgentPort;
   now?: () => number;
-  tokenTtlMs?: number;
+  tokenTtlMs?: number | null;
   tokenFactory?: () => string;
   limits?: ResourceLimiter;
   maxMessageBytes?: number;
@@ -333,7 +333,9 @@ export class CollabGateway {
     const requestedResumeCredential = body.resumeCredential === undefined
       ? undefined
       : requiredText(body.resumeCredential, "resumeCredential");
-    if (this.options.invites.getInvite(inviteId)?.state !== "accepted") {
+    const memberId = requiredText(body.memberId, "memberId");
+    const existingMember = this.options.rooms.listMembers(roomId).some((member) => member.memberId === memberId);
+    if (!existingMember) {
       this.options.limits?.checkMembers(roomId, this.options.rooms.listMembers(roomId).length + 1);
     }
     const member = this.options.invites.acceptInvite({
@@ -341,7 +343,7 @@ export class CollabGateway {
       inviteId,
       token: requiredText(body.token, "token"),
       principalId: `invite:${inviteId}`,
-      memberId: requiredText(body.memberId, "memberId"),
+      memberId,
       displayName: requiredText(body.displayName, "displayName"),
       now: this.now(),
     });
@@ -666,6 +668,7 @@ export class CollabGateway {
       body: {
         room: this.options.rooms.getRoom(roomId),
         members: this.options.rooms.listMembers(roomId),
+        agentQueue: this.dispatcher.queueView(roomId),
         lastEventSeq: this.options.ledger.latestSeq(roomId),
       },
     };
@@ -808,6 +811,29 @@ export class CollabGateway {
         principalId: claims.principalId,
         requestId: requiredText(body.requestId, "requestId"),
         keepInbox: body.keepInbox === true,
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { request: record } };
+    }
+    if (action === "editAgentRequest") {
+      const text = requiredText(body.text, "text");
+      if (this.maxMessageBytes !== undefined && Buffer.byteLength(text, "utf8") > this.maxMessageBytes) {
+        throw invalidInput("message exceeds the configured byte limit", { maxMessageBytes: this.maxMessageBytes });
+      }
+      const record = await this.dispatcher.edit({
+        roomId,
+        principalId: claims.principalId,
+        requestId: requestIdField(body, "requestId"),
+        text,
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { request: record } };
+    }
+    if (action === "withdrawAgentRequest") {
+      const record = await this.dispatcher.withdraw({
+        roomId,
+        principalId: claims.principalId,
+        requestId: requestIdField(body, "requestId"),
       });
       await this.options.commitCriticalState?.();
       return { status: 200, body: { request: record } };

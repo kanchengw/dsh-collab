@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings } from "./settings-shared.js";
+import { COLLAB_TOKEN_TTL_OPTIONS, defaultCollabSettings, tokenTtlMsFromOption, tokenTtlOptionFromMs } from "./settings-shared.js";
 import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-settings-card.module.css";
@@ -15,6 +14,15 @@ function connectionMethodFor(settings: DshCollabSettingsSnapshot): ConnectionMet
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback;
+}
+
+function gatewaySettingsDiffer(saved: DshCollabSettingsSnapshot): boolean {
+  const applied = saved.appliedGateway;
+  return applied !== undefined
+    && (applied.gatewayHost !== saved.gatewayHost
+      || applied.gatewayPort !== saved.gatewayPort
+      || applied.exposeMode !== saved.exposeMode
+      || (saved.advertisedEndpoint !== "" && applied.advertisedEndpoint !== saved.advertisedEndpoint));
 }
 
 function Field(props: { id: string; label: string; hint: string; children: ReactNode }): ReactNode {
@@ -42,25 +50,36 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
   const initial = useMemo<DshCollabSettingsSnapshot>(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
   const [saved, setSaved] = useState(initial);
   const [connectionMethod, setConnectionMethod] = useState<ConnectionMethod>(() => connectionMethodFor(initial));
-  const [privateAddress, setPrivateAddress] = useState(() => initial.exposeMode === "network" ? privateAddressFromGatewayEndpoint(initial.advertisedEndpoint) : "");
   const [advertisedEndpoint, setAdvertisedEndpoint] = useState(initial.advertisedEndpoint);
-  const [tokenTtlMs, setTokenTtlMs] = useState(String(initial.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
-  const [approvalPolicy, setApprovalPolicy] = useState(initial.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
+  const [tokenTtlOption, setTokenTtlOption] = useState(() => tokenTtlOptionFromMs(initial.tokenTtlMs));
   const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
   const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
   const [maxQueue, setMaxQueue] = useState(String(initial.maxQueue ?? defaultCollabSettings.maxQueue));
-  const [busy, setBusy] = useState<"save">();
+  const [busy, setBusy] = useState<"save" | "gateway">();
   const [notice, setNotice] = useState<Notice>();
   const gateway = useGateway(port);
   const writable = port !== undefined && saved.writable !== false;
   const configurationDisabled = !writable || busy !== undefined;
+  const restartRequired = gateway.status === "running" && gatewaySettingsDiffer(saved);
+  const toggleGateway = async (): Promise<void> => {
+    if (!port) return;
+    setBusy("gateway");
+    setNotice(undefined);
+    try {
+      if (gateway.status === "running") await port.stopGateway?.();
+      else await port.startGateway?.();
+      setNotice({ tone: "success", message: t(gateway.status === "running" ? "gateway.stoppedNotice" : "gateway.startedNotice") });
+    } catch (cause) {
+      setNotice({ tone: "error", message: errorMessage(cause, t("rooms.actionError")) });
+    } finally {
+      setBusy(undefined);
+    }
+  };
 
   const resetDraft = (snapshot = saved): void => {
     setConnectionMethod(connectionMethodFor(snapshot));
-    setPrivateAddress(snapshot.exposeMode === "network" ? privateAddressFromGatewayEndpoint(snapshot.advertisedEndpoint) : "");
     setAdvertisedEndpoint(snapshot.advertisedEndpoint);
-    setTokenTtlMs(String(snapshot.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs));
-    setApprovalPolicy(snapshot.approvalPolicy ?? defaultCollabSettings.approvalPolicy);
+    setTokenTtlOption(tokenTtlOptionFromMs(snapshot.tokenTtlMs));
     setMaxMembers(String(snapshot.maxMembers ?? defaultCollabSettings.maxMembers));
     setMaxMessageBytes(String(snapshot.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
     setMaxQueue(String(snapshot.maxQueue ?? defaultCollabSettings.maxQueue));
@@ -73,14 +92,9 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
   }), [port]);
 
   const exposeMode: "loopback" | "network" = connectionMethod === "private-network" ? "network" : "loopback";
-  let privateEndpoint = "";
-  if (connectionMethod === "private-network" && privateAddress.trim() !== "") {
-    try { privateEndpoint = privateGatewayEndpoint(privateAddress, saved.gatewayPort); } catch { /* validation is shown on save */ }
-  }
   const dirty = exposeMode !== saved.exposeMode
-    || (connectionMethod === "private-network" ? privateEndpoint : connectionMethod === "custom-wss" ? advertisedEndpoint : "") !== saved.advertisedEndpoint
-    || tokenTtlMs !== String(saved.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs)
-    || approvalPolicy !== (saved.approvalPolicy ?? defaultCollabSettings.approvalPolicy)
+    || (connectionMethod === "custom-wss" ? advertisedEndpoint : "") !== (connectionMethod === "private-network" ? "" : saved.advertisedEndpoint)
+    || tokenTtlMsFromOption(tokenTtlOption) !== (saved.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : saved.tokenTtlMs)
     || maxMembers !== String(saved.maxMembers ?? defaultCollabSettings.maxMembers)
     || maxMessageBytes !== String(saved.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes)
     || maxQueue !== String(saved.maxQueue ?? defaultCollabSettings.maxQueue);
@@ -95,10 +109,10 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
         gatewayPort: saved.gatewayPort,
         exposeMode,
         advertisedEndpoint: connectionMethod === "private-network"
-          ? privateGatewayEndpoint(privateAddress, saved.gatewayPort)
+          ? ""
           : connectionMethod === "custom-wss" ? advertisedEndpoint.trim() : "",
-        tokenTtlMs: Number(tokenTtlMs),
-        approvalPolicy,
+        tokenTtlMs: tokenTtlMsFromOption(tokenTtlOption),
+        approvalPolicy: "host-only" as const,
         maxMembers: Number(maxMembers),
         maxMessageBytes: Number(maxMessageBytes),
         maxQueue: Number(maxQueue),
@@ -123,40 +137,48 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
       <form className={css.section} onSubmit={(event) => { void save(event); }}>
         <div className={css.sectionHead}>
           <div><h3>{t("settings.gatewayTitle")}</h3><p>{t("settings.gatewayDescription")}</p></div>
-          {dirty ? <span className={css.pending}>{t("settings.unsaved")}</span> : null}
+          <span className={css.pending}>{gateway.status === "running" ? t("gateway.runningOn", { port: gateway.port }) : t(gateway.status === "starting" ? "gateway.starting" : "gateway.stopped")}</span>
         </div>
-        <Field id="collab-connection-method" label={t("settings.connectionMethod")} hint={t("settings.connectionMethodHint")}>
-          <select id="collab-connection-method" name="connectionMethod" className={inputClass} value={connectionMethod} onChange={(event) => {
-            const next = event.target.value as ConnectionMethod;
-            setConnectionMethod(next);
-            if (next === "custom-wss" && !advertisedEndpoint.trim().startsWith("wss://")) setAdvertisedEndpoint("");
-          }} disabled={configurationDisabled}>
-            <option value="unconfigured" disabled>{t("settings.notConfigured")}</option>
-            <option value="private-network">{t("settings.privateNetwork")}</option>
-            <option value="custom-wss">{t("settings.customWss")}</option>
-          </select>
-        </Field>
-        {connectionMethod === "private-network" ? <>
-          <Field id="collab-private-address" label={t("settings.privateAddress")} hint={t("settings.privateAddressHint")}>
-            <input id="collab-private-address" name="privateAddress" className={inputClass} type="text" value={privateAddress} onChange={(event) => { setPrivateAddress(event.target.value); }} placeholder="192.168.1.20" disabled={configurationDisabled} />
-          </Field>
-          <Field id="collab-derived-endpoint" label={t("settings.invitationEndpoint")} hint={t("settings.invitationEndpointHint")}>
-            <input id="collab-derived-endpoint" name="derivedEndpoint" className={inputClass} type="text" value={privateEndpoint} readOnly aria-readonly="true" />
-          </Field>
-        </> : null}
-        {connectionMethod === "custom-wss" ? <Field id="collab-address" label={t("settings.customWss")} hint={t("settings.customWssHint")}>
-          <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder="wss://collab.example.com/collab" disabled={configurationDisabled} />
-        </Field> : null}
-        {exposeMode === "network" ? <p className={css.warning} role="status"><strong>{t("settings.privateExposure")}</strong><span>{t("settings.privateExposureHint")}</span></p> : null}
+        <button type="button" className={gateway.status === "running" ? css.secondaryButton : css.primaryButton} disabled={!port || busy !== undefined || gateway.status === "starting" || (gateway.status === "running" ? !port.stopGateway : !port.startGateway)} onClick={() => { void toggleGateway(); }}>
+          {gateway.status === "running" ? t(busy === "gateway" ? "gateway.stoppingAction" : "gateway.stop") : t(busy === "gateway" ? "gateway.startingAction" : "gateway.start")}
+        </button>
+        {dirty ? <p className={css.unsaved} role="status">{t("settings.unsaved")}</p> : null}
         <details className={css.details}>
-          <summary>{t("settings.safety")}</summary>
-          <Field id="collab-token-ttl" label={t("settings.tokenLifetime")} hint={t("settings.tokenLifetimeHint")}><input id="collab-token-ttl" name="tokenTtlMs" className={inputClass} type="text" inputMode="numeric" value={tokenTtlMs} onChange={(event) => { setTokenTtlMs(event.target.value); }} disabled={configurationDisabled} /></Field>
-          <Field id="collab-approval" label={t("settings.toolApprovals")} hint={t("settings.toolApprovalsHint")}><select id="collab-approval" name="approvalPolicy" className={inputClass} value={approvalPolicy} onChange={(event) => { setApprovalPolicy(event.target.value as "host-only" | "disabled"); }} disabled={configurationDisabled}><option value="host-only">{t("settings.hostOnly")}</option><option value="disabled">{t("settings.disabled")}</option></select></Field>
-          <div className={css.limitGrid}>
-            <Field id="collab-members" label={t("settings.maximumMembers")} hint={t("settings.maximumMembersHint")}><input id="collab-members" name="maxMembers" className={inputClass} type="text" inputMode="numeric" value={maxMembers} onChange={(event) => { setMaxMembers(event.target.value); }} disabled={configurationDisabled} /></Field>
-            <Field id="collab-message-bytes" label={t("settings.maximumMessageBytes")} hint={t("settings.maximumMessageBytesHint")}><input id="collab-message-bytes" name="maxMessageBytes" className={inputClass} type="text" inputMode="numeric" value={maxMessageBytes} onChange={(event) => { setMaxMessageBytes(event.target.value); }} disabled={configurationDisabled} /></Field>
-            <Field id="collab-queue" label={t("settings.maximumQueue")} hint={t("settings.maximumQueueHint")}><input id="collab-queue" name="maxQueue" className={inputClass} type="text" inputMode="numeric" value={maxQueue} onChange={(event) => { setMaxQueue(event.target.value); }} disabled={configurationDisabled} /></Field>
-          </div>
+          <summary>{t("settings.advanced")}</summary>
+          <section className={css.advancedGroup}>
+            <h4>{t("settings.security")}</h4>
+            <Field id="collab-token-ttl" label={t("settings.tokenLifetime")} hint={t("settings.tokenLifetimeHint")}><select id="collab-token-ttl" name="tokenTtl" className={inputClass} value={tokenTtlOption} onChange={(event) => { setTokenTtlOption(event.target.value as typeof tokenTtlOption); }} disabled={configurationDisabled}>{COLLAB_TOKEN_TTL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(`settings.tokenTtl.${option.value}` as "settings.tokenTtl.1d")}</option>)}</select></Field>
+          </section>
+          <section className={css.advancedGroup}>
+            <h4>{t("settings.chat")}</h4>
+            <div className={css.limitGrid}>
+              <Field id="collab-members" label={t("settings.maximumMembers")} hint={t("settings.maximumMembersHint")}><input id="collab-members" name="maxMembers" className={inputClass} type="text" inputMode="numeric" value={maxMembers} onChange={(event) => { setMaxMembers(event.target.value); }} disabled={configurationDisabled} /></Field>
+              <Field id="collab-message-bytes" label={t("settings.maximumMessageBytes")} hint={t("settings.maximumMessageBytesHint")}><input id="collab-message-bytes" name="maxMessageBytes" className={inputClass} type="text" inputMode="numeric" value={maxMessageBytes} onChange={(event) => { setMaxMessageBytes(event.target.value); }} disabled={configurationDisabled} /></Field>
+              <Field id="collab-queue" label={t("settings.maximumQueue")} hint={t("settings.maximumQueueHint")}><input id="collab-queue" name="maxQueue" className={inputClass} type="text" inputMode="numeric" value={maxQueue} onChange={(event) => { setMaxQueue(event.target.value); }} disabled={configurationDisabled} /></Field>
+            </div>
+          </section>
+          <section className={css.advancedGroup}>
+            <h4>{t("settings.lan")}</h4>
+            <Field id="collab-connection-method" label={t("settings.connectionMethod")} hint={t("settings.connectionMethodHint")}>
+              <select id="collab-connection-method" name="connectionMethod" className={inputClass} value={connectionMethod} onChange={(event) => {
+                const next = event.target.value as ConnectionMethod;
+                setConnectionMethod(next);
+                if (next === "custom-wss" && !advertisedEndpoint.trim().startsWith("wss://")) setAdvertisedEndpoint("");
+              }} disabled={configurationDisabled}>
+                <option value="unconfigured" disabled>{t("settings.notConfigured")}</option>
+                <option value="private-network">{t("settings.privateNetwork")}</option>
+                <option value="custom-wss">{t("settings.customWss")}</option>
+              </select>
+            </Field>
+            {connectionMethod === "custom-wss" ? <Field id="collab-address" label={t("settings.customWss")} hint={t("settings.customWssHint")}>
+              <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder="wss://collab.example.com/collab" disabled={configurationDisabled} />
+            </Field> : null}
+            {connectionMethod === "private-network" ? <>
+              {restartRequired ? <p className={css.warning} role="alert"><strong>{t("settings.runningGatewayOutdated")}</strong><span>{t("settings.restartGatewayNow")}</span><span>{t("settings.roomSharingRestartNotEnough")}</span></p> : null}
+              <p className={css.warning} role="status"><strong>{t("settings.privateExposure")}</strong><span>{t("settings.privateExposureHint")}</span></p>
+            </> : null}
+            <p className={css.hint}>{t("settings.privateNetworkAuto")}</p>
+          </section>
         </details>
         <div className={css.formFooter}>
           <span>{t(gateway.status === "running" ? "settings.restartToApply" : "settings.nextStart")}</span>

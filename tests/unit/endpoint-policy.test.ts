@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gatewayHttpUrl, normalizeGatewayEndpoint, privateAddressFromGatewayEndpoint, privateGatewayEndpoint } from "../../src/endpoint-policy.js";
+import { detectPrivateNetworkAddress } from "../../src/network-address.js";
 
 describe("Collab Gateway endpoint policy", () => {
   it("allows insecure WebSocket only for explicit local and private addresses", () => {
@@ -46,5 +47,14 @@ describe("Collab Gateway endpoint policy", () => {
     expect(privateGatewayEndpoint("fd12:3456::8", 4313)).toBe("ws://[fd12:3456::8]:4313/collab");
     expect(privateAddressFromGatewayEndpoint("ws://192.168.1.20:4312/collab")).toBe("192.168.1.20");
     expect(() => privateGatewayEndpoint("8.8.8.8", 4312)).toThrow("wss");
+  });
+
+  it("prefers a home or office LAN address over a VPN/private address", () => {
+    expect(detectPrivateNetworkAddress({
+      vpn: [{ address: "10.131.241.65", netmask: "255.255.255.0", family: "IPv4", mac: "", internal: false, cidr: "10.131.241.65/24" }],
+      lan: [{ address: "192.168.1.3", netmask: "255.255.255.0", family: "IPv4", mac: "", internal: false, cidr: "192.168.1.3/24" }],
+      loopback: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "", internal: true, cidr: "127.0.0.1/8" }],
+    })).toBe("192.168.1.3");
+    expect(detectPrivateNetworkAddress({ public: [{ address: "8.8.8.8", netmask: "255.255.255.0", family: "IPv4", mac: "", internal: false, cidr: "8.8.8.8/24" }] })).toBeUndefined();
   });
 });

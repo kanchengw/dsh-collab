@@ -91,6 +91,25 @@ describe("real DSH Cordis Agent bridge", () => {
     expect(messages[0]).toMatchObject({ role: "user", source: { kind: "user" }, content: [{ type: "text", text: "hello" }] });
   });
 
+  it("injects selected context content through the native Agent injection API", async () => {
+    const injected: unknown[] = [];
+    const agent = {
+      inject: (message: unknown) => { injected.push(message); },
+      followup: () => {},
+      steer: () => {},
+      cancel: () => {},
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ sessionId: "session-1", requestId: "request-1", text: "@agent use this", contextContent: ["Original quoted message"] });
+
+    expect(injected).toEqual([expect.objectContaining({
+      role: "user",
+      source: { kind: "plugin", plugin: "dsh-collab" },
+      content: [{ type: "text", text: "Original quoted message" }],
+    })]);
+  });
+
   it("fails closed when the requested Host session is not a live Agent", async () => {
     const service = createDshCordisSessionService({ agents: { get: () => undefined } });
     await expect(service.followup({ requestId: "request-1", sessionId: "missing", text: "no" })).rejects.toThrow("not live");

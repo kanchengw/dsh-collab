@@ -4,8 +4,8 @@ import type { AgentDelivery, AgentDeliveryResult, AgentOutputFrame, HostAgentPor
 export interface DshSessionService {
   owns(sessionId: string): boolean | Promise<boolean>;
   workspacePath?(sessionId: string): string | undefined;
-  followup(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
-  steer(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[] }): Promise<void> | void;
+  followup(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[]; contextContent?: string[] }): Promise<void> | void;
+  steer(input: { sessionId: string; roomId?: string; requestId: string; text: string; contextRefs?: string[]; contextContent?: string[] }): Promise<void> | void;
   cancel(input: { sessionId: string; requestId: string; keepInbox: boolean }): Promise<void> | void;
   whenIdle?(input: { sessionId: string; requestId: string }): Promise<AgentDeliveryResult | void>;
   onAgentOutput?(listener: (frame: AgentOutputFrame) => void): () => void;
@@ -25,6 +25,7 @@ export function createDshHostAgentPort(input: { sessions: DshSessionService }): 
       requestId: delivery.requestId,
       text: delivery.text,
       ...(delivery.contextRefs ? { contextRefs: [...delivery.contextRefs] } : {}),
+      ...(delivery.contextContent ? { contextContent: [...delivery.contextContent] } : {}),
     });
   };
   return {

@@ -1,5 +1,25 @@
 export type CollabExposeMode = "loopback" | "network";
 export type CollabApprovalPolicy = "host-only" | "disabled";
+export type CollabTokenTtl = number | null;
+
+export const COLLAB_TOKEN_TTL_OPTIONS = [
+  { value: "1d", ms: 24 * 60 * 60 * 1000 },
+  { value: "3d", ms: 3 * 24 * 60 * 60 * 1000 },
+  { value: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { value: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { value: "never", ms: null },
+] as const;
+export type CollabTokenTtlOption = (typeof COLLAB_TOKEN_TTL_OPTIONS)[number]["value"];
+
+export function tokenTtlOptionFromMs(value: CollabTokenTtl | undefined): CollabTokenTtlOption {
+  return COLLAB_TOKEN_TTL_OPTIONS.find((option) => option.ms === value)?.value ?? "1d";
+}
+
+export function tokenTtlMsFromOption(value: string): CollabTokenTtl {
+  const option = COLLAB_TOKEN_TTL_OPTIONS.find((candidate) => candidate.value === value);
+  if (!option) throw new Error("token lifetime option is invalid");
+  return option.ms;
+}
 
 export interface CollabSettings {
   enabled: boolean;
@@ -7,7 +27,7 @@ export interface CollabSettings {
   gatewayPort: number;
   exposeMode: CollabExposeMode;
   advertisedEndpoint: string;
-  tokenTtlMs: number;
+  tokenTtlMs: CollabTokenTtl;
   approvalPolicy: CollabApprovalPolicy;
   maxMembers: number;
   maxMessageBytes: number;
@@ -20,12 +40,17 @@ export const defaultCollabSettings: CollabSettings = {
   gatewayPort: 4310,
   exposeMode: "loopback",
   advertisedEndpoint: "",
-  tokenTtlMs: 8 * 60 * 60 * 1000,
+  tokenTtlMs: 24 * 60 * 60 * 1000,
   approvalPolicy: "host-only",
   maxMembers: 16,
   maxMessageBytes: 64 * 1024,
-  maxQueue: 32,
+  maxQueue: 5,
 };
+
+/** The pre-release default was 32; migrate that value to the current default on read. */
+export function migrateLegacyMaxQueue(value: number | undefined): number | undefined {
+  return value === 32 ? defaultCollabSettings.maxQueue : value;
+}
 
 export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
 export const DSH_COLLAB_PARTICIPANT_NAMESPACE = "dsh-collab-participant";
@@ -38,7 +63,7 @@ export interface DshCollabGatewaySettings {
 }
 
 export interface DshCollabSecuritySettings {
-  tokenTtlMs: number;
+  tokenTtlMs: CollabTokenTtl;
   approvalPolicy: CollabApprovalPolicy;
   maxMembers: number;
   maxMessageBytes: number;

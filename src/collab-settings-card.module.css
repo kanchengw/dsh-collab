@@ -134,6 +134,13 @@
   line-height: 1.5;
 }
 
+.unsaved {
+  margin: 8px 0 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -222,6 +229,23 @@
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
+}
+
+.advancedGroup {
+  padding-top: 12px;
+}
+
+.advancedGroup + .advancedGroup {
+  margin-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.advancedGroup h4 {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .limitGrid {

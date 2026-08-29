@@ -594,9 +594,9 @@ describe("browser Gateway client", () => {
     await client.bootstrap();
     expect(client.getSnapshot()).toMatchObject({ members: [{ memberId: "member-host", displayName: "Local Host" }] });
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", memberId: "member-host", role: "host", connection: "online", canSteer: true });
-    await client.send({ text: "run tests", target: "dsh" });
+    await client.send({ text: "run tests", target: "dsh", contextRefs: ["event-1", "event-2"] });
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
-    expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh" });
+    expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh", contextRefs: ["event-1", "event-2"] });
     expect(socketUrls[0]).toContain("token=host-room-token");
     expect(new URL(socketUrls[0]!).searchParams.getAll("feature")).toContain("agent-output");
     expect(new URL(socketUrls[0]!).searchParams.getAll("feature")).toContain(SIDECAR_REVIEW_CAPABILITY);

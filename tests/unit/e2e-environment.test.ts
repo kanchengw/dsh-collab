@@ -30,7 +30,7 @@ describe("isolated two-DSH browser environment", () => {
     expect(existsSync(resolve(root, "e2e/dsh-participant.patch.yml"))).toBe(false);
     expect(clientPatch).not.toContain("collab-host");
     expect(clientPatch).not.toMatch(/roomId|hostId|hostDisplayName|gatewayPort|__CLIENT_/);
-    expect(clientPatch).toContain("id: directory-picker\n  disabled: true");
+    expect(clientPatch).toMatch(/id: directory-picker\r?\n  disabled: true/);
     expect(clientPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
     expect(clientPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
 
@@ -52,9 +52,10 @@ describe("isolated two-DSH browser environment", () => {
     expect(settingsPatch).toContain("gatewayHost: 0.0.0.0");
     expect(settingsPatch).toContain("gatewayPort: 4310");
     expect(settingsPatch).toContain("exposeMode: network");
-    expect(settingsPatch).toContain("ws://__PRIVATE_ADDRESS__:4310/collab");
+    expect(settingsPatch).not.toContain("advertisedEndpoint");
     expect(settingsPatch).not.toContain("__GATEWAY_PORT__");
     expect(prepare).toContain("dsh-client.settings.patch.yml");
+    expect(prepare).not.toMatch(/PrivateAddress|__PRIVATE_ADDRESS__/);
     expect(prepare).toContain("foreach ($client in $clients)");
     expect(prepare).toContain("plugin --profile web add $projectRoot");
     expect(prepare).toContain("lib/index.js");

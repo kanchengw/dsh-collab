@@ -36,9 +36,8 @@ describe("Collab Rooms navigation", () => {
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: port() }));
     setDshCollabRoomsOpen(false);
 
-    expect(html).toContain("Gateway");
-    expect(html).toContain("Stopped");
-    expect(html).toContain("Start Gateway");
+    expect(html).not.toContain("Start Gateway");
+    expect(html).not.toContain("Stop Gateway");
     expect(html).toContain("Owned rooms");
     expect(html).toContain("Release planning");
     expect(html).toContain("Not sharing");
@@ -87,15 +86,18 @@ describe("Collab Rooms navigation", () => {
   it("requires disconnecting the active Joined room before connecting another", () => {
     const activePort = port();
     activePort.listJoinedRooms = () => [
+      { gatewayEndpoint: "wss://alice.example/old-collab", roomId: "room-active", memberId: "member-bob", credential: "old-secret", roomTitle: "Active room" },
       { gatewayEndpoint: "wss://alice.example/collab", roomId: "room-active", memberId: "member-bob", credential: "active-secret", roomTitle: "Active room" },
       { gatewayEndpoint: "wss://bob.example/collab", roomId: "room-other", memberId: "member-bob", credential: "other-secret", roomTitle: "Other room" },
     ];
-    activePort.getRoomSnapshot = () => ({ roomId: "room-active", roomTitle: "Active room", hostDisplayName: "Alice", role: "participant", connection: "online" });
+    activePort.getRoomSnapshot = () => ({ roomId: "room-active", gatewayEndpoint: "wss://alice.example/collab", roomTitle: "Active room", hostDisplayName: "Alice", role: "participant", connection: "online" });
     setDshCollabRoomsOpen(true);
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: activePort }));
     setDshCollabRoomsOpen(false);
 
     expect(html).toContain("Disconnect");
+    expect((html.match(/Connected/g) ?? []).length).toBe(1);
+    expect((html.match(/Disconnected/g) ?? []).length).toBe(2);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect<\/button>/);
   });
 });

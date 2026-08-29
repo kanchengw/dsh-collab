@@ -104,6 +104,83 @@ describe("AgentDispatcher", () => {
     ]);
   });
 
+  it("dispatches Host requests before participant requests while preserving same-priority FIFO", async () => {
+    const calls: string[] = [];
+    const { dispatcher, rooms } = createDispatcher({
+      followup(input) { calls.push(input.requestId); },
+      steer() {},
+      cancel() {},
+    });
+    rooms.addMember("room-1", {
+      memberId: "member-bob",
+      principalId: "bob",
+      displayName: "Bob",
+      now: 3,
+    });
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-alice-1", "Alice first") });
+    await dispatcher.submit({
+      principalId: "bob",
+      message: { ...request("message-bob", "Bob request"), authorMemberId: "member-bob" },
+    });
+    await dispatcher.submit({
+      principalId: "host",
+      message: {
+        kind: "agent-request", messageId: "message-host", roomId: "room-1", authorMemberId: "member-host",
+        text: "Host request", target: "dsh", deliveryMode: "followup",
+      },
+    });
+    await dispatcher.submit({ principalId: "alice", message: request("message-alice-2", "Alice second") });
+
+    for (const requestId of ["message-host", "message-alice-1", "message-bob", "message-alice-2"]) {
+      await dispatcher.drainOne();
+      await dispatcher.complete(requestId);
+    }
+
+    expect(calls).toEqual(["message-host", "message-alice-1", "message-bob", "message-alice-2"]);
+  });
+
+  it("allows Host to edit any queued request and participants to edit only their own", async () => {
+    const { dispatcher, rooms, ledger } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
+    rooms.addMember("room-1", {
+      memberId: "member-bob",
+      principalId: "bob",
+      displayName: "Bob",
+      now: 3,
+    });
+    await dispatcher.submit({ principalId: "alice", message: request("message-edit", "Original") });
+
+    await expect(dispatcher.edit({ roomId: "room-1", principalId: "bob", requestId: "message-edit", text: "No" }))
+      .rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+    const edited = await dispatcher.edit({ roomId: "room-1", principalId: "host", requestId: "message-edit", text: "Edited by Host" });
+
+    expect(edited).toMatchObject({ status: "queued", message: { text: "Edited by Host" }, messageRevision: 1 });
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
+      type: "agent.request.edited",
+      actor: { memberId: "member-host", principalId: "host" },
+      payload: { requestId: "message-edit", text: "Edited by Host", revision: 1 },
+    });
+  });
+
+  it("lets a participant withdraw their queued request but rejects edits after dispatch starts", async () => {
+    const { dispatcher, ledger } = createDispatcher({ followup() {}, steer() {}, cancel() {} });
+    await dispatcher.submit({ principalId: "alice", message: request("message-withdraw", "Withdraw me") });
+    const withdrawn = await dispatcher.withdraw({ roomId: "room-1", principalId: "alice", requestId: "message-withdraw" });
+    expect(withdrawn).toMatchObject({ status: "withdrawn" });
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
+      type: "agent.request.withdrawn",
+      actor: { memberId: "member-alice", principalId: "alice" },
+      payload: { requestId: "message-withdraw" },
+    });
+
+    await dispatcher.submit({ principalId: "alice", message: request("message-running", "Running") });
+    await dispatcher.drainOne();
+    await expect(dispatcher.edit({ roomId: "room-1", principalId: "alice", requestId: "message-running", text: "Too late" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    await expect(dispatcher.withdraw({ roomId: "room-1", principalId: "alice", requestId: "message-running" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+  });
+
   it("keeps a second request queued while the first request is running", async () => {
     const calls: string[] = [];
     const { dispatcher } = createDispatcher({

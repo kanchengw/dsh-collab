@@ -300,7 +300,8 @@ describe("SideTask publication API", () => {
     orphanMessage.requestId = orphanRequestId;
     splitSnapshot.dispatcher.records.push({
       requestId: orphanRequestId, roomId: "room-1", hostSessionId: "room-1", authorMemberId: hostMemberId,
-      deliveryMode: "followup", status: "queued", queueSeq: splitSnapshot.dispatcher.nextQueueSeq, message: orphanMessage,
+      deliveryMode: "followup", status: "queued", queueSeq: splitSnapshot.dispatcher.nextQueueSeq,
+      priority: "host", messageRevision: 0, message: orphanMessage,
     });
     splitSnapshot.dispatcher.queue.push(orphanRequestId);
     splitSnapshot.dispatcher.nextQueueSeq += 1;

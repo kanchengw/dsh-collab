@@ -1,4 +1,4 @@
-import type { AgentOutputFrame, MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
+import type { AgentOutputFrame, AgentQueueItem, MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
 
 export type ParticipantConnection = "connecting" | "online" | "offline";
 export type ComposerTarget = MessageTarget;
@@ -18,7 +18,7 @@ export interface ComposerState {
   draft: string;
 }
 
-export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed" | "failed" | "cancelled";
+export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed" | "failed" | "cancelled" | "withdrawn";
 
 export interface TimelineItem {
   eventId: string;
@@ -118,6 +118,7 @@ export function createComposerSubmission(input: {
   if (input.target === "dsh-steer" && input.canSteer !== true) {
     throw new Error("steer target requires capability");
   }
+  const agentTarget = input.target === "dsh" || input.target === "dsh-steer";
   return {
     messageId: input.messageId,
     roomId: input.roomId,
@@ -125,8 +126,13 @@ export function createComposerSubmission(input: {
     text: input.text,
     target: input.target,
     ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
-    ...(input.contextRefs ? { contextRefs: [...input.contextRefs] } : {}),
+    ...(agentTarget && input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
   };
+}
+
+export function composerTargetForGesture(text: string, agentBusy: boolean, shiftKey: boolean): ComposerTarget {
+  if (shiftKey && agentBusy && composerTargetForText(text) === "dsh") return "dsh-steer";
+  return composerTargetForText(text);
 }
 
 export function renderComposer(state: ComposerState): string {
@@ -192,6 +198,16 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       }
       continue;
     }
+    if (event.type === "agent.request.edited") {
+      const requestId = payloadRequestId(payload);
+      const item = requestId ? requests.get(requestId) : undefined;
+      if (item) {
+        item.seq = event.seq;
+        item.text = payloadText(payload);
+        item.contextEventId = event.eventId;
+      }
+      continue;
+    }
     const statusByType: Partial<Record<RoomEvent["type"], TimelineAgentStatus>> = {
       "agent.request.created": "accepted",
       "agent.request.queued": "queued",
@@ -200,6 +216,7 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
       "agent.request.failed": "failed",
       "agent.request.rejected": "failed",
       "agent.request.cancelled": "cancelled",
+      "agent.request.withdrawn": "withdrawn",
     };
     const status = statusByType[event.type];
     if (!status) continue;
@@ -261,6 +278,45 @@ export function projectTimeline(events: RoomEvent[], activeAgentOutputs: readonl
     });
   }
   return items.sort((left, right) => left.seq - right.seq).map((item) => ({ ...item }));
+}
+
+export function projectAgentQueue(events: RoomEvent[]): AgentQueueItem[] {
+  const queue = new Map<string, Omit<AgentQueueItem, "position">>();
+  for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
+    const payload = objectPayload(event.payload);
+    const requestId = payloadRequestId(payload);
+    if (!requestId) continue;
+    if (event.type === "agent.request.created") {
+      if (typeof payload.text !== "string" || typeof payload.messageId !== "string" || (payload.deliveryMode !== "followup" && payload.deliveryMode !== "steer")) continue;
+      queue.set(requestId, {
+        requestId,
+        messageId: payload.messageId,
+        roomId: event.roomId,
+        authorMemberId: event.actor.memberId,
+        text: payload.text,
+        deliveryMode: payload.deliveryMode,
+        status: "queued",
+        queueSeq: Number.MAX_SAFE_INTEGER,
+        priority: payload.priority === "host" ? "host" : "participant",
+      });
+      continue;
+    }
+    const item = queue.get(requestId);
+    if (!item) continue;
+    if (event.type === "agent.request.queued") {
+      if (typeof payload.queueSeq === "number" && Number.isSafeInteger(payload.queueSeq)) item.queueSeq = payload.queueSeq;
+    } else if (event.type === "agent.request.claimed") {
+      item.status = "running";
+    } else if (event.type === "agent.request.edited") {
+      if (typeof payload.text === "string") item.text = payload.text;
+    } else if (event.type === "agent.request.completed" || event.type === "agent.request.failed"
+      || event.type === "agent.request.rejected" || event.type === "agent.request.cancelled" || event.type === "agent.request.withdrawn") {
+      queue.delete(requestId);
+    }
+  }
+  return [...queue.values()]
+    .sort((left, right) => ((right.priority === "host" ? 1 : 0) - (left.priority === "host" ? 1 : 0)) || left.queueSeq - right.queueSeq)
+    .map((item, index) => ({ ...item, position: index + 1 }));
 }
 
 export function renderTimeline(items: TimelineItem[]): string {

@@ -26,7 +26,7 @@ export interface DshCollabHostRuntimeOptions {
   now?: () => number;
   tokenFactory?: () => string;
   resumeCredentialFactory?: () => string;
-  tokenTtlMs?: number;
+  tokenTtlMs?: number | null;
   approvalPolicy?: "host-only" | "disabled";
   maxMembers?: number;
   maxMessageBytes?: number;

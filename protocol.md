@@ -26,7 +26,7 @@ required:
   "gatewayEndpoint": "ws://192.168.1.20:4310/collab",
   "roomId": "room-1",
   "inviteId": "invite-1",
-  "token": "opaque-one-time-secret",
+  "token": "opaque-invite-secret",
   "expiresAt": 1720000000000
 }
 ```
@@ -37,7 +37,7 @@ same-origin HTTP API by mapping `ws` to `http` and `wss` to `https`. Plain
 and hostnames require `wss://`. Credentials, query strings, fragments,
 wildcard bind addresses, and paths other than `/collab` are rejected.
 
-The invitation is a secret because it contains a one-time token. It must not
+The invitation is a secret because it contains an opaque invite token. It must not
 be placed in a URL, browser history, access log, or analytics event. The
 external `wss://` endpoint is declarative: v1 does not provision a tunnel,
 reverse proxy, public Relay, TLS certificate, or NAT traversal.
@@ -148,7 +148,8 @@ an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`
 `roomId` must equal `hostSessionId`, the title is trimmed and limited to 80
 characters, and the Host session service must prove that the current DSH
 runtime owns that session. A successful response issues the Host's initial room
-token. `join` authenticates with the one-time invitation and accepts an optional
+token. `join` authenticates with the one-hour invitation, which may be used by
+multiple members, and accepts an optional
 client-generated `resumeCredential`, while `resume` authenticates with that
 durable Participant credential.
 
@@ -160,20 +161,20 @@ DSH host, and include it in the Join body before sending the request:
 ```json
 {
   "inviteId": "invite-1",
-  "token": "opaque-one-time-invite-token",
+  "token": "opaque-invite-token",
   "memberId": "member-1",
   "displayName": "Alice",
   "resumeCredential": "opaque-participant-resume-secret"
 }
 ```
 
-The room owner stores only the credential's SHA-256 digest. The same invitation,
-member binding, display name and resume credential may be retried exactly when a
-response or persistence acknowledgement is lost; it returns the existing member
-without adding another member, event or credential. A different binding or
-credential cannot reuse an accepted invite. The Gateway waits for its configured
-critical-state persistence barrier after the member, credential digest and joined
-event mutations before returning success. Older clients may omit
+The room owner stores only the credential's SHA-256 digest. The same invitation
+may be accepted by multiple distinct member bindings while it remains valid. The
+same member binding, display name and resume credential may be retried exactly
+when a response or persistence acknowledgement is lost; it returns the existing
+member without adding another member, event or credential. The Gateway waits for
+its configured critical-state persistence barrier after the member, credential
+digest and joined event mutations before returning success. Older clients may omit
 `resumeCredential`; the Gateway continues to issue one for compatibility. A later
 resume request uses this body:
 

@@ -21,6 +21,22 @@ const port = {
 };
 
 describe("DSH-native collaboration settings", () => {
+  it("owns the Gateway runtime switch inside the plugin settings", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, {
+      port: {
+        getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+        getGatewaySnapshot: () => ({ status: "running" as const, port: 4310 }),
+        startGateway: vi.fn(),
+        stopGateway: vi.fn(),
+        save: vi.fn(),
+      },
+    }));
+
+    expect(html).toContain("Gateway");
+    expect(html).toContain("Running on 4310");
+    expect(html).toContain("Stop Gateway");
+  });
+
   it("uses the plugin settings list-card contract", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsCard, { port }));
 
@@ -31,27 +47,56 @@ describe("DSH-native collaboration settings", () => {
     expect(html).not.toContain("dsh-collab-settings-card");
   });
 
-  it("keeps only persistent Gateway configuration in Settings", () => {
+  it("keeps automatic addresses hidden and puts configuration in collapsed advanced options", () => {
     const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port }));
+    const advancedIndex = html.indexOf("<details");
 
     expect(html).toContain("Collab Gateway");
     expect(html).not.toContain("Join someone else");
-    expect(html).toContain("Connection method");
-    expect(html).toContain("Private network");
-    expect(html).toContain("Custom WSS endpoint");
-    expect(html).not.toContain("Who can connect");
+    expect(html.indexOf("Connection method")).toBeGreaterThan(advancedIndex);
+    expect(html.indexOf("Private network")).toBeGreaterThan(advancedIndex);
+    expect(html.indexOf("Custom WSS endpoint")).toBeGreaterThan(advancedIndex);
+    expect(html).not.toContain("Private address");
+    expect(html).not.toContain("Invitation address");
     expect(html).not.toContain("This device only");
-    expect(html).toContain('name="privateAddress"');
-    expect(html).toContain('name="derivedEndpoint"');
+    expect(html).not.toContain('name="privateAddress"');
+    expect(html).not.toContain('name="derivedEndpoint"');
+    expect(html).not.toContain("no manual configuration is needed");
     expect(html).not.toContain('name="gatewayPort"');
     expect(html).not.toContain("Open Host room");
     expect(html).not.toContain("Create invitation");
     expect(html).not.toContain('name="hostInvitationOutput"');
     expect(html).not.toContain('name="participantInvitation"');
     expect(html).not.toContain('name="displayName"');
+    expect(html).not.toContain('name="approvalPolicy"');
+    expect(html).toContain("Advanced options");
+    expect(html).toContain("Security");
+    expect(html).toContain("Chat");
+    expect(html).toContain("LAN settings");
+    expect(html).not.toMatch(/<details[^>]*open/);
+    expect(html).toContain('id="collab-queue"');
+    expect(html).toContain('value="5"');
     expect(html).toContain("Used the next time the Gateway starts");
     expect(html).not.toContain("trusted LAN/VPN");
     expect(html.match(/<h3/g)).toHaveLength(1);
+  });
+
+  it("warns when a running Gateway still uses the previous settings", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, {
+      port: {
+        ...port,
+        getGatewaySnapshot: () => ({ status: "running" as const, port: 4310 }),
+        getSnapshot: () => ({
+          ...port.getSnapshot(),
+          advertisedEndpoint: "ws://192.168.0.65:4310/collab",
+          appliedGateway: { ...port.getSnapshot(), advertisedEndpoint: "ws://10.131.241.65:4310/collab" },
+        }),
+      },
+    }));
+
+    expect(html).toContain("The running Gateway still uses the previous address");
+    expect(html).toContain("Stop and restart the Gateway now");
+    expect(html).toContain("Stopping or restarting room sharing alone does not update it");
   });
 
   it("keeps a fresh install unconfigured without exposing a local-only invitation mode", () => {
@@ -80,7 +125,7 @@ describe("DSH-native collaboration settings", () => {
     }));
 
     expect(html).toContain("Collaboration settings are read-only");
-    expect(html).toMatch(/name="privateAddress"[^>]*disabled/);
+    expect(html).not.toContain('id="collab-private-address"');
     expect(html).toMatch(/type="submit"[^>]*disabled/);
   });
 
@@ -107,7 +152,7 @@ describe("DSH-native collaboration settings", () => {
       },
     }));
 
-    expect(html).toContain('name="advertisedEndpoint"');
+    expect(html.indexOf('name="advertisedEndpoint"')).toBeGreaterThan(html.indexOf("<details"));
     expect(html).not.toContain('name="privateAddress"');
     expect(html).not.toContain('name="derivedEndpoint"');
   });

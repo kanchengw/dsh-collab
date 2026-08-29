@@ -534,6 +534,44 @@ describe("CollabGateway route contract", () => {
 
   });
 
+  it("exposes the active Agent queue and enforces message ownership for edit and withdraw", async () => {
+    const { gateway, ledger } = setup();
+    const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const alice = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
+    const hostToken = (host.body as { roomToken: string }).roomToken;
+    const aliceToken = (alice.body as { roomToken: string }).roomToken;
+    await gateway.dispatcher.submit({
+      principalId: "host",
+      message: { kind: "agent-request", messageId: "message-host-queue", requestId: "request-host-queue", roomId: "room-1", authorMemberId: "member-host", text: "Host queued", target: "dsh", deliveryMode: "followup" },
+    });
+    await gateway.dispatcher.submit({
+      principalId: "alice",
+      message: { kind: "agent-request", messageId: "message-alice-queue", requestId: "request-alice-queue", roomId: "room-1", authorMemberId: "member-alice", text: "Alice queued", target: "dsh", deliveryMode: "followup" },
+    });
+
+    const snapshot = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/snapshot", headers: bearer(aliceToken) });
+    expect(snapshot.body).toMatchObject({ agentQueue: [
+      { requestId: "request-host-queue", priority: "host", position: 1, status: "queued" },
+      { requestId: "request-alice-queue", priority: "participant", position: 2, status: "queued" },
+    ] });
+
+    expect(await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/actions", headers: bearer(aliceToken),
+      body: { action: "editAgentRequest", requestId: "request-host-queue", text: "No ownership" },
+    })).toMatchObject({ status: 403, body: { error: { code: "ACTION_FORBIDDEN" } } });
+    expect(await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/actions", headers: bearer(aliceToken),
+      body: { action: "editAgentRequest", requestId: "request-alice-queue", text: "Alice edited" },
+    })).toMatchObject({ status: 200, body: { request: { message: { text: "Alice edited" }, messageRevision: 1 } } });
+    expect(await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/actions", headers: bearer(hostToken),
+      body: { action: "withdrawAgentRequest", requestId: "request-alice-queue" },
+    })).toMatchObject({ status: 200, body: { request: { status: "withdrawn" } } });
+    expect(ledger.readAfter("room-1", 0).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "agent.request.edited", "agent.request.withdrawn",
+    ]));
+  });
+
   it("reports the authoritative latest event sequence beyond one replay page", async () => {
     const { gateway, ledger } = setup();
     for (let index = 1; index <= 501; index += 1) {

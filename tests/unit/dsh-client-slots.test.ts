@@ -363,8 +363,8 @@ describe("real DSH client slot adapter", () => {
     expect(html).not.toContain('name="gatewayPort"');
     expect(html).toContain('name="connectionMethod"');
     expect(html).not.toContain("This device only");
-    expect(html).toContain('name="privateAddress"');
-    expect(html).toContain('name="derivedEndpoint"');
+    expect(html).not.toContain('name="privateAddress"');
+    expect(html).not.toContain('name="derivedEndpoint"');
     expect(html).not.toContain('name="hostInvitationOutput"');
     expect(html).not.toContain("Open Host room");
     expect(html).not.toContain("Create invitation");
@@ -438,29 +438,35 @@ describe("real DSH client slot adapter", () => {
     const port = createDshSettingsPort(scope, actions);
 
     expect(configureGateway).toHaveBeenCalledWith(value.gateway);
-    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, writable: true, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, writable: true, tokenTtlMs: 24 * 60 * 60 * 1000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 5 });
     await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
-    expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "wss://new.example/collab" });
-    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 28_800_000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(set).toHaveBeenCalledWith("gateway", { gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "" });
+    expect(port.getSnapshot()).toMatchObject({ ...value.gateway, tokenTtlMs: 24 * 60 * 60 * 1000, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 5 });
     expect(configureGateway).toHaveBeenLastCalledWith(value.appliedGateway);
     value = { ...value, appliedGateway: value.gateway };
     port.getSnapshot();
     expect(configureGateway).toHaveBeenLastCalledWith(value.gateway);
     await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "loopback", advertisedEndpoint: "wss://new.example/collab" })).rejects.toThrow("loopback");
-    expect(set).toHaveBeenCalledWith("security", { tokenTtlMs: 28_800_000, approvalPolicy: "host-only", maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 });
+    expect(set).toHaveBeenCalledWith("security", { tokenTtlMs: 24 * 60 * 60 * 1000, approvalPolicy: "host-only", maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 5 });
     expect(set).toHaveBeenCalledTimes(2);
 
-    for (const advertisedEndpoint of [
-      "not a URL",
-      "ws://new.example/collab",
-      "wss://user:pass@new.example/collab",
-      "wss://new.example/collab?room=one",
-      "wss://new.example/collab#invite",
-      "wss://new.example/not-collab",
-    ]) {
-      await expect(port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint })).rejects.toThrow("gatewayEndpoint");
-    }
-    expect(set).toHaveBeenCalledTimes(2);
+    await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "not a URL" });
+    expect(set).toHaveBeenCalledTimes(4);
+  });
+
+  it("migrates the former default queue depth to five", () => {
+    const value = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" },
+      security: { tokenTtlMs: 24 * 60 * 60 * 1000, approvalPolicy: "host-only" as const, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 },
+    };
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async () => {}),
+      unset: vi.fn(async () => {}),
+    };
+
+    expect(createDshSettingsPort(scope, { getSnapshot: () => value.gateway, save: vi.fn() }).getSnapshot()).toMatchObject({ maxQueue: 5 });
   });
 
   it("rejects a save when the DSH settings scope does not commit it", async () => {
@@ -504,10 +510,35 @@ describe("real DSH client slot adapter", () => {
     expect(html).not.toContain('name="participant"');
   });
 
+  it("replaces a Joined room endpoint when the Host address changes", async () => {
+    let joinedRooms: Array<{ gatewayEndpoint: string; roomId: string; memberId: string; credential: string; roomTitle?: string }> = [];
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms }, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async (_field: string, value: unknown) => { joinedRooms = value as typeof joinedRooms; }),
+      unset: vi.fn(async () => {}),
+    };
+    const persistence = createDshParticipantPersistence(scope);
+    const oldEndpoint = { gatewayEndpoint: "wss://10.131.241.65:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "old-secret", roomTitle: "test room" };
+    const newEndpoint = { gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "new-secret", roomTitle: "test room" };
+
+    await persistence.save(oldEndpoint);
+    await persistence.save(newEndpoint);
+
+    expect(persistence.list?.()).toEqual([newEndpoint]);
+  });
+
   it("migrates the pre-release single resume field into Joined rooms", () => {
     const legacy = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
     expect(decodeDshParticipantSettings({ resume: legacy })).toEqual({ joinedRooms: [legacy] });
     expect(decodeDshParticipantSettings({ joinedRooms: [legacy], resume: legacy })).toEqual({ joinedRooms: [legacy] });
+  });
+
+  it("collapses historical Joined room endpoint duplicates during settings decode", () => {
+    const oldEndpoint = { gatewayEndpoint: "wss://10.131.241.65:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "old-secret" };
+    const newEndpoint = { gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "new-secret", roomTitle: "test room" };
+
+    expect(decodeDshParticipantSettings({ joinedRooms: [oldEndpoint, newEndpoint] })).toEqual({ joinedRooms: [newEndpoint] });
   });
 
   it("does not connect a saved Joined room when local DSH settings become ready", async () => {

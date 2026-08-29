@@ -64,4 +64,16 @@ describe("collab timeline projection", () => {
       expect.objectContaining({ kind: "agent", state: "failed", text: "Host Agent failed: MISSING_CREDENTIAL", contextEventId: "failed-1" }),
     ]);
   });
+
+  it("exposes stable event IDs for quoting timeline messages", () => {
+    const items = projectTimeline([
+      event({ eventId: "human-1", seq: 1, type: "human.message", payload: { text: "Bring the logs" } }),
+      event({ eventId: "output-1", seq: 2, type: "agent.state.changed", actor: { memberId: "member-host", principalId: "host" }, payload: { requestId: "req-1", state: "output", text: "Here are the logs" } }),
+    ]);
+
+    expect(items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "human", contextEventId: "human-1" }),
+      expect.objectContaining({ kind: "agent", contextEventId: "output-1" }),
+    ]));
+  });
 });

@@ -1,20 +1,23 @@
-import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
-import { composerKeyAction, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
+import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection } from "./collab-rooms.js";
+import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
+import type { AgentQueueItem } from "./types.js";
+import { MAX_CONTEXT_REFS } from "./messages.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
+  gatewayEndpoint?: string;
   memberId?: string;
   roomTitle: string;
   hostDisplayName: string;
@@ -25,13 +28,16 @@ export interface DshCollabClientSnapshot {
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited";
   members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
+  agentQueue?: readonly AgentQueueItem[];
   workspaceSharing?: WorkspaceSharingState;
 }
 
 export interface DshCollabClientPort {
   getSnapshot(): DshCollabClientSnapshot;
   subscribe(listener: () => void): () => void;
-  send(input: { text: string; target: ComposerTarget }): Promise<void>;
+  send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void>;
+  editAgentRequest?(requestId: string, text: string): Promise<void>;
+  withdrawAgentRequest?(requestId: string): Promise<void>;
 }
 
 export interface DshCollabGatewaySnapshot {
@@ -60,7 +66,7 @@ export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCo
 
 export interface DshCollabSettingsPort {
   getSnapshot(): DshCollabSettingsSnapshot;
-  getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
+  getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   subscribeRoom?(listener: () => void): () => void;
   subscribe?(listener: () => void): () => void;
   save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
@@ -185,22 +191,23 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     ? securityValue as Partial<DshCollabSecuritySettings>
     : {};
   const normalized: DshCollabSecuritySettings = {
-    tokenTtlMs: security.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+    tokenTtlMs: security.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : security.tokenTtlMs,
     approvalPolicy: security.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
     maxMembers: security.maxMembers ?? defaultCollabSettings.maxMembers,
     maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-    maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
+    maxQueue: migrateLegacyMaxQueue(security.maxQueue) ?? defaultCollabSettings.maxQueue,
   };
   return { gateway, ...(appliedGateway ? { appliedGateway } : {}), security: normalized };
 }
 
 export function decodeDshParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const joinedRooms = Array.isArray((value as { joinedRooms?: unknown }).joinedRooms)
+  const decodedRooms = Array.isArray((value as { joinedRooms?: unknown }).joinedRooms)
     ? (value as { joinedRooms: unknown[] }).joinedRooms.map(decodeParticipant).filter((room): room is ParticipantResumeState => room !== undefined)
     : [];
   const resume = decodeParticipant((value as { resume?: unknown }).resume);
-  if (resume && !joinedRooms.some((room) => room.gatewayEndpoint === resume.gatewayEndpoint && room.roomId === resume.roomId)) joinedRooms.push(resume);
+  if (resume) decodedRooms.push(resume);
+  const joinedRooms = [...new Map(decodedRooms.map((room) => [room.roomId, room])).values()];
   return joinedRooms.length > 0 ? { joinedRooms } : {};
 }
 
@@ -214,9 +221,8 @@ export function createDshParticipantPersistence(scope: DshSettingsScope<DshColla
     save: async (state) => {
       const current = scope.getSnapshot();
       if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      const rooms = list();
-      const index = rooms.findIndex((room) => sameRoom(room, state));
-      if (index === -1) rooms.push(state); else rooms[index] = state;
+      const rooms = list().filter((room) => room.roomId !== state.roomId);
+      rooms.push(state);
       if (current.value?.resume) await scope.unset("resume");
       await scope.set("joinedRooms", rooms);
       const saved = list().find((room) => sameRoom(room, state));
@@ -463,21 +469,21 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         ...persisted.gateway,
         ...(persisted.appliedGateway ? { appliedGateway: persisted.appliedGateway } : {}),
         writable: scopeSnapshot.writable,
-        tokenTtlMs: persisted.security?.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        tokenTtlMs: persisted.security?.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : persisted.security.tokenTtlMs,
         approvalPolicy: persisted.security?.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: persisted.security?.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: persisted.security?.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-        maxQueue: persisted.security?.maxQueue ?? defaultCollabSettings.maxQueue,
+        maxQueue: migrateLegacyMaxQueue(persisted.security?.maxQueue) ?? defaultCollabSettings.maxQueue,
       };
       const fallback = actions.getSnapshot();
       return {
         ...fallback,
         writable: scopeSnapshot.writable,
-        tokenTtlMs: fallback.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        tokenTtlMs: fallback.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : fallback.tokenTtlMs,
         approvalPolicy: fallback.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: fallback.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: fallback.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-        maxQueue: fallback.maxQueue ?? defaultCollabSettings.maxQueue,
+        maxQueue: migrateLegacyMaxQueue(fallback.maxQueue) ?? defaultCollabSettings.maxQueue,
       };
     },
     subscribe: (listener) => scope.subscribe(() => { syncGateway(); listener(); }),
@@ -487,16 +493,15 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       if (!Number.isSafeInteger(input.gatewayPort) || input.gatewayPort < 1 || input.gatewayPort > 65535) throw new Error("gatewayPort must be between 1 and 65535");
       if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
-      if (input.advertisedEndpoint === "" && input.exposeMode === "network") throw new Error("advertisedEndpoint is required in network mode");
-      const advertisedEndpoint = input.advertisedEndpoint === "" ? "" : normalizeAdvertisedGatewayEndpoint(input.advertisedEndpoint, input.exposeMode);
+      const advertisedEndpoint = input.exposeMode === "network" ? "" : input.advertisedEndpoint === "" ? "" : normalizeAdvertisedGatewayEndpoint(input.advertisedEndpoint, input.exposeMode);
       const security = {
-        tokenTtlMs: input.tokenTtlMs ?? defaultCollabSettings.tokenTtlMs,
+        tokenTtlMs: input.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : input.tokenTtlMs,
         approvalPolicy: input.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: input.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: input.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
         maxQueue: input.maxQueue ?? defaultCollabSettings.maxQueue,
       };
-      if (!Number.isSafeInteger(security.tokenTtlMs) || security.tokenTtlMs < 1) throw new Error("tokenTtlMs must be positive");
+      if (security.tokenTtlMs !== null && (!Number.isSafeInteger(security.tokenTtlMs) || security.tokenTtlMs < 1)) throw new Error("tokenTtlMs must be positive or null");
       if (!Number.isSafeInteger(security.maxMembers) || security.maxMembers < 1) throw new Error("maxMembers must be positive");
       if (!Number.isSafeInteger(security.maxMessageBytes) || security.maxMessageBytes < 1) throw new Error("maxMessageBytes must be positive");
       if (!Number.isSafeInteger(security.maxQueue) || security.maxQueue < 0) throw new Error("maxQueue must be non-negative");
@@ -627,7 +632,13 @@ function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   return t("room.message");
 }
 
-function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: readonly { memberId: string; displayName: string }[]; t: CollabTranslate }): ReactNode {
+function DshCollabTimeline(props: {
+  items: readonly TimelineItem[];
+  members: readonly { memberId: string; displayName: string }[];
+  referencedEventIds: ReadonlySet<string>;
+  onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => void;
+  t: CollabTranslate;
+}): ReactNode {
   if (props.items.length === 0) return createElement("p", { className: roomCss.empty }, props.t("room.noMessages"));
   return createElement("div", { className: roomCss.timeline, "data-collab-timeline": true, "aria-live": "polite" },
     props.items.map((item) => {
@@ -642,6 +653,9 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: rea
         "data-status": item.status,
         "data-state": item.state,
         "data-streaming": item.streaming ? "true" : undefined,
+        "data-context-event-id": item.contextEventId,
+        "data-referenced": item.contextEventId && props.referencedEventIds.has(item.contextEventId) ? "true" : undefined,
+        onContextMenu: item.contextEventId && item.text ? (event: ReactMouseEvent<HTMLElement>) => { props.onContextMenu(item, event); } : undefined,
       },
       createElement("small", { className: roomCss.author }, author),
       createElement("div", { className: roomCss.text }, item.kind === "agent"
@@ -652,6 +666,85 @@ function DshCollabTimeline(props: { items: readonly TimelineItem[]; members: rea
   );
 }
 
+function DshAgentQueueTable(props: {
+  items: readonly AgentQueueItem[];
+  members: readonly { memberId: string; displayName: string }[];
+  memberId?: string;
+  role: DshCollabClientSnapshot["role"];
+  port?: DshCollabClientPort;
+  t: CollabTranslate;
+}): ReactNode {
+  const [editingId, setEditingId] = useState<string>();
+  const [draft, setDraft] = useState("");
+  const [busyId, setBusyId] = useState<string>();
+  const [error, setError] = useState<string>();
+  const nameFor = (memberId: string): string => props.members.find((member) => member.memberId === memberId)?.displayName ?? memberId;
+  const beginEdit = (item: AgentQueueItem): void => { setEditingId(item.requestId); setDraft(item.text); setError(undefined); };
+  const saveEdit = async (requestId: string): Promise<void> => {
+    if (!props.port?.editAgentRequest || draft.trim() === "") return;
+    setBusyId(requestId);
+    setError(undefined);
+    try {
+      await props.port.editAgentRequest(requestId, draft.trim());
+      setEditingId(undefined);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : props.t("queue.editError"));
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+  const withdraw = async (requestId: string): Promise<void> => {
+    if (!props.port?.withdrawAgentRequest) return;
+    setBusyId(requestId);
+    setError(undefined);
+    try {
+      await props.port.withdrawAgentRequest(requestId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : props.t("queue.withdrawError"));
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+  return createElement("section", { className: roomCss.queue, "data-collab-agent-queue": true, "aria-labelledby": "collab-agent-queue-title" },
+    createElement("div", { className: roomCss.queueHeader }, createElement("h3", { id: "collab-agent-queue-title" }, props.t("queue.title"))),
+    props.items.length === 0
+      ? createElement("p", { className: roomCss.queueEmpty }, props.t("queue.empty"))
+      : createElement("div", { className: roomCss.queueScroller }, createElement("table", { className: roomCss.queueTable },
+        createElement("thead", null, createElement("tr", null,
+          createElement("th", { scope: "col" }, props.t("queue.position")),
+          createElement("th", { scope: "col" }, props.t("queue.author")),
+          createElement("th", { scope: "col" }, props.t("queue.message")),
+          createElement("th", { scope: "col" }, props.t("queue.status")),
+          createElement("th", { scope: "col" }, props.t("queue.priority")),
+          createElement("th", { scope: "col" }, ""),
+        )),
+        createElement("tbody", null, props.items.map((item) => {
+          const canManage = item.status === "queued" && (props.role === "host" || item.authorMemberId === props.memberId);
+          const editing = editingId === item.requestId;
+          return createElement("tr", { key: item.requestId, "data-request-id": item.requestId, "data-status": item.status },
+            createElement("td", { className: roomCss.queuePosition }, String(item.position)),
+            createElement("td", null, nameFor(item.authorMemberId)),
+            createElement("td", { className: roomCss.queueMessage }, editing
+              ? createElement("textarea", { className: roomCss.queueEditor, value: draft, rows: 2, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value) })
+              : item.text),
+            createElement("td", null, agentStatusLabel(item.status, props.t)),
+            createElement("td", null, props.t(item.priority === "host" ? "queue.hostPriority" : "queue.participantPriority")),
+            createElement("td", { className: roomCss.queueActions }, canManage && (editing
+              ? [
+                createElement("button", { key: "save", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined || draft.trim() === "", onClick: () => { void saveEdit(item.requestId); } }, props.t("queue.save")),
+                createElement("button", { key: "cancel", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, onClick: () => { setEditingId(undefined); setError(undefined); } }, props.t("queue.cancelEdit")),
+              ]
+              : [
+                createElement("button", { key: "edit", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, "aria-label": props.t("queue.editAria"), onClick: () => { beginEdit(item); } }, props.t("queue.edit")),
+                createElement("button", { key: "withdraw", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, "aria-label": props.t("queue.withdrawAria"), onClick: () => { void withdraw(item.requestId); } }, props.t("queue.withdraw")),
+              ])),
+          );
+        })),
+      )),
+    error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,
+  );
+}
+
 /** Shared timeline and composer rendered inside the Collab room surface. */
 export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
@@ -659,15 +752,34 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
   const snapshot = usePortSnapshot(props.port, fallback);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string>();
+  const [contextRefs, setContextRefs] = useState<string[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ item: TimelineItem; x: number; y: number }>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const timeline = snapshot.timeline ?? [];
+  const referencedItems = contextRefs.map((eventId) => timeline.find((item) => item.contextEventId === eventId)).filter((item): item is TimelineItem => item !== undefined);
+  const agentBusy = (snapshot.agentQueue ?? []).some((item) => item.status === "running") || timeline.some((item) => item.kind === "agent" && item.streaming === true);
+  const addContextRef = (item: TimelineItem): void => {
+    const eventId = item.contextEventId;
+    setContextMenu(undefined);
+    if (!eventId || contextRefs.includes(eventId)) return;
+    if (contextRefs.length >= MAX_CONTEXT_REFS) {
+      setError(t("composer.quoteLimit", { count: MAX_CONTEXT_REFS }));
+      return;
+    }
+    setError(undefined);
+    setContextRefs([...contextRefs, eventId]);
+    textareaRef.current?.focus();
+  };
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (!props.port || draft.trim() === "") return;
     try {
       setError(undefined);
       const text = draft.trim();
-      await props.port.send({ text, target: composerTargetForText(text) });
+      const target = composerTargetForText(text);
+      await props.port.send({ text, target, ...(target === "dsh" && contextRefs.length > 0 ? { contextRefs: [...contextRefs] } : {}) });
       setDraft("");
+      setContextRefs([]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("composer.sendError"));
     }
@@ -680,9 +792,9 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       keyCode: event.nativeEvent.keyCode,
       repeat: event.repeat,
     });
-    if (action === "native") return;
+    if (action === "native" && !(event.key === "Enter" && event.shiftKey && composerTargetForGesture(draft, agentBusy, true) === "dsh-steer")) return;
     event.preventDefault();
-    if (action === "submit") event.currentTarget.form?.requestSubmit();
+    if (action === "submit" || (event.key === "Enter" && event.shiftKey && composerTargetForGesture(draft, agentBusy, true) === "dsh-steer")) event.currentTarget.form?.requestSubmit();
   };
   return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": t("room.aria") },
     props.showHeader === false ? null : createElement("div", { className: roomCss.header },
@@ -691,8 +803,31 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       snapshot.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: snapshot.hostDisplayName })) : null,
       createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(snapshot.connection, t), count: snapshot.onlineCount })),
     ),
-    createElement(DshCollabTimeline, { items: snapshot.timeline ?? [], members: snapshot.members ?? [], t }),
+    createElement(DshCollabTimeline, {
+      items: timeline,
+      members: snapshot.members ?? [],
+      referencedEventIds: new Set(contextRefs),
+      onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => {
+        event.preventDefault();
+        setContextMenu({ item, x: event.clientX, y: event.clientY });
+      },
+      t,
+    }),
+    contextMenu ? createElement("div", { className: roomCss.contextMenu, role: "menu", style: { left: contextMenu.x, top: contextMenu.y } },
+      createElement("button", { type: "button", role: "menuitem", onClick: () => { addContextRef(contextMenu.item); } }, t("composer.quote")),
+    ) : null,
+    createElement(DshAgentQueueTable, { items: snapshot.agentQueue ?? [], members: snapshot.members ?? [], memberId: snapshot.memberId, role: snapshot.role, port: props.port, t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },
+      referencedItems.length > 0 ? createElement("div", { className: roomCss.contextRefs, "aria-label": t("composer.quotedMessages") },
+        referencedItems.map((item) => createElement("div", { className: roomCss.contextRef, key: item.contextEventId },
+          createElement("span", null, timelineLabel(item, t)),
+          createElement("button", {
+            type: "button",
+            "aria-label": t("composer.removeQuote"),
+            onClick: () => { setContextRefs(contextRefs.filter((eventId) => eventId !== item.contextEventId)); },
+          }, "×"),
+        )),
+      ) : null,
       createElement("div", { className: roomCss.composerInput },
         createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), onKeyDown: keyDown, name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
         shouldSuggestAgentMention(draft) ? createElement("div", { className: roomCss.mentionMenu },
@@ -781,7 +916,8 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   if (!selection) return null;
 
   const role = selectedRole;
-  const selected = snapshot.roomId === selection.roomId && snapshot.role === role;
+  const selected = snapshot.roomId === selection.roomId && snapshot.role === role
+    && (selection.kind === "owned" || snapshot.gatewayEndpoint === undefined || snapshot.gatewayEndpoint === selection.gatewayEndpoint);
   const active = selected && snapshot.connection !== "offline";
   const view: DshCollabClientSnapshot = selected ? snapshot : {
     ...fallbackSnapshot,
@@ -804,7 +940,6 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       setBusy(undefined);
     }
   };
-  const backToRooms = (): void => { closeDshCollabRoom(); setDshCollabRoomsOpen(true); };
   const startSharing = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (selection.kind !== "owned" || !props.settingsPort?.shareHostRoom || roomName.trim() === "") return;
@@ -837,7 +972,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
 
   return createElement("main", { className: roomCss.surface, "data-collab-room-ui": true, "data-collab-surface": "room", "data-collab-mode": role, "aria-label": t("room.aria") },
     createElement("header", { className: roomCss.surfaceHeader },
-      createElement("button", { type: "button", className: roomCss.backButton, onClick: backToRooms }, t("rooms.title")),
+      createElement("button", { type: "button", className: roomCss.backButton, onClick: closeDshCollabRoom }, t("rooms.backToDsh")),
       createElement("div", { className: roomCss.surfaceIdentity },
         createElement("strong", null, view.roomTitle),
         createElement("span", { className: roomCss.badge }, t(role === "host" ? "role.owner" : "role.participant")),

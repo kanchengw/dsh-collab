@@ -15,7 +15,15 @@ export interface DshCordisAgent {
   steer(message: DshUserMessage): Promise<void> | void;
   cancel(cause: { kind: "user" }, options: { keepInbox: boolean }): Promise<void> | void;
   whenIdle?(): Promise<void>;
+  inject?(message: DshContextMessage): void;
   session?: { readonly events: readonly DshCordisSessionEvent[]; readonly header?: { readonly cwd?: string } };
+}
+
+export interface DshContextMessage {
+  id: string;
+  role: "user";
+  content: [{ type: "text"; text: string }];
+  source: { kind: "plugin"; plugin: "dsh-collab" };
 }
 
 export interface DshCordisSessionEvent {
@@ -48,6 +56,15 @@ function userMessage(text: string): DshUserMessage {
     role: "user",
     content: [{ type: "text", text }],
     source: { kind: "user" },
+  };
+}
+
+function contextMessage(text: string): DshContextMessage {
+  return {
+    id: randomUUID(),
+    role: "user",
+    content: [{ type: "text", text }],
+    source: { kind: "plugin", plugin: "dsh-collab" },
   };
 }
 
@@ -114,8 +131,9 @@ export function createDshCordisSessionService(input: {
       for (const listener of outputListeners) listener(frame);
     }
   });
-  const deliver = async (mode: "followup" | "steer", delivery: { sessionId: string; roomId?: string; requestId: string; text: string }): Promise<void> => {
+  const deliver = async (mode: "followup" | "steer", delivery: { sessionId: string; roomId?: string; requestId: string; text: string; contextContent?: string[] }): Promise<void> => {
     const agent = liveAgent(input.agents, delivery.sessionId);
+    for (const content of delivery.contextContent ?? []) agent.inject?.(contextMessage(content));
     const message = userMessage(delivery.text);
     pending.set(delivery.requestId, {
       agent,
