@@ -3,6 +3,7 @@ export * from "./active-rooms.js";
 export * from "./audit.js";
 export * from "./room-client.js";
 export * from "./room-context.js";
+export * from "./room-context-delivery.js";
 export * from "./room-session-links.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
