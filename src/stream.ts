@@ -5,7 +5,7 @@ import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import type { AgentOutputFrame, RoomEvent, StreamFrame } from "./types.js";
 import type { ActiveRoomRegistry } from "./active-rooms.js";
-import { SIDECAR_REVIEW_CAPABILITY, type CollaborationCapability, type CollaborationEvent } from "./collaboration-types.js";
+import { CHANGE_SET_CAPABILITY, SIDECAR_REVIEW_CAPABILITY, type CollaborationCapability, type CollaborationEvent } from "./collaboration-types.js";
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -153,9 +153,11 @@ export class RoomStreamHub {
   }
 
   publishCollaborationEvent(event: CollaborationEvent): void {
-    if (this.options.activeRooms && !this.options.activeRooms.isActive(event.state.roomId)) return;
+    const roomId = event.type === "workspace-sharing.changed" ? event.state.roomId : event.roomId;
+    const capability = event.type === "workspace-sharing.changed" ? SIDECAR_REVIEW_CAPABILITY : CHANGE_SET_CAPABILITY;
+    if (this.options.activeRooms && !this.options.activeRooms.isActive(roomId)) return;
     for (const record of [...this.connections.values()]) {
-      if (record.roomId !== event.state.roomId || !record.capabilities.has(SIDECAR_REVIEW_CAPABILITY)) continue;
+      if (record.roomId !== roomId || !record.capabilities.has(capability)) continue;
       try {
         this.options.tokens.verify({ roomId: record.roomId, token: record.token, now: this.now() });
       } catch (error) {

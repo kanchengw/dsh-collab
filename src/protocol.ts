@@ -236,10 +236,66 @@ export function decodeServerStreamFrame(value: unknown): DecodedServerStreamFram
 function decodeCollaborationEvent(value: unknown): CollaborationEvent {
   const input = record(value, "collaboration event");
   const type = text(input.type, "collaboration event.type");
-  if (type !== "workspace-sharing.changed") {
+  if (type === "workspace-sharing.changed") {
+    return { type, state: decodeWorkspaceSharingState(input.state) };
+  }
+  if (type !== "changeset.review-assigned" && type !== "changeset.finding-created") {
     throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
   }
-  return { type, state: decodeWorkspaceSharingState(input.state) };
+  const roomId = text(input.roomId, "collaboration event.roomId");
+  if (type === "changeset.review-assigned") {
+    const assignment = record(input.assignment, "collaboration event.assignment");
+    const previousReviewerId = assignment.previousReviewerId === undefined
+      ? undefined
+      : text(assignment.previousReviewerId, "collaboration event.assignment.previousReviewerId");
+    return {
+      type,
+      roomId,
+      assignment: {
+        assignmentId: text(assignment.assignmentId, "collaboration event.assignment.assignmentId"),
+        changeSetId: text(assignment.changeSetId, "collaboration event.assignment.changeSetId"),
+        assignedBy: text(assignment.assignedBy, "collaboration event.assignment.assignedBy"),
+        reviewerId: text(assignment.reviewerId, "collaboration event.assignment.reviewerId"),
+        ...(previousReviewerId ? { previousReviewerId } : {}),
+        createdAt: nonNegativeInteger(assignment.createdAt, "collaboration event.assignment.createdAt"),
+      },
+    };
+  }
+  if (type === "changeset.finding-created") {
+    const finding = record(input.finding, "collaboration event.finding");
+    const severity = text(finding.severity, "collaboration event.finding.severity");
+    if (!["critical", "high", "medium", "low", "note"].includes(severity)) {
+      throw invalidInput("collaboration event.finding.severity is invalid");
+    }
+    return {
+      type,
+      roomId,
+      finding: {
+        findingId: text(finding.findingId, "collaboration event.finding.findingId"),
+        changeSetId: text(finding.changeSetId, "collaboration event.finding.changeSetId"),
+        authorId: text(finding.authorId, "collaboration event.finding.authorId"),
+        severity: severity as Extract<CollaborationEvent, { type: "changeset.finding-created" }>["finding"]["severity"],
+        location: decodeReviewFindingLocation(finding.location),
+        body: text(finding.body, "collaboration event.finding.body"),
+        createdAt: nonNegativeInteger(finding.createdAt, "collaboration event.finding.createdAt"),
+      },
+    };
+  }
+  throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
+}
+
+function decodeReviewFindingLocation(value: unknown): Extract<CollaborationEvent, { type: "changeset.finding-created" }>["finding"]["location"] {
+  const input = record(value, "collaboration event.finding.location");
+  const kind = text(input.kind, "collaboration event.finding.location.kind");
+  if (kind === "general") return { kind };
+  const path = text(input.path, "collaboration event.finding.location.path");
+  if (kind === "file") return { kind, path };
+  if (kind === "line") {
+    const line = nonNegativeInteger(input.line, "collaboration event.finding.location.line");
+    if (line === 0) throw invalidInput("collaboration event.finding.location.line must be positive");
+    return { kind, path, line };
+  }
+  throw invalidInput("collaboration event.finding.location.kind is invalid");
 }
 
 function decodeWorkspaceSharingState(value: unknown): WorkspaceSharingState {

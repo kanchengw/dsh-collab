@@ -18,6 +18,8 @@ import { MAINLINE_REQUEST_PREFIX, ReviewService, type ReviewServiceSnapshot } fr
 import { WorkUpdateService } from "./work-updates.js";
 import { WorkspaceVersionService } from "./workspace-versions.js";
 import { ChangeSetStagingService } from "./change-set-staging.js";
+import { ChangeSetReviewService, type ChangeSetReviewServiceSnapshot } from "./change-set-reviews.js";
+import { CollabError } from "./errors.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 
 export interface DshCollabHostRuntimeOptions {
@@ -54,6 +56,7 @@ export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   resumes?: ResumeCredentialStoreSnapshot;
   reviewPoints?: ReviewPointServiceSnapshot;
   reviews?: ReviewServiceSnapshot;
+  changeSetReviews?: ChangeSetReviewServiceSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -69,6 +72,7 @@ export interface DshCollabHostRuntime {
   readonly workUpdates: WorkUpdateService;
   readonly workspaceVersions?: WorkspaceVersionService;
   readonly changeSets?: ChangeSetStagingService;
+  readonly changeSetReviews?: ChangeSetReviewService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
@@ -129,6 +133,14 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
         now: options.now,
       })
     : undefined;
+  if (snapshot?.changeSetReviews && !changeSets) {
+    throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review state requires ChangeSet staging");
+  }
+  const changeSetReviews = changeSets
+    ? snapshot?.changeSetReviews
+      ? ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: options.now }, snapshot.changeSetReviews)
+      : new ChangeSetReviewService({ rooms, changeSets, now: options.now })
+    : undefined;
   const reviewPointOptions = {
     rooms,
     ledger,
@@ -168,6 +180,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     workUpdates,
     ...(workspaceVersions ? { workspaceVersions } : {}),
     ...(changeSets ? { changeSets } : {}),
+    ...(changeSetReviews ? { changeSetReviews } : {}),
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
@@ -186,6 +199,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });
   const unsubscribeWorkspaceSharing = workspaceSharing.subscribe((event) => hub.publishCollaborationEvent(event));
+  const unsubscribeChangeSetReviews = changeSetReviews?.subscribe((event) => hub.publishCollaborationEvent(event));
   const unsubscribeAgentOutput = options.sessions.onAgentOutput?.((frame) => {
     hub.publishAgentOutput(frame);
   });
@@ -206,10 +220,17 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), reviewPoints, reviews,
-    snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot(), reviews: reviews.snapshot() }),
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), reviewPoints, reviews,
+    snapshot: () => ({
+      ...collabRuntime.snapshot(),
+      resumes: resumes.snapshot(),
+      reviewPoints: reviewPoints.snapshot(),
+      reviews: reviews.snapshot(),
+      ...(changeSetReviews ? { changeSetReviews: changeSetReviews.snapshot() } : {}),
+    }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
+      unsubscribeChangeSetReviews?.();
       unsubscribeWorkspaceSharing();
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);

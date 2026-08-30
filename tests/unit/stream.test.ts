@@ -3,7 +3,7 @@ import { EventLedger } from "../../src/events.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { RoomStreamHub } from "../../src/stream.js";
-import { SIDECAR_REVIEW_CAPABILITY, type CollaborationEvent } from "../../src/collaboration-types.js";
+import { CHANGE_SET_CAPABILITY, SIDECAR_REVIEW_CAPABILITY, type CollaborationEvent } from "../../src/collaboration-types.js";
 import type { StreamFrame } from "../../src/types.js";
 
 function setup() {
@@ -220,5 +220,34 @@ describe("RoomStreamHub", () => {
 
     expect(legacyEvents).toEqual([]);
     expect(capableEvents).toEqual([event]);
+  });
+
+  it("sends ChangeSet Review notifications only to change-set clients without advancing the room cursor", () => {
+    const { hub, ledger, token1 } = setup();
+    const event = {
+      type: "changeset.review-assigned",
+      roomId: "room-1",
+      assignment: {
+        assignmentId: "b".repeat(64),
+        changeSetId: "a".repeat(64),
+        assignedBy: "member-author",
+        reviewerId: "member-reviewer",
+        createdAt: 10,
+      },
+    } as CollaborationEvent;
+    const legacyEvents: CollaborationEvent[] = [];
+    const sidecarEvents: CollaborationEvent[] = [];
+    const changeSetEvents: CollaborationEvent[] = [];
+
+    hub.connect({ connectionId: "legacy-review", roomId: "room-1", token: token1, onFrame: () => {}, onCollaborationEvent: (value) => legacyEvents.push(value) });
+    hub.connect({ connectionId: "sidecar-review", roomId: "room-1", token: token1, capabilities: [SIDECAR_REVIEW_CAPABILITY], onFrame: () => {}, onCollaborationEvent: (value) => sidecarEvents.push(value) });
+    hub.connect({ connectionId: "changeset-review", roomId: "room-1", token: token1, capabilities: [CHANGE_SET_CAPABILITY], onFrame: () => {}, onCollaborationEvent: (value) => changeSetEvents.push(value) });
+
+    hub.publishCollaborationEvent(event);
+
+    expect(legacyEvents).toEqual([]);
+    expect(sidecarEvents).toEqual([]);
+    expect(changeSetEvents).toEqual([event]);
+    expect(ledger.latestSeq("room-1")).toBe(0);
   });
 });

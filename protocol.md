@@ -135,8 +135,13 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads` | Host, lead or Participant creates or resumes an idempotent ChangeSet upload; requires `change-set.v1` and enabled Workspace Sharing |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/chunks` | Uploads the next authenticated patch or result chunk; each chunk is at most 262144 bytes |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/finalize` | Revalidates the complete artifact and atomically publishes it to the Owner Staging Area |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/reviews?after=&limit=` | Active member reads the authoritative ChangeSet review queue newest-activity first; defaults to 50 and caps at 100 |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId` | Active member reads one immutable staged ChangeSet manifest under the sharing gate |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/patch?offset=&limit=` | Active member reads the exact staged diff in authenticated bounded chunks |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/review` | Active member reads the current required-reviewer and Finding counts |
+| `PUT` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/reviewer` | ChangeSet author or Host idempotently assigns one active room member using `{ clientRequestId, reviewerId }` |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/findings?after=&limit=` | Active member reads immutable Findings newest-first; defaults to 50 and caps at 100 |
+| `POST` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/findings` | Active member creates one idempotent `general`, `file`, or `line` Finding |
 | `GET` | `/collab/v1/rooms/:roomId/review-points?after=&limit=` | Active member reads persisted Review Point projections; defaults to 50 and caps at 100 |
 | `POST` | `/collab/v1/rooms/:roomId/review-points` | Host captures the current workspace and creates one immutable Review Point |
 | `POST` | `/collab/v1/rooms/:roomId/review-points/refresh` | Host captures a new comparison snapshot used for freshness and workspace progress |
@@ -179,6 +184,23 @@ write or apply operation. Both Owner and Participant therefore read the same
 stored patch. ChangeSet bounds remain 1000 changed files, 2 MiB per text side,
 8 MiB aggregate base/result text and 16 MiB patch; binary/non-UTF-8 content is
 rejected.
+
+ChangeSet Review assignment is separate from the immutable ChangeSet artifact.
+The current review projection contains at most one `requiredReviewerId`, while
+every assignment or reassignment remains in append-only Host snapshot history.
+Assignment is a queue/reminder hint, not an authorization boundary: all active
+room members can read and add Findings. A Finding is permanently anchored to
+the exact `changeSetId`; file/line paths must occur in that ChangeSet and line
+numbers are positive integers. Exact request retries return the original
+assignment/Finding, while reusing an ID with changed content returns `409`.
+Mutations append the assignment/Finding to the Host's durable Review snapshot
+and wait for critical-state persistence before the Gateway responds. A new
+mutation also emits `changeset.review-assigned` or `changeset.finding-created`
+as a live `collaboration-event`, only to stream connections that declared
+`change-set.v1`. These notifications do not enter the durable RoomEvent stream
+or advance its cursor. After reconnecting, clients recover authoritative state
+from `GET /change-sets/reviews` and the review/Finding routes. These routes
+require the existing `change-set.v1` capability and enabled Workspace Sharing.
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -556,6 +578,13 @@ is a live projection and does not advance the durable room event cursor. A
 client reconnects by reading the authoritative Workspace Sharing state from
 the capability-gated HTTP API introduced with Workspace Sharing.
 
+Clients that declare `change-set.v1` may receive `changeset.review-assigned`
+and `changeset.finding-created` collaboration events. They are best-effort live
+notifications: they do not advance `lastEventSeq` and are not replayed from the
+RoomEvent cursor. The persisted Review queue and Finding routes are the
+authoritative reconnect path. Connections that did not declare `change-set.v1`
+retain the original v1 frame set.
+
 ```json
 {
   "protocol": "dsh-collab.v1",
@@ -632,6 +661,7 @@ snapshot contract.
 | Resume credential binding | Durable digest only | The Host stores only the SHA-256 digest and binding; raw credentials and room tokens are reissued or kept on the Participant side. |
 | Agent request queued, claimed/running, output, completed/failed/cancelled | Durable | Queue and ledger transitions are barrier-confirmed; an unconfirmed active delivery is failed as outcome-unknown on restart and is never redelivered automatically. |
 | Approval request and decision | Durable | Approval projection and ledger event are committed before the HTTP response. |
+| ChangeSet required-reviewer assignment and Finding creation | Durable | Append-only review state and its Room Ledger event are captured by the same whole-runtime snapshot barrier before the Gateway responds. |
 | Review Point, freshness comparison, reviewers, lifecycle, findings and publication | Durable | Review aggregates and their immutable references are committed before success. Mainline acceptance commits the accepted publication and integration request together. |
 | One-time invitation lifecycle | Ephemeral | Invite secrets and active/accepted/expired projections are held in memory; a restart invalidates them. A joined member is durable through the member and ledger commit. |
 | Room tokens and resume exchange access tokens | Ephemeral | Tokens are reissued after restart; revocation is enforced in the current process and durable resume records are revoked when applicable. |

@@ -12,6 +12,7 @@ import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { ChangeSetStagingService } from "./change-set-staging.js";
+import type { ChangeSetReviewService } from "./change-set-reviews.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { WorkUpdateService } from "./work-updates.js";
 import type { WorkspaceVersionService } from "./workspace-versions.js";
@@ -57,6 +58,7 @@ interface GatewayOptions {
   workspace?: WorkspaceService;
   workspaceVersions?: WorkspaceVersionService;
   changeSets?: ChangeSetStagingService;
+  changeSetReviews?: ChangeSetReviewService;
   workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
@@ -886,7 +888,68 @@ export class CollabGateway {
       const changeSet = await changeSets.finalize({ roomId, principalId: claims.principalId, uploadId });
       return { status: 201, body: { changeSet } };
     }
+    const reviews = this.options.changeSetReviews;
+    if (request.method === "GET" && tail.length === 1 && tail[0] === "reviews" && reviews) {
+      const after = query.get("after") ?? undefined;
+      const limit = query.get("limit") === null ? undefined : this.parseQueryInteger(query.get("limit"), "limit");
+      return { status: 200, body: await reviews.listReviews({
+        roomId,
+        principalId: claims.principalId,
+        ...(after ? { after } : {}),
+        ...(limit === undefined ? {} : { limit }),
+      }) };
+    }
+    if (tail.length === 1 && tail[0] === "reviews" && !reviews) {
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    }
     const changeSetId = tail.length >= 1 && tail[0] !== "uploads" ? hashIdField(tail[0], "changeSetId") : undefined;
+    if (request.method === "GET" && changeSetId && tail.length === 2 && tail[1] === "review" && reviews) {
+      return { status: 200, body: { review: await reviews.getReview({ roomId, principalId: claims.principalId, changeSetId }) } };
+    }
+    if (request.method === "PUT" && changeSetId && tail.length === 2 && tail[1] === "reviewer" && reviews) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "reviewerId"]);
+      const result = await reviews.assignReviewer({
+        roomId,
+        principalId: claims.principalId,
+        changeSetId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+        reviewerId: requiredText(body.reviewerId, "reviewerId"),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: result };
+    }
+    if (changeSetId && tail.length === 2 && tail[1] === "findings" && reviews) {
+      if (request.method === "GET") {
+        const after = query.get("after") ?? undefined;
+        const limit = query.get("limit") === null ? undefined : this.parseQueryInteger(query.get("limit"), "limit");
+        return { status: 200, body: await reviews.listFindings({
+          roomId,
+          principalId: claims.principalId,
+          changeSetId,
+          ...(after ? { after } : {}),
+          ...(limit === undefined ? {} : { limit }),
+        }) };
+      }
+      if (request.method === "POST") {
+        const body = objectBody(request.body);
+        allowedFields(body, ["clientRequestId", "severity", "location", "body"]);
+        const result = await reviews.createFinding({
+          roomId,
+          principalId: claims.principalId,
+          changeSetId,
+          clientRequestId: requestIdField(body, "clientRequestId"),
+          severity: reviewFindingSeverity(body.severity),
+          location: reviewFindingLocation(body.location),
+          body: requiredText(body.body, "body"),
+        });
+        await this.options.commitCriticalState?.();
+        return { status: 201, body: result };
+      }
+    }
+    if (changeSetId && tail.length === 2 && ["review", "reviewer", "findings"].includes(tail[1]!) && !reviews) {
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    }
     if (request.method === "GET" && changeSetId && tail.length === 1) {
       const changeSet = await changeSets.get(roomId, changeSetId);
       if (!changeSet) throw new CollabError("CHANGE_SET_NOT_FOUND", "ChangeSet does not exist");

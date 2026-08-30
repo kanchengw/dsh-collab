@@ -100,6 +100,37 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeServerStreamFrame(frame)).toEqual({ kind: "event", event: frame.event });
   });
 
+  it("round-trips capability-gated ChangeSet Review collaboration events outside the durable room cursor", () => {
+    const events = [{
+      type: "changeset.review-assigned" as const,
+      roomId: "room-1",
+      assignment: {
+        assignmentId: "b".repeat(64),
+        changeSetId: "a".repeat(64),
+        assignedBy: "member-author",
+        reviewerId: "member-reviewer",
+        createdAt: 10,
+      },
+    }, {
+      type: "changeset.finding-created" as const,
+      roomId: "room-1",
+      finding: {
+        findingId: "c".repeat(64),
+        changeSetId: "a".repeat(64),
+        authorId: "member-reviewer",
+        severity: "high" as const,
+        location: { kind: "line" as const, path: "src/app.ts", line: 2 },
+        body: "Reconnect can race.",
+        createdAt: 11,
+      },
+    }];
+
+    for (const event of events) {
+      const wire = encodeCollaborationServerStreamFrame({ kind: "collaboration-event", event });
+      expect(decodeServerStreamFrame(wire)).toEqual({ kind: "collaboration-event", event });
+    }
+  });
+
   it("round-trips transient accumulated Agent output", () => {
     const frame: StreamFrame = {
       kind: "agent-output",

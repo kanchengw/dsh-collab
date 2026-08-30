@@ -199,10 +199,36 @@ export interface AcceptedTaskResult {
   acceptedBy: string;
 }
 
-export type CollaborationEvent = {
-  type: "workspace-sharing.changed";
-  state: WorkspaceSharingState;
-};
+export type CollaborationEvent =
+  | {
+      type: "workspace-sharing.changed";
+      state: WorkspaceSharingState;
+    }
+  | {
+      type: "changeset.review-assigned";
+      roomId: string;
+      assignment: {
+        assignmentId: string;
+        changeSetId: string;
+        assignedBy: string;
+        reviewerId: string;
+        previousReviewerId?: string;
+        createdAt: number;
+      };
+    }
+  | {
+      type: "changeset.finding-created";
+      roomId: string;
+      finding: {
+        findingId: string;
+        changeSetId: string;
+        authorId: string;
+        severity: ReviewFinding["severity"];
+        location: ReviewFindingLocation;
+        body: string;
+        createdAt: number;
+      };
+    };
 
 export interface CollaborationStreamFrame {
   kind: "collaboration-event";
