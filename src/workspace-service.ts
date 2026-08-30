@@ -9,10 +9,11 @@ export interface WorkspaceSnapshotProvider {
   capture(input: { roomId: string; hostSessionId: string; roomEventSeq: number; snapshotId: string; signal?: AbortSignal }): Promise<WorkspaceSnapshotPackage>;
   load(snapshotId: string): Promise<WorkspaceSnapshotPackage | undefined>;
   readChunk(snapshotId: string, path: string, offset: number, length: number): Promise<Uint8Array>;
+  readFile?(snapshotId: string, path: string): Promise<Uint8Array>;
   captureReviewDiffs?(input: { snapshot: WorkspaceSnapshotPackage; files: readonly { path: string; previousPath?: string; status: "added" | "modified" | "deleted" | "renamed" }[] }): Promise<ReviewPointDiff[]>;
 }
 
-export type WorkspaceSnapshotPurpose = "workspace-snapshot" | "review-point" | "review-refresh";
+export type WorkspaceSnapshotPurpose = "workspace-snapshot" | "workspace-version" | "review-point" | "review-refresh";
 
 export class WorkspaceService {
   private readonly now: () => number;

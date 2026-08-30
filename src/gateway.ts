@@ -10,9 +10,10 @@ import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
-import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { WorkUpdateService } from "./work-updates.js";
+import type { WorkspaceVersionService } from "./workspace-versions.js";
 import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
 import { MAINLINE_REQUEST_PREFIX, type ReviewService } from "./reviews.js";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
@@ -53,6 +54,7 @@ interface GatewayOptions {
   ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
   activeRooms?: ActiveRoomRegistry;
   workspace?: WorkspaceService;
+  workspaceVersions?: WorkspaceVersionService;
   workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
@@ -279,10 +281,14 @@ export class CollabGateway {
       const resource = segments[3];
       if (segments.length === 4 && request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
       if (segments.length === 4 && request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
-      if (resource === "workspace-sharing" || resource === "workspace-snapshots" || resource === "review-points") {
+      if (resource === "workspace-sharing" || resource === "workspace-snapshots" || resource === "workspace-versions" || resource === "review-points") {
         const capabilities = decodeCollaborationCapabilities(getHeader(request, COLLAB_CAPABILITY_HEADER));
-        if (!this.options.workspace || !capabilities.includes(SIDECAR_REVIEW_CAPABILITY)
+        const capabilityAvailable = resource === "workspace-versions"
+          ? capabilities.includes(WORKSPACE_VERSION_CAPABILITY)
+          : capabilities.includes(SIDECAR_REVIEW_CAPABILITY);
+        if (!this.options.workspace || !capabilityAvailable
           || ((resource === "workspace-snapshots" || resource === "review-points") && !this.options.workspace.snapshotsAvailable)
+          || (resource === "workspace-versions" && (!this.options.workspace.snapshotsAvailable || !this.options.workspaceVersions))
           || (resource === "review-points" && !this.options.reviewPoints)) {
           return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
         }
@@ -291,6 +297,7 @@ export class CollabGateway {
       this.options.activeRooms?.requireActive(roomId);
       if (segments.length === 4 && resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
       if (resource === "workspace-snapshots") return await this.workspaceSnapshots(roomId, segments.slice(4), url.searchParams, request);
+      if (resource === "workspace-versions") return await this.workspaceVersions(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "review-points") return await this.reviewPoints(roomId, segments.slice(4), url.searchParams, request);
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
@@ -767,6 +774,68 @@ export class CollabGateway {
     this.pendingSubmissions.add(submission);
     await this.commitPendingState();
     return copy(response);
+  }
+
+  private async workspaceVersions(roomId: string, tail: string[], query: URLSearchParams, request: GatewayRequest): Promise<GatewayResponse> {
+    const workspace = this.options.workspace!;
+    const versions = this.options.workspaceVersions!;
+    const claims = this.claims(roomId, request);
+    if (request.method === "POST" && tail.length === 0) {
+      this.options.rooms.authorize(roomId, claims.principalId, "workspaceVersion");
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "parentVersionId"]);
+      const parentVersionId = body.parentVersionId === undefined ? undefined : hashIdField(body.parentVersionId, "parentVersionId");
+      const snapshot = await workspace.captureLatest({
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+        purpose: "workspace-version",
+        roomEventSeq: this.options.ledger.latestSeq(roomId),
+      });
+      const result = await versions.create({
+        roomId,
+        principalId: claims.principalId,
+        snapshotId: snapshot.snapshotId,
+        ...(parentVersionId ? { parentVersionId } : {}),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: result.created ? 201 : 200, body: { record: result.record } };
+    }
+    workspace.requireWorkspaceRead({ roomId, principalId: claims.principalId });
+    const requestedId = tail[0] === "latest" ? versions.latest(roomId)?.version.workspaceVersionId : tail[0];
+    const workspaceVersionId = requestedId === undefined ? undefined : hashIdField(requestedId, "workspaceVersionId");
+    if (!workspaceVersionId) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Version does not exist");
+    const record = versions.get(roomId, workspaceVersionId);
+    if (!record) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Version does not exist");
+    if (request.method === "GET" && tail.length === 1) {
+      const snapshot = await workspace.getSnapshot({ roomId, principalId: claims.principalId, snapshotId: record.artifact.snapshotId });
+      return { status: 200, body: { record, snapshot } };
+    }
+    if (request.method === "GET" && tail.length === 3 && tail[1] === "files") {
+      const fileIndex = this.parseQueryInteger(tail[2]!, "fileIndex");
+      const offset = this.parseQueryInteger(query.get("offset"), "offset");
+      const limit = this.parseQueryInteger(query.get("limit"), "limit");
+      if (limit < 1 || limit > 256 * 1024) throw invalidInput("limit must be between 1 and 262144", { field: "limit" });
+      const { snapshot, bytes } = await workspace.readSnapshotChunk({
+        roomId,
+        principalId: claims.principalId,
+        snapshotId: record.artifact.snapshotId,
+        fileIndex,
+        offset,
+        length: limit,
+      });
+      const file = snapshot.files[fileIndex]!;
+      return { status: 200, body: { chunk: {
+        snapshotId: record.artifact.snapshotId,
+        fileIndex,
+        offset,
+        byteLength: bytes.byteLength,
+        chunkHash: createHash("sha256").update(bytes).digest("hex"),
+        data: Buffer.from(bytes).toString("base64"),
+        eof: offset + bytes.byteLength === file.size,
+      } } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
   }
 
   private async publishWorkUpdate(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {

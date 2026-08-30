@@ -1,10 +1,62 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
-import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
+import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY } from "../../src/protocol.js";
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 
 describe("host runtime factory", () => {
+  it("wires WorkspaceVersion publication and restores its Ledger index", async () => {
+    const content = Buffer.from("app");
+    const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update(content).digest("hex"), size: content.byteLength, source: "tracked" as const }];
+    const stored = new Map<string, WorkspaceSnapshotPackage>();
+    const workspaceSnapshots = {
+      async capture(input: { roomId: string; hostSessionId: string; roomEventSeq: number; snapshotId: string }) {
+        const snapshot: WorkspaceSnapshotPackage = {
+          snapshotId: input.snapshotId,
+          roomId: input.roomId,
+          hostSessionId: input.hostSessionId,
+          roomEventSeq: input.roomEventSeq,
+          headOid: "a".repeat(40),
+          manifestHash: createHash("sha256").update(JSON.stringify(files)).digest("hex"),
+          files,
+          createdAt: 10,
+        };
+        stored.set(snapshot.snapshotId, snapshot);
+        return snapshot;
+      },
+      load: async (snapshotId: string) => stored.get(snapshotId),
+      readFile: async () => content,
+      readChunk: async (_snapshotId: string, _path: string, offset: number, length: number) => content.subarray(offset, offset + length),
+    };
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-host", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} }, workspaceSnapshots, now: () => 10,
+    };
+    const first = createDshCollabHostRuntime(options);
+    const bootstrap = await first.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = {
+      authorization: `Bearer ${(bootstrap.body as { roomToken: string }).roomToken}`,
+      [COLLAB_CAPABILITY_HEADER]: `${SIDECAR_REVIEW_CAPABILITY},${WORKSPACE_VERSION_CAPABILITY}`,
+    };
+    await first.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers, body: { enabled: true } });
+    await expect(first.gateway.handle({
+      method: "POST", path: "/v1/rooms/room-1/workspace-versions", headers, body: { clientRequestId: "publish-1" },
+    })).resolves.toMatchObject({ status: 201 });
+    expect(first.workspaceVersions?.latest("room-1")).toBeDefined();
+    const snapshot = first.snapshot();
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    restored.activeRooms.activate("room-1");
+    const restoredBootstrap = await restored.gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const restoredHeaders = { ...headers, authorization: `Bearer ${(restoredBootstrap.body as { roomToken: string }).roomToken}` };
+    await restored.gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-sharing", headers: restoredHeaders, body: { enabled: true } });
+    await expect(restored.gateway.handle({
+      method: "GET", path: "/v1/rooms/room-1/workspace-versions/latest", headers: restoredHeaders,
+    })).resolves.toMatchObject({ status: 200, body: { record: { version: { roomId: "room-1" } } } });
+    await restored.dispose();
+  });
+
   it("persists Review Points and their file anchors while Workspace Sharing resets", async () => {
     const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update("app").digest("hex"), size: 3, source: "tracked" as const }];
     const stored = new Map<string, WorkspaceSnapshotPackage>();

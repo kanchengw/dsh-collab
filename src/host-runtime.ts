@@ -16,6 +16,7 @@ import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-se
 import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-points.js";
 import { MAINLINE_REQUEST_PREFIX, ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
 import { WorkUpdateService } from "./work-updates.js";
+import { WorkspaceVersionService } from "./workspace-versions.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -62,6 +63,7 @@ export interface DshCollabHostRuntime {
   readonly activeRooms: ActiveRoomRegistry;
   readonly workspace: WorkspaceService;
   readonly workUpdates: WorkUpdateService;
+  readonly workspaceVersions?: WorkspaceVersionService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
@@ -99,6 +101,16 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const activeRooms = new ActiveRoomRegistry();
   const workspaceSharing = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
+  const workspaceVersions = options.workspaceSnapshots?.readFile
+    ? new WorkspaceVersionService({
+        rooms,
+        ledger,
+        artifacts: {
+          load: (snapshotId) => options.workspaceSnapshots!.load(snapshotId),
+          readFile: (snapshotId, path) => options.workspaceSnapshots!.readFile!(snapshotId, path),
+        },
+      })
+    : undefined;
   const reviewPointOptions = {
     rooms,
     ledger,
@@ -136,6 +148,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     activeRooms,
     workspace,
     workUpdates,
+    ...(workspaceVersions ? { workspaceVersions } : {}),
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
@@ -174,7 +187,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), reviewPoints, reviews,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot(), reviews: reviews.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();

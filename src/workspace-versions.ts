@@ -3,7 +3,8 @@ import { CollabError, invalidInput } from "./errors.js";
 import { EventLedger } from "./events.js";
 import { RoomStore } from "./room.js";
 import type { RoomEvent } from "./types.js";
-import { isSafeWorkspaceSnapshotPath, WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
+import type { WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import { isSafeWorkspaceSnapshotPath } from "./workspace-snapshot-store.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -54,7 +55,12 @@ export interface CreatedWorkspaceVersion {
 export interface WorkspaceVersionServiceOptions {
   rooms: RoomStore;
   ledger: EventLedger;
-  artifacts: WorkspaceSnapshotStore;
+  artifacts: WorkspaceVersionArtifactStore;
+}
+
+export interface WorkspaceVersionArtifactStore {
+  load(snapshotId: string): Promise<WorkspaceSnapshotPackage | undefined>;
+  readFile(snapshotId: string, path: string): Promise<Uint8Array>;
 }
 
 function hash(value: Uint8Array | string): string {

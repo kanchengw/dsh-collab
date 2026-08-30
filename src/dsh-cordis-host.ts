@@ -49,6 +49,7 @@ export function createDshWorkspaceSnapshotProvider(input: {
       }).capture(request);
     },
     load: (snapshotId) => input.store.load(snapshotId),
+    readFile: (snapshotId, path) => input.store.readFile(snapshotId, path),
     readChunk: (snapshotId, path, offset, length) => input.store.readChunk(snapshotId, path, offset, length),
     async captureReviewDiffs(request) {
       const cwd = input.sessions.workspacePath?.(request.snapshot.hostSessionId);

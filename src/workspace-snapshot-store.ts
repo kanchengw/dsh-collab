@@ -8,6 +8,9 @@ interface StoredSnapshot {
   snapshot: WorkspaceSnapshotPackage;
 }
 
+const SNAPSHOT_FIELDS = new Set(["snapshotId", "roomId", "hostSessionId", "roomEventSeq", "headOid", "manifestHash", "files", "createdAt"]);
+const SNAPSHOT_FILE_FIELDS = new Set(["path", "contentHash", "size", "source"]);
+
 function hash(content: Uint8Array | string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -44,11 +47,13 @@ export function validateWorkspaceSnapshotPackage(snapshot: WorkspaceSnapshotPack
   ) {
     throw new Error("Workspace Snapshot manifest is malformed");
   }
+  if (Object.keys(snapshot).some((field) => !SNAPSHOT_FIELDS.has(field))) throw new Error("Workspace Snapshot manifest contains an unsupported field");
   if (!/^[a-f0-9]{64}$/.test(snapshot.manifestHash)) throw new Error("Workspace Snapshot manifest hash is invalid");
   const paths = new Set<string>();
   for (const file of snapshot.files) {
     if (
       !file
+      || Object.keys(file).some((field) => !SNAPSHOT_FILE_FIELDS.has(field))
       || typeof file.path !== "string"
       || !isSafeWorkspaceSnapshotPath(file.path)
       || paths.has(file.path)
@@ -62,7 +67,16 @@ export function validateWorkspaceSnapshotPackage(snapshot: WorkspaceSnapshotPack
     paths.add(file.path);
   }
   if (hash(JSON.stringify(snapshot.files)) !== snapshot.manifestHash) throw new Error("Workspace Snapshot manifest hash does not match");
-  return structuredClone(snapshot);
+  return {
+    snapshotId: snapshot.snapshotId,
+    roomId: snapshot.roomId,
+    hostSessionId: snapshot.hostSessionId,
+    roomEventSeq: snapshot.roomEventSeq,
+    ...(snapshot.headOid ? { headOid: snapshot.headOid } : {}),
+    manifestHash: snapshot.manifestHash,
+    files: structuredClone(snapshot.files),
+    createdAt: snapshot.createdAt,
+  };
 }
 
 function parseSnapshot(text: string, expectedSnapshotId: string): WorkspaceSnapshotPackage {

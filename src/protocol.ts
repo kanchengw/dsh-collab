@@ -1,6 +1,7 @@
 import { invalidInput } from "./errors.js";
 import {
   SIDECAR_REVIEW_CAPABILITY,
+  WORKSPACE_VERSION_CAPABILITY,
   type CollaborationCapability,
   type CollaborationEvent,
   type CollaborationStreamFrame,
@@ -10,7 +11,7 @@ import type { GatewayResponse, RoomEvent, StreamFrame } from "./types.js";
 
 export const COLLAB_PROTOCOL = "dsh-collab.v1" as const;
 export const COLLAB_CAPABILITY_HEADER = "x-dsh-collab-capabilities" as const;
-export { SIDECAR_REVIEW_CAPABILITY };
+export { SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY };
 
 export interface ProtocolError {
   code: string;
@@ -49,6 +50,7 @@ const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "member.suspended",
   "member.removed",
   "human.message",
+  "workspace-version.published",
   "agent.request.created",
   "agent.request.queued",
   "agent.request.claimed",
@@ -106,6 +108,7 @@ export function decodeCollaborationCapabilities(value: unknown): CollaborationCa
   for (const candidate of input) {
     if (typeof candidate !== "string") throw invalidInput("capability must be a string", { field: "capabilities" });
     if (candidate.trim() === SIDECAR_REVIEW_CAPABILITY) capabilities.add(SIDECAR_REVIEW_CAPABILITY);
+    if (candidate.trim() === WORKSPACE_VERSION_CAPABILITY) capabilities.add(WORKSPACE_VERSION_CAPABILITY);
   }
   return [...capabilities];
 }

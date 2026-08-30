@@ -1,6 +1,7 @@
 export const SIDECAR_REVIEW_CAPABILITY = "sidecar-review.v1" as const;
+export const WORKSPACE_VERSION_CAPABILITY = "workspace-version.v1" as const;
 
-export type CollaborationCapability = typeof SIDECAR_REVIEW_CAPABILITY;
+export type CollaborationCapability = typeof SIDECAR_REVIEW_CAPABILITY | typeof WORKSPACE_VERSION_CAPABILITY;
 
 export type WorkspaceSharingState =
   | { roomId: string; enabled: false; revision: number }

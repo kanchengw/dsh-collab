@@ -3,6 +3,7 @@ import {
   COLLAB_CAPABILITY_HEADER,
   COLLAB_PROTOCOL,
   SIDECAR_REVIEW_CAPABILITY,
+  WORKSPACE_VERSION_CAPABILITY,
   decodeCollaborationCapabilities,
   decodeClientStreamFrame,
   decodeServerStreamFrame,
@@ -80,6 +81,24 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeServerStreamFrame(wire)).toEqual(frame);
   });
 
+  it("accepts durable WorkspaceVersion events on the room stream", () => {
+    const frame = {
+      protocol: COLLAB_PROTOCOL,
+      type: "event",
+      event: {
+        eventId: "workspace-version:version-1",
+        roomId: "room-1",
+        seq: 1,
+        type: "workspace-version.published",
+        actor: { memberId: "member-host", principalId: "host" },
+        createdAt: 10,
+        payload: {},
+      },
+    } as const;
+
+    expect(decodeServerStreamFrame(frame)).toEqual({ kind: "event", event: frame.event });
+  });
+
   it("round-trips transient accumulated Agent output", () => {
     const frame: StreamFrame = {
       kind: "agent-output",
@@ -106,9 +125,10 @@ describe("dsh-collab wire protocol", () => {
     expect(COLLAB_CAPABILITY_HEADER).toBe("x-dsh-collab-capabilities");
     expect(decodeCollaborationCapabilities([
       SIDECAR_REVIEW_CAPABILITY,
+      WORKSPACE_VERSION_CAPABILITY,
       "future-capability.v9",
       SIDECAR_REVIEW_CAPABILITY,
-    ])).toEqual([SIDECAR_REVIEW_CAPABILITY]);
+    ])).toEqual([SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY]);
     expect(decodeCollaborationCapabilities(`future.v9, ${SIDECAR_REVIEW_CAPABILITY}`)).toEqual([SIDECAR_REVIEW_CAPABILITY]);
     expect(decodeCollaborationCapabilities(undefined)).toEqual([]);
     expect(() => decodeCollaborationCapabilities([SIDECAR_REVIEW_CAPABILITY, 42])).toThrow("capability");
