@@ -12,6 +12,7 @@ import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { WorkspaceService } from "./workspace-service.js";
+import type { WorkUpdateService } from "./work-updates.js";
 import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
 import { MAINLINE_REQUEST_PREFIX, type ReviewService } from "./reviews.js";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
@@ -52,6 +53,7 @@ interface GatewayOptions {
   ownsHostSession?: (sessionId: string) => boolean | Promise<boolean>;
   activeRooms?: ActiveRoomRegistry;
   workspace?: WorkspaceService;
+  workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
   commitCriticalState?: () => Promise<void>;
@@ -71,6 +73,12 @@ function objectBody(body: unknown): Record<string, unknown> {
     throw invalidInput("request body must be an object");
   }
   return body as Record<string, unknown>;
+}
+
+function allowedFields(body: Record<string, unknown>, fields: readonly string[]): void {
+  const allowed = new Set(fields);
+  const unsupported = Object.keys(body).find((field) => !allowed.has(field));
+  if (unsupported) throw invalidInput("request body contains an unsupported field", { field: unsupported });
 }
 
 function numberField(body: Record<string, unknown>, field: string): number {
@@ -295,6 +303,7 @@ export class CollabGateway {
       if (request.method === "POST" && resource === "approvals") return await this.createApproval(roomId, request);
       if (request.method === "POST" && resource === "actions") return await this.action(roomId, request);
       if (request.method === "POST" && resource === "messages") return await this.message(roomId, request);
+      if (request.method === "POST" && resource === "work-updates" && this.options.workUpdates) return await this.publishWorkUpdate(roomId, request);
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
     } catch (error) {
       return errorResponse(error);
@@ -758,6 +767,24 @@ export class CollabGateway {
     this.pendingSubmissions.add(submission);
     await this.commitPendingState();
     return copy(response);
+  }
+
+  private async publishWorkUpdate(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
+    const claims = this.claims(roomId, request);
+    const body = objectBody(request.body);
+    allowedFields(body, ["clientRequestId", "sourceSessionId", "summary", "filePaths", "changeSetId"]);
+    if (!Array.isArray(body.filePaths)) throw invalidInput("filePaths must be an array", { field: "filePaths" });
+    const result = this.options.workUpdates!.publish({
+      roomId,
+      principalId: claims.principalId,
+      clientRequestId: requestIdField(body, "clientRequestId"),
+      sourceSessionId: requiredText(body.sourceSessionId, "sourceSessionId"),
+      summary: requiredText(body.summary, "summary"),
+      filePaths: body.filePaths as string[],
+      ...(body.changeSetId === undefined ? {} : { changeSetId: requiredText(body.changeSetId, "changeSetId") }),
+    });
+    await this.options.commitCriticalState?.();
+    return { status: 201, body: { update: result.update, event: result.event } };
   }
 
   private async commitPendingState(): Promise<void> {

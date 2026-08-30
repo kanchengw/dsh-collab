@@ -5,6 +5,7 @@ export type MemberStatus = "active" | "suspended" | "removed";
 export type CollabAction =
   | "read"
   | "humanMessage"
+  | "workUpdate"
   | "agentRequest"
   | "steer"
   | "cancel"
@@ -175,6 +176,17 @@ export interface HumanMessage {
   visibility: "room";
 }
 
+export interface WorkUpdate {
+  updateId: string;
+  roomId: string;
+  authorId: string;
+  sourceSessionId: string;
+  summary: string;
+  filePaths: string[];
+  changeSetId?: string;
+  createdAt: number;
+}
+
 export interface AgentRequest {
   kind: "agent-request";
   messageId: string;
@@ -258,6 +270,7 @@ export type RoomEventType =
   | "member.suspended"
   | "member.removed"
   | "human.message"
+  | "work-update.published"
   | "agent.request.created"
   | "agent.request.queued"
   | "agent.request.claimed"

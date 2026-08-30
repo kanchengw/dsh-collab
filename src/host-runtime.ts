@@ -15,6 +15,7 @@ import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
 import { WorkspaceService, type WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-points.js";
 import { MAINLINE_REQUEST_PREFIX, ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
+import { WorkUpdateService } from "./work-updates.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -60,6 +61,7 @@ export interface DshCollabHostRuntime {
   readonly http: CollabHttpServer;
   readonly activeRooms: ActiveRoomRegistry;
   readonly workspace: WorkspaceService;
+  readonly workUpdates: WorkUpdateService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
@@ -86,6 +88,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     rooms.createRoom({ roomId: options.roomId, hostId: options.hostId, hostSessionId: options.hostSessionId, title: options.title, hostDisplayName: options.hostDisplayName, now: options.now?.() });
   }
   const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
+  const workUpdates = new WorkUpdateService({ rooms, ledger, now: options.now });
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
   const resumes = snapshot?.resumes
     ? ResumeCredentialStore.fromSnapshot(rooms, snapshot.resumes)
@@ -132,6 +135,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ownsHostSession: (sessionId) => options.sessions.owns(sessionId),
     activeRooms,
     workspace,
+    workUpdates,
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
@@ -170,7 +174,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, reviewPoints, reviews,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot(), reviews: reviews.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();

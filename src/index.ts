@@ -35,6 +35,7 @@ export * from "./workspace-sharing.js";
 export * from "./workspace-snapshot.js";
 export * from "./workspace-snapshot-store.js";
 export * from "./snapshot-workspace.js";
+export * from "./work-updates.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, migrateLegacyMaxQueue, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";

@@ -1,5 +1,6 @@
 import { invalidInput } from "./errors.js";
 import type { RoomEvent } from "./types.js";
+import { validateWorkUpdate } from "./work-updates.js";
 
 export type RoomContextEntry =
   | { kind: "message"; author: string; text: string }
@@ -51,6 +52,19 @@ function projectHumanMessage(event: RoomEvent, roomId: string): RoomContextEntry
   return { kind: "message", author, text };
 }
 
+function projectWorkUpdate(event: RoomEvent, roomId: string): RoomContextEntry {
+  const update = validateWorkUpdate(event.payload);
+  if (update.roomId !== roomId || update.authorId !== event.actor?.memberId || update.createdAt !== event.createdAt) {
+    throw invalidInput("Work Update authority does not match its durable event", { eventId: event.eventId });
+  }
+  return {
+    kind: "work-update",
+    author: update.authorId,
+    summary: update.summary,
+    refs: [...update.filePaths, ...(update.changeSetId ? [update.changeSetId] : [])],
+  };
+}
+
 export function projectRoomContext(input: ProjectRoomContextInput): RoomContextSnapshot | undefined {
   const roomId = requiredText(input.roomId, "roomId");
   if (!Number.isSafeInteger(input.afterSeq) || input.afterSeq < 0) {
@@ -76,6 +90,7 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
     }
     expectedSeq += 1;
     if (event.type === "human.message") entries.push(projectHumanMessage(event, roomId));
+    else if (event.type === "work-update.published") entries.push(projectWorkUpdate(event, roomId));
   }
 
   const omittedCount = Math.max(0, entries.length - input.maxEntries);
