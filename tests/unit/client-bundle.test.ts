@@ -12,7 +12,10 @@ describe("browser client bundle", () => {
     expect(bundle).toContain('"collab-room"');
     expect(bundle).toContain('"collab-rooms"');
     expect(bundle).toContain('"collab-inspector"');
-    expect(bundle).toContain('const styleId = "collab-activity"');
-    expect(bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId/g)).toHaveLength(5);
+    expect(bundle).toContain('"collab-activity"');
+    expect(bundle).toContain('"collab-changes"');
+    expect(
+      bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId(?:\$\d+)?\)/g),
+    ).toHaveLength(6);
   });
 });

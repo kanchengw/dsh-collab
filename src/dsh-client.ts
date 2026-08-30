@@ -1104,4 +1104,6 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
 export { applyDshCollabClient as apply };
 export { DshCollabSettingsCard } from "./collab-settings-card.js";
 export { CollabActivity, projectCollabActivity } from "./collab-activity.js";
+export { CollabChanges, validateCollabChangesSnapshot } from "./collab-changes.js";
+export type { CollabChangesPort, CollabChangesSnapshot, CollabChangesWorkspaceSnapshot } from "./collab-changes.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";
