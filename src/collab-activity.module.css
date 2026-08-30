@@ -1,0 +1,126 @@
+.activity {
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.header h2,
+.header p,
+.summary,
+.changeSet,
+.empty {
+  margin: 0;
+}
+
+.header h2 {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.header p,
+.empty {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.header > span {
+  min-width: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.list,
+.refs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.meta strong {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 500;
+}
+
+.meta time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+}
+
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.refs code,
+.changeSet code {
+  border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family-mono);
+  font-size: 11px;
+}
+
+.refs code {
+  display: inline-block;
+  padding: 2px 6px;
+}
+
+.changeSet {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.changeSet code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 24px 0;
+  text-align: center;
+}

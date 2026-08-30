@@ -1103,4 +1103,5 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
 /** DSH client runner entry expected by every `dsh.client` bundle. */
 export { applyDshCollabClient as apply };
 export { DshCollabSettingsCard } from "./collab-settings-card.js";
+export { CollabActivity, projectCollabActivity } from "./collab-activity.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";

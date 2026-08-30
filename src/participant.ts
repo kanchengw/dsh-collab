@@ -4,7 +4,7 @@ import type { GatewayResponse, MessageTarget, RoomEvent } from "./types.js";
 import type { RoomSessionContext } from "./role.js";
 
 export interface ParticipantGatewayTransport {
-  request(input: { method: "GET" | "POST"; path: string; token: string; body?: unknown; capabilities?: readonly CollaborationCapability[] }): Promise<GatewayResponse>;
+  request(input: { method: "GET" | "POST"; path: string; token: string; body?: unknown; capabilities?: readonly CollaborationCapability[]; signal?: AbortSignal }): Promise<GatewayResponse>;
   connect?(input: { connectionId: string; roomId: string; token: string; afterSeq: number; onEvent: (event: RoomEvent) => void }): { close(reason?: string): void };
 }
 

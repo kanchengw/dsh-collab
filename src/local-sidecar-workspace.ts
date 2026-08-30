@@ -17,6 +17,7 @@ type NodeFetch = (url: string, init: {
   method: string;
   headers: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 }) => Promise<{ status: number; json(): Promise<unknown> }>;
 
 function remoteTransport(endpoint: string, fetcher: NodeFetch): ParticipantGatewayTransport {
@@ -31,6 +32,7 @@ function remoteTransport(endpoint: string, fetcher: NodeFetch): ParticipantGatew
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
       const envelope = await response.json() as { data?: unknown };
       return { status: response.status, body: envelope?.data };
