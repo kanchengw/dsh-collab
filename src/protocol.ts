@@ -239,7 +239,7 @@ function decodeCollaborationEvent(value: unknown): CollaborationEvent {
   if (type === "workspace-sharing.changed") {
     return { type, state: decodeWorkspaceSharingState(input.state) };
   }
-  if (type !== "changeset.review-assigned" && type !== "changeset.finding-created") {
+  if (!["changeset.review-assigned", "changeset.finding-created", "changeset.review-decided", "changeset.revision-linked"].includes(type)) {
     throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
   }
   const roomId = text(input.roomId, "collaboration event.roomId");
@@ -278,6 +278,39 @@ function decodeCollaborationEvent(value: unknown): CollaborationEvent {
         location: decodeReviewFindingLocation(finding.location),
         body: text(finding.body, "collaboration event.finding.body"),
         createdAt: nonNegativeInteger(finding.createdAt, "collaboration event.finding.createdAt"),
+      },
+    };
+  }
+  if (type === "changeset.review-decided") {
+    const decision = record(input.decision, "collaboration event.decision");
+    if (decision.outcome !== "approved" && decision.outcome !== "changes-requested") {
+      throw invalidInput("collaboration event.decision.outcome is invalid");
+    }
+    const note = decision.note === undefined ? undefined : text(decision.note, "collaboration event.decision.note");
+    return {
+      type,
+      roomId,
+      decision: {
+        decisionId: text(decision.decisionId, "collaboration event.decision.decisionId"),
+        changeSetId: text(decision.changeSetId, "collaboration event.decision.changeSetId"),
+        reviewerId: text(decision.reviewerId, "collaboration event.decision.reviewerId"),
+        outcome: decision.outcome,
+        ...(note ? { note } : {}),
+        createdAt: nonNegativeInteger(decision.createdAt, "collaboration event.decision.createdAt"),
+      },
+    };
+  }
+  if (type === "changeset.revision-linked") {
+    const revision = record(input.revision, "collaboration event.revision");
+    return {
+      type,
+      roomId,
+      revision: {
+        revisionLinkId: text(revision.revisionLinkId, "collaboration event.revision.revisionLinkId"),
+        changeSetId: text(revision.changeSetId, "collaboration event.revision.changeSetId"),
+        supersedesChangeSetId: text(revision.supersedesChangeSetId, "collaboration event.revision.supersedesChangeSetId"),
+        linkedBy: text(revision.linkedBy, "collaboration event.revision.linkedBy"),
+        createdAt: nonNegativeInteger(revision.createdAt, "collaboration event.revision.createdAt"),
       },
     };
   }

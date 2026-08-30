@@ -123,6 +123,27 @@ describe("dsh-collab wire protocol", () => {
         body: "Reconnect can race.",
         createdAt: 11,
       },
+    }, {
+      type: "changeset.review-decided" as const,
+      roomId: "room-1",
+      decision: {
+        decisionId: "d".repeat(64),
+        changeSetId: "a".repeat(64),
+        reviewerId: "member-reviewer",
+        outcome: "changes-requested" as const,
+        note: "Please add a guard.",
+        createdAt: 12,
+      },
+    }, {
+      type: "changeset.revision-linked" as const,
+      roomId: "room-1",
+      revision: {
+        revisionLinkId: "e".repeat(64),
+        changeSetId: "f".repeat(64),
+        supersedesChangeSetId: "a".repeat(64),
+        linkedBy: "member-author",
+        createdAt: 13,
+      },
     }];
 
     for (const event of events) {
@@ -202,6 +223,35 @@ describe("dsh-collab wire protocol", () => {
       type: "collaboration-event",
       event: { type: "future.event", state: {} },
     })).toThrow("event.type");
+    expect(() => decodeServerStreamFrame({
+      protocol: COLLAB_PROTOCOL,
+      type: "collaboration-event",
+      event: {
+        type: "changeset.review-decided",
+        roomId: "room-1",
+        decision: {
+          decisionId: "d".repeat(64),
+          changeSetId: "a".repeat(64),
+          reviewerId: "member-reviewer",
+          outcome: "applied",
+          createdAt: 12,
+        },
+      },
+    })).toThrow("outcome");
+    expect(() => decodeServerStreamFrame({
+      protocol: COLLAB_PROTOCOL,
+      type: "collaboration-event",
+      event: {
+        type: "changeset.revision-linked",
+        roomId: "room-1",
+        revision: {
+          revisionLinkId: "e".repeat(64),
+          changeSetId: "f".repeat(64),
+          linkedBy: "member-author",
+          createdAt: 13,
+        },
+      },
+    })).toThrow("supersedesChangeSetId");
   });
 
   it("rejects unknown versions, frame types, and negative cursors", () => {

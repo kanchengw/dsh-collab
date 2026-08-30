@@ -919,6 +919,34 @@ export class CollabGateway {
       await this.options.commitCriticalState?.();
       return { status: 200, body: result };
     }
+    if (request.method === "POST" && changeSetId && tail.length === 2 && tail[1] === "decisions" && reviews) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "outcome", "note"]);
+      if (body.outcome !== "approved" && body.outcome !== "changes-requested") throw invalidInput("outcome must be approved or changes-requested");
+      const result = await reviews.decide({
+        roomId,
+        principalId: claims.principalId,
+        changeSetId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+        outcome: body.outcome,
+        ...(body.note === undefined ? {} : { note: requiredText(body.note, "note") }),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 201, body: result };
+    }
+    if (request.method === "PUT" && changeSetId && tail.length === 2 && tail[1] === "revision" && reviews) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "supersedesChangeSetId"]);
+      const result = await reviews.linkRevision({
+        roomId,
+        principalId: claims.principalId,
+        changeSetId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+        supersedesChangeSetId: hashIdField(body.supersedesChangeSetId, "supersedesChangeSetId"),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: result };
+    }
     if (changeSetId && tail.length === 2 && tail[1] === "findings" && reviews) {
       if (request.method === "GET") {
         const after = query.get("after") ?? undefined;
@@ -947,7 +975,7 @@ export class CollabGateway {
         return { status: 201, body: result };
       }
     }
-    if (changeSetId && tail.length === 2 && ["review", "reviewer", "findings"].includes(tail[1]!) && !reviews) {
+    if (changeSetId && tail.length === 2 && ["review", "reviewer", "findings", "decisions", "revision"].includes(tail[1]!) && !reviews) {
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
     }
     if (request.method === "GET" && changeSetId && tail.length === 1) {

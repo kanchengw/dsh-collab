@@ -31,12 +31,37 @@ export interface ChangeSetReviewFinding {
   createdAt: number;
 }
 
+export type ChangeSetReviewStatus = "submitted" | "in-review" | "changes-requested" | "approved" | "superseded";
+
+export interface ChangeSetReviewDecision {
+  decisionId: string;
+  roomId: string;
+  changeSetId: string;
+  reviewerId: string;
+  outcome: "approved" | "changes-requested";
+  note?: string;
+  createdAt: number;
+}
+
+export interface ChangeSetRevisionLink {
+  revisionLinkId: string;
+  roomId: string;
+  changeSetId: string;
+  supersedesChangeSetId: string;
+  linkedBy: string;
+  createdAt: number;
+}
+
 export interface ChangeSetReview {
   version: 1;
   roomId: string;
   changeSetId: string;
   authorId: string;
+  status: ChangeSetReviewStatus;
   requiredReviewerId?: string;
+  decision?: ChangeSetReviewDecision;
+  supersedesChangeSetId?: string;
+  supersededByChangeSetId?: string;
   assignmentCount: number;
   findingCount: number;
 }
@@ -60,6 +85,8 @@ export interface ChangeSetReviewServiceSnapshot {
     authorId: string;
     assignments: ChangeSetReviewAssignment[];
     findings: ChangeSetReviewFinding[];
+    decisions?: ChangeSetReviewDecision[];
+    revision?: ChangeSetRevisionLink;
   }>;
 }
 
@@ -73,9 +100,10 @@ interface ChangeSetReviewServiceOptions {
   now?: () => number;
 }
 
-type ReviewRecord = ChangeSetReviewServiceSnapshot["reviews"][number];
+type SnapshotReviewRecord = ChangeSetReviewServiceSnapshot["reviews"][number];
+type ReviewRecord = Omit<SnapshotReviewRecord, "decisions"> & { decisions: ChangeSetReviewDecision[] };
 
-function hashId(kind: "assignment" | "finding", roomId: string, principalId: string, clientRequestId: string): string {
+function hashId(kind: "assignment" | "finding" | "decision" | "revision", roomId: string, principalId: string, clientRequestId: string): string {
   return createHash("sha256").update(`${roomId}\0${principalId}\0changeset-review-${kind}\0${clientRequestId}`).digest("hex");
 }
 
@@ -130,7 +158,7 @@ function validateRestoredLocation(value: ReviewFindingLocation): void {
   }
 }
 
-function validateRestoredRecord(value: ReviewRecord, rooms: RoomStore): ReviewRecord {
+function validateRestoredRecord(value: SnapshotReviewRecord, rooms: RoomStore): ReviewRecord {
   if (!value || value.version !== 1 || typeof value.roomId !== "string" || !HASH_PATTERN.test(value.changeSetId)
     || typeof value.authorId !== "string" || !Array.isArray(value.assignments) || !Array.isArray(value.findings)) {
     throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot is invalid");
@@ -164,13 +192,36 @@ function validateRestoredRecord(value: ReviewRecord, rooms: RoomStore): ReviewRe
     validateRestoredLocation(finding.location);
     findingIds.add(finding.findingId);
   }
-  return structuredClone(value);
+  const decisions = value.decisions ?? [];
+  if (!Array.isArray(decisions) || decisions.length > 1) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review decision snapshot is invalid");
+  for (const decision of decisions) {
+    if (!decision || !HASH_PATTERN.test(decision.decisionId) || decision.roomId !== value.roomId
+      || decision.changeSetId !== value.changeSetId || decision.reviewerId !== reviewerId
+      || (decision.outcome !== "approved" && decision.outcome !== "changes-requested")
+      || (decision.note !== undefined && (typeof decision.note !== "string" || decision.note.trim() === "" || decision.note.length > 4_000))
+      || !Number.isSafeInteger(decision.createdAt) || decision.createdAt < 0) {
+      throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review decision snapshot is invalid");
+    }
+    memberById(rooms, value.roomId, decision.reviewerId);
+  }
+  const revision = value.revision;
+  if (revision && (!HASH_PATTERN.test(revision.revisionLinkId) || revision.roomId !== value.roomId
+    || revision.changeSetId !== value.changeSetId || !HASH_PATTERN.test(revision.supersedesChangeSetId)
+    || revision.supersedesChangeSetId === value.changeSetId || revision.linkedBy !== value.authorId
+    || !Number.isSafeInteger(revision.createdAt) || revision.createdAt < 0)) {
+    throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review revision snapshot is invalid");
+  }
+  if (revision) memberById(rooms, value.roomId, revision.linkedBy);
+  return structuredClone({ ...value, decisions });
 }
 
 export class ChangeSetReviewService {
   private readonly records = new Map<string, ReviewRecord>();
   private readonly assignmentsById = new Map<string, ChangeSetReviewAssignment>();
   private readonly findingsById = new Map<string, ChangeSetReviewFinding>();
+  private readonly decisionsById = new Map<string, ChangeSetReviewDecision>();
+  private readonly revisionLinksById = new Map<string, ChangeSetRevisionLink>();
+  private readonly successorByChangeSetId = new Map<string, string>();
   private readonly listeners = new Set<(event: CollaborationEvent) => void>();
   private readonly now: () => number;
 
@@ -201,7 +252,36 @@ export class ChangeSetReviewService {
         if (service.findingsById.has(finding.findingId)) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot contains duplicate Findings");
         service.findingsById.set(finding.findingId, finding);
       }
+      for (const decision of record.decisions) {
+        if (service.decisionsById.has(decision.decisionId)) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot contains duplicate decisions");
+        service.decisionsById.set(decision.decisionId, decision);
+      }
+      if (record.revision) {
+        if (service.revisionLinksById.has(record.revision.revisionLinkId)) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot contains duplicate revision links");
+        service.revisionLinksById.set(record.revision.revisionLinkId, record.revision);
+      }
       service.records.set(recordKey, record);
+    }
+    for (const record of service.records.values()) {
+      if (!record.revision) continue;
+      const previous = service.records.get(key(record.roomId, record.revision.supersedesChangeSetId));
+      if (!previous || previous.authorId !== record.authorId || previous.decisions.at(-1)?.outcome !== "changes-requested"
+        || service.successorByChangeSetId.has(record.revision.supersedesChangeSetId)) {
+        throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review revision chain is invalid");
+      }
+      service.successorByChangeSetId.set(record.revision.supersedesChangeSetId, record.changeSetId);
+    }
+    const visited = new Set<string>();
+    for (const start of service.successorByChangeSetId.keys()) {
+      if (visited.has(start)) continue;
+      const path = new Set<string>();
+      let current: string | undefined = start;
+      while (current !== undefined && !visited.has(current)) {
+        if (path.has(current)) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review revision chain contains a cycle");
+        path.add(current);
+        current = service.successorByChangeSetId.get(current);
+      }
+      for (const changeSetId of path) visited.add(changeSetId);
     }
     return service;
   }
@@ -243,10 +323,11 @@ export class ChangeSetReviewService {
       if (!record) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review assignment has no review record");
       return { review: this.view(changeSet, record), assignment: structuredClone(existing) };
     }
+    const record = this.records.get(key(input.roomId, input.changeSetId));
+    if (record && record.decisions.length > 0) throw new CollabError("REQUEST_STATE", "ChangeSet already has a review decision");
     this.requireOpenRoom(input.roomId);
     const reviewer = this.options.rooms.listMembers(input.roomId).find((candidate) => candidate.memberId === reviewerId && candidate.status === "active");
     if (!reviewer) throw new CollabError("ACTION_FORBIDDEN", "required reviewer must be an active room member", { reviewerId });
-    const record = this.records.get(key(input.roomId, input.changeSetId));
     const previousReviewerId = record?.assignments.at(-1)?.reviewerId;
     const createdAt = this.timestamp();
     const assignment: ChangeSetReviewAssignment = {
@@ -334,6 +415,99 @@ export class ChangeSetReviewService {
     return { finding: structuredClone(candidate) };
   }
 
+  async decide(input: {
+    roomId: string;
+    principalId: string;
+    changeSetId: string;
+    clientRequestId: string;
+    outcome: ChangeSetReviewDecision["outcome"];
+    note?: string;
+  }): Promise<{ review: ChangeSetReview; decision: ChangeSetReviewDecision }> {
+    const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
+    const changeSet = await this.requireChangeSet(input.roomId, input.changeSetId);
+    const record = this.records.get(key(input.roomId, input.changeSetId));
+    if (!record) throw new CollabError("REQUEST_STATE", "ChangeSet requires a reviewer before a decision");
+    this.assertRecord(record, changeSet);
+    const requiredReviewerId = record.assignments.at(-1)?.reviewerId;
+    if (!requiredReviewerId || actor.memberId !== requiredReviewerId) {
+      throw new CollabError("ACTION_FORBIDDEN", "only the required reviewer can decide this ChangeSet");
+    }
+    if (input.outcome !== "approved" && input.outcome !== "changes-requested") throw invalidInput("review outcome is invalid");
+    const note = input.note === undefined ? undefined : requiredText(input.note, "note", 4_000);
+    const decisionId = hashId("decision", input.roomId, input.principalId, requiredText(input.clientRequestId, "clientRequestId", 128));
+    const existing = this.decisionsById.get(decisionId);
+    if (existing) {
+      if (existing.roomId !== input.roomId || existing.changeSetId !== input.changeSetId || existing.reviewerId !== actor.memberId
+        || existing.outcome !== input.outcome || existing.note !== note) {
+        throw new CollabError("REQUEST_CONFLICT", "ChangeSet decision request conflicts with an existing request");
+      }
+      return { review: this.view(changeSet, record), decision: structuredClone(existing) };
+    }
+    if (record.decisions.length > 0) throw new CollabError("REQUEST_STATE", "ChangeSet already has a review decision");
+    this.requireOpenRoom(input.roomId);
+    const decision: ChangeSetReviewDecision = {
+      decisionId,
+      roomId: input.roomId,
+      changeSetId: input.changeSetId,
+      reviewerId: actor.memberId,
+      outcome: input.outcome,
+      ...(note ? { note } : {}),
+      createdAt: this.timestamp(),
+    };
+    record.decisions.push(decision);
+    this.decisionsById.set(decisionId, decision);
+    this.emit({ type: "changeset.review-decided", roomId: input.roomId, decision: structuredClone(decision) });
+    return { review: this.view(changeSet, record), decision: structuredClone(decision) };
+  }
+
+  async linkRevision(input: {
+    roomId: string;
+    principalId: string;
+    changeSetId: string;
+    supersedesChangeSetId: string;
+    clientRequestId: string;
+  }): Promise<{ review: ChangeSetReview; revision: ChangeSetRevisionLink }> {
+    const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
+    const [changeSet, previousChangeSet] = await Promise.all([
+      this.requireChangeSet(input.roomId, input.changeSetId),
+      this.requireChangeSet(input.roomId, input.supersedesChangeSetId),
+    ]);
+    if (actor.memberId !== changeSet.draft.authorId) throw new CollabError("ACTION_FORBIDDEN", "only the revision author can link its predecessor");
+    if (changeSet.draft.authorId !== previousChangeSet.draft.authorId) throw new CollabError("ACTION_FORBIDDEN", "ChangeSet revision must keep the same author");
+    const revisionLinkId = hashId("revision", input.roomId, input.principalId, requiredText(input.clientRequestId, "clientRequestId", 128));
+    const existing = this.revisionLinksById.get(revisionLinkId);
+    if (existing) {
+      if (existing.roomId !== input.roomId || existing.changeSetId !== input.changeSetId
+        || existing.supersedesChangeSetId !== input.supersedesChangeSetId || existing.linkedBy !== actor.memberId) {
+        throw new CollabError("REQUEST_CONFLICT", "ChangeSet revision request conflicts with an existing request");
+      }
+      const record = this.records.get(key(input.roomId, input.changeSetId));
+      if (!record) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet revision has no review record");
+      return { review: this.view(changeSet, record), revision: structuredClone(existing) };
+    }
+    const previous = this.records.get(key(input.roomId, input.supersedesChangeSetId));
+    if (!previous || previous.decisions.at(-1)?.outcome !== "changes-requested") {
+      throw new CollabError("REQUEST_STATE", "the previous ChangeSet must have changes requested");
+    }
+    if (this.successorByChangeSetId.has(input.supersedesChangeSetId)) throw new CollabError("REQUEST_STATE", "the previous ChangeSet already has a revision");
+    const record = this.records.get(key(input.roomId, input.changeSetId)) ?? this.createRecord(changeSet);
+    if (record.revision || record.decisions.length > 0) throw new CollabError("REQUEST_STATE", "the new ChangeSet already has review history");
+    this.requireOpenRoom(input.roomId);
+    const revision: ChangeSetRevisionLink = {
+      revisionLinkId,
+      roomId: input.roomId,
+      changeSetId: input.changeSetId,
+      supersedesChangeSetId: input.supersedesChangeSetId,
+      linkedBy: actor.memberId,
+      createdAt: this.timestamp(),
+    };
+    record.revision = revision;
+    this.revisionLinksById.set(revisionLinkId, revision);
+    this.successorByChangeSetId.set(input.supersedesChangeSetId, input.changeSetId);
+    this.emit({ type: "changeset.revision-linked", roomId: input.roomId, revision: structuredClone(revision) });
+    return { review: this.view(changeSet, record), revision: structuredClone(revision) };
+  }
+
   async listFindings(input: {
     roomId: string;
     principalId: string;
@@ -384,6 +558,7 @@ export class ChangeSetReviewService {
       authorId: changeSet.draft.authorId,
       assignments: [],
       findings: [],
+      decisions: [],
     };
     this.records.set(key(record.roomId, record.changeSetId), record);
     return record;
@@ -391,12 +566,21 @@ export class ChangeSetReviewService {
 
   private view(changeSet: StagedChangeSet, record?: ReviewRecord): ChangeSetReview {
     const requiredReviewerId = record?.assignments.at(-1)?.reviewerId;
+    const decision = record?.decisions.at(-1);
+    const supersededByChangeSetId = this.successorByChangeSetId.get(changeSet.changeSetId);
+    const status: ChangeSetReviewStatus = supersededByChangeSetId
+      ? "superseded"
+      : decision?.outcome ?? (requiredReviewerId ? "in-review" : "submitted");
     return {
       version: 1,
       roomId: changeSet.draft.roomId,
       changeSetId: changeSet.changeSetId,
       authorId: changeSet.draft.authorId,
+      status,
       ...(requiredReviewerId ? { requiredReviewerId } : {}),
+      ...(decision ? { decision: structuredClone(decision) } : {}),
+      ...(record?.revision ? { supersedesChangeSetId: record.revision.supersedesChangeSetId } : {}),
+      ...(supersededByChangeSetId ? { supersededByChangeSetId } : {}),
       assignmentCount: record?.assignments.length ?? 0,
       findingCount: record?.findings.length ?? 0,
     };
@@ -446,7 +630,8 @@ export class ChangeSetReviewService {
   }
 
   private lastActivity(record: ReviewRecord): number {
-    return Math.max(record.assignments.at(-1)?.createdAt ?? -1, record.findings.at(-1)?.createdAt ?? -1);
+    return Math.max(record.assignments.at(-1)?.createdAt ?? -1, record.findings.at(-1)?.createdAt ?? -1,
+      record.decisions.at(-1)?.createdAt ?? -1, record.revision?.createdAt ?? -1);
   }
 
   private emit(event: CollaborationEvent): void {

@@ -228,6 +228,29 @@ export type CollaborationEvent =
         body: string;
         createdAt: number;
       };
+    }
+  | {
+      type: "changeset.review-decided";
+      roomId: string;
+      decision: {
+        decisionId: string;
+        changeSetId: string;
+        reviewerId: string;
+        outcome: "approved" | "changes-requested";
+        note?: string;
+        createdAt: number;
+      };
+    }
+  | {
+      type: "changeset.revision-linked";
+      roomId: string;
+      revision: {
+        revisionLinkId: string;
+        changeSetId: string;
+        supersedesChangeSetId: string;
+        linkedBy: string;
+        createdAt: number;
+      };
     };
 
 export interface CollaborationStreamFrame {

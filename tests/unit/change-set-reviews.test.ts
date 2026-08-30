@@ -14,14 +14,14 @@ import { RoomStore } from "../../src/room.js";
 import { WorkspaceService } from "../../src/workspace-service.js";
 import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
 
-function stagedChangeSet(roomId = "room-1"): StagedChangeSet {
+function stagedChangeSet(roomId = "room-1", changeSetId = "a".repeat(64)): StagedChangeSet {
   return {
     version: 1,
-    changeSetId: "a".repeat(64),
+    changeSetId,
     submittedAt: 100,
     draft: {
       version: 1,
-      draftId: "a".repeat(64),
+      draftId: changeSetId,
       roomId,
       authorId: "member-author",
       baseWorkspaceVersionId: "version-1",
@@ -39,7 +39,7 @@ function stagedChangeSet(roomId = "room-1"): StagedChangeSet {
       }],
       artifact: {
         kind: "changeset-draft.v1",
-        artifactId: "a".repeat(64),
+        artifactId: changeSetId,
         manifestHash: "d".repeat(64),
         patchHash: "e".repeat(64),
         patchBytes: 48,
@@ -71,10 +71,13 @@ function setup() {
     hostDisplayName: "Other Host",
     now: 5,
   });
-  const changeSet = stagedChangeSet();
+  const changeSetsById = new Map([
+    ["a".repeat(64), stagedChangeSet()],
+    ["f".repeat(64), stagedChangeSet("room-1", "f".repeat(64))],
+  ]);
   const changeSets = {
-    get: async (roomId: string, changeSetId: string) => roomId === changeSet.draft.roomId && changeSetId === changeSet.changeSetId
-      ? structuredClone(changeSet)
+    get: async (roomId: string, changeSetId: string) => changeSetsById.get(changeSetId)?.draft.roomId === roomId
+      ? structuredClone(changeSetsById.get(changeSetId))
       : undefined,
   };
   const ledger = new EventLedger();
@@ -261,6 +264,149 @@ describe("ChangeSetReviewService", () => {
     })).rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
   });
 
+  it("lets only the required reviewer decide once without treating approval as applied", async () => {
+    const { service } = setup();
+    const events: unknown[] = [];
+    service.subscribe((event) => events.push(event));
+    await service.assignReviewer({
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer",
+      clientRequestId: "assign",
+    });
+
+    await expect(service.decide({
+      roomId: "room-1",
+      principalId: "principal-other",
+      changeSetId: "a".repeat(64),
+      clientRequestId: "other-decision",
+      outcome: "approved",
+    })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+
+    const input = {
+      roomId: "room-1",
+      principalId: "principal-reviewer",
+      changeSetId: "a".repeat(64),
+      clientRequestId: "approve-1",
+      outcome: "approved" as const,
+      note: "Ready for Owner preflight.",
+    };
+    const approved = await service.decide(input);
+    expect(await service.decide(input)).toEqual(approved);
+    expect(approved.review.status).toBe("approved");
+    expect(approved.review.status).not.toBe("applied");
+    expect(events.filter((event) => (event as { type?: string }).type === "changeset.review-decided")).toHaveLength(1);
+    await expect(service.decide({ ...input, clientRequestId: "approve-2" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    await expect(service.assignReviewer({
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "a".repeat(64),
+      reviewerId: "member-other",
+      clientRequestId: "reassign-after-decision",
+    })).rejects.toMatchObject({ code: "REQUEST_STATE" });
+  });
+
+  it("links a same-author revision after changes are requested without rewriting old Findings", async () => {
+    const { changeSets, rooms, service } = setup();
+    await service.assignReviewer({
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer",
+      clientRequestId: "assign",
+    });
+    const oldFinding = await service.createFinding({
+      roomId: "room-1",
+      principalId: "principal-reviewer",
+      changeSetId: "a".repeat(64),
+      clientRequestId: "finding",
+      severity: "high",
+      location: { kind: "file", path: "src/reconnect.ts" },
+      body: "Add an ordering guard.",
+    });
+    await service.decide({
+      roomId: "room-1",
+      principalId: "principal-reviewer",
+      changeSetId: "a".repeat(64),
+      clientRequestId: "request-changes",
+      outcome: "changes-requested",
+    });
+
+    const linked = await service.linkRevision({
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "f".repeat(64),
+      supersedesChangeSetId: "a".repeat(64),
+      clientRequestId: "revision-1",
+    });
+    expect(linked.review.supersedesChangeSetId).toBe("a".repeat(64));
+    expect((await service.getReview({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) }))).toMatchObject({
+      status: "superseded",
+      supersededByChangeSetId: "f".repeat(64),
+    });
+    expect((await service.listFindings({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) })).findings)
+      .toEqual([oldFinding.finding]);
+
+    await expect(service.linkRevision({
+      roomId: "room-1",
+      principalId: "principal-other",
+      changeSetId: "f".repeat(64),
+      supersedesChangeSetId: "a".repeat(64),
+      clientRequestId: "foreign-link",
+    })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, service.snapshot());
+    await expect(restored.getReview({
+      roomId: "room-1",
+      principalId: "principal-host",
+      changeSetId: "a".repeat(64),
+    })).resolves.toMatchObject({ status: "superseded", supersededByChangeSetId: "f".repeat(64) });
+    await expect(restored.getReview({
+      roomId: "room-1",
+      principalId: "principal-host",
+      changeSetId: "f".repeat(64),
+    })).resolves.toMatchObject({ status: "submitted", supersedesChangeSetId: "a".repeat(64) });
+
+    await service.assignReviewer({
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "f".repeat(64),
+      reviewerId: "member-reviewer",
+      clientRequestId: "assign-revision",
+    });
+    await service.decide({
+      roomId: "room-1",
+      principalId: "principal-reviewer",
+      changeSetId: "f".repeat(64),
+      clientRequestId: "request-revision-changes",
+      outcome: "changes-requested",
+    });
+
+    const cyclic = service.snapshot();
+    cyclic.reviews.find((entry) => entry.changeSetId === "a".repeat(64))!.revision = {
+      revisionLinkId: "9".repeat(64),
+      roomId: "room-1",
+      changeSetId: "a".repeat(64),
+      supersedesChangeSetId: "f".repeat(64),
+      linkedBy: "member-author",
+      createdAt: 2000,
+    };
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, cyclic))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    const forgedDecision = service.snapshot();
+    forgedDecision.reviews.find((entry) => entry.changeSetId === "a".repeat(64))!.decisions![0]!.reviewerId = "member-other";
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, forgedDecision))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    const forgedRevision = service.snapshot();
+    forgedRevision.reviews.find((entry) => entry.changeSetId === "f".repeat(64))!.revision!.linkedBy = "member-other";
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, forgedRevision))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+  });
+
   it("exposes assignment and Finding routes through the authenticated ChangeSet capability", async () => {
     const { changeSets, ledger, rooms, service } = setup();
     const activeRooms = new ActiveRoomRegistry();
@@ -293,6 +439,7 @@ describe("ChangeSetReviewService", () => {
     });
     const author = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "principal-author" } });
     const other = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "principal-other" } });
+    const reviewer = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "principal-reviewer" } });
     const headers = (response: typeof author) => ({
       authorization: `Bearer ${(response.body as { roomToken: string }).roomToken}`,
       [COLLAB_CAPABILITY_HEADER]: CHANGE_SET_CAPABILITY,
@@ -330,10 +477,30 @@ describe("ChangeSetReviewService", () => {
       path: `/v1/rooms/room-1/change-sets/${"a".repeat(64)}/findings`,
       headers: headers(author),
     })).resolves.toMatchObject({ status: 200, body: { findings: [{ body: "Please cover the reconnect race." }] } });
-    expect(commits).toBe(3);
+    await expect(gateway.handle({
+      method: "POST",
+      path: `/v1/rooms/room-1/change-sets/${"a".repeat(64)}/decisions`,
+      headers: headers(other),
+      body: { clientRequestId: "bad-decision", outcome: "approved" },
+    })).resolves.toMatchObject({ status: 403 });
+    await expect(gateway.handle({
+      method: "POST",
+      path: `/v1/rooms/room-1/change-sets/${"a".repeat(64)}/decisions`,
+      headers: headers(reviewer),
+      body: { clientRequestId: "request-changes", outcome: "changes-requested", note: "Add an ordering guard." },
+    })).resolves.toMatchObject({ status: 201, body: { review: { status: "changes-requested" } } });
+    await expect(gateway.handle({
+      method: "PUT",
+      path: `/v1/rooms/room-1/change-sets/${"f".repeat(64)}/revision`,
+      headers: headers(author),
+      body: { clientRequestId: "revision-1", supersedesChangeSetId: "a".repeat(64) },
+    })).resolves.toMatchObject({ status: 200, body: { review: { supersedesChangeSetId: "a".repeat(64) } } });
+    expect(commits).toBe(5);
     expect(collaborationEvents.map((event) => (event as { type: string }).type)).toEqual([
       "changeset.review-assigned",
       "changeset.finding-created",
+      "changeset.review-decided",
+      "changeset.revision-linked",
     ]);
     expect(ledger.readAfter("room-1", 0, 10)).toEqual([]);
 

@@ -184,6 +184,7 @@
 .error button:focus-visible,
 .changeSets button:focus-visible,
 .form input:focus-visible,
+.form select:focus-visible,
 .form textarea:focus-visible,
 .diff summary:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
@@ -224,6 +225,7 @@
 }
 
 .form input,
+.form select,
 .form textarea {
   box-sizing: border-box;
   width: 100%;
@@ -236,6 +238,11 @@
 }
 
 .form input {
+  min-height: 32px;
+  padding: 5px 8px;
+}
+
+.form select {
   min-height: 32px;
   padding: 5px 8px;
 }

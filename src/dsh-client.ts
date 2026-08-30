@@ -1106,4 +1106,6 @@ export { DshCollabSettingsCard } from "./collab-settings-card.js";
 export { CollabActivity, projectCollabActivity } from "./collab-activity.js";
 export { CollabChanges, validateCollabChangesSnapshot } from "./collab-changes.js";
 export type { CollabChangesPort, CollabChangesSnapshot, CollabChangesWorkspaceSnapshot } from "./collab-changes.js";
+export { CollabReviews, validateCollabReviewsSnapshot } from "./collab-reviews.js";
+export type { CollabReviewItem, CollabReviewMember, CollabReviewsPort, CollabReviewsSnapshot } from "./collab-reviews.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";
