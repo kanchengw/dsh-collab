@@ -9,6 +9,7 @@ export * from "./room-workspace.js";
 export * from "./dsh-room-workspace.js";
 export * from "./room-workspace-sync.js";
 export * from "./change-sets.js";
+export * from "./change-set-staging.js";
 export * from "./dsh-collab-tools.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";

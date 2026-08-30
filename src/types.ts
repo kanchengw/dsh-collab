@@ -7,6 +7,7 @@ export type CollabAction =
   | "humanMessage"
   | "workUpdate"
   | "workspaceVersion"
+  | "changeSet"
   | "agentRequest"
   | "steer"
   | "cancel"

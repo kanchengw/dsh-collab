@@ -44,11 +44,12 @@ reverse proxy, public Relay, TLS certificate, or NAT traversal.
 
 ## Additive capability negotiation
 
-The collaboration mechanisms extension is gated by the exact capability token
-`sidecar-review.v1`. A client declares it on HTTP requests with:
+Post-v1 collaboration mechanisms are gated by additive capability tokens. The
+current tokens are `sidecar-review.v1`, `workspace-version.v1`, and
+`change-set.v1`. A client declares the capabilities it uses on HTTP requests:
 
 ```text
-X-DSH-Collab-Capabilities: sidecar-review.v1
+X-DSH-Collab-Capabilities: sidecar-review.v1,workspace-version.v1,change-set.v1
 ```
 
 and on the existing WebSocket handshake with the repeatable stream feature
@@ -66,10 +67,11 @@ acknowledges accepted stream capabilities in the optional `capabilities` array
 of the initial `connected` frame. Existing clients may ignore that additive
 field.
 
-All Workspace, Review and published SideTask HTTP routes added after the base
-v1 contract require `sidecar-review.v1`. A capability-gated route behaves as
-not found (`404`) when that capability is absent, so an older client retains
-the original v1 surface instead of discovering a partial extension.
+Workspace Snapshot, Review and published SideTask routes require
+`sidecar-review.v1`; Workspace Version routes require `workspace-version.v1`;
+ChangeSet routes require `change-set.v1`. A capability-gated route behaves as
+not found (`404`) when its capability is absent, so an older client retains the
+original v1 surface instead of discovering a partial extension.
 
 ## HTTP requests
 
@@ -130,6 +132,11 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/workspace-snapshots` | Active member captures the current immutable Host workspace; requires `sidecar-review.v1` and enabled Workspace Sharing |
 | `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId` | Active member reads one snapshot manifest under the same sharing gate |
 | `GET` | `/collab/v1/rooms/:roomId/workspace-snapshots/:snapshotId/files/:fileIndex?offset=&limit=` | Active member reads an authenticated, bounded content chunk; `limit` is at most 262144 bytes |
+| `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads` | Host, lead or Participant creates or resumes an idempotent ChangeSet upload; requires `change-set.v1` and enabled Workspace Sharing |
+| `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/chunks` | Uploads the next authenticated patch or result chunk; each chunk is at most 262144 bytes |
+| `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/finalize` | Revalidates the complete artifact and atomically publishes it to the Owner Staging Area |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId` | Active member reads one immutable staged ChangeSet manifest under the sharing gate |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/patch?offset=&limit=` | Active member reads the exact staged diff in authenticated bounded chunks |
 | `GET` | `/collab/v1/rooms/:roomId/review-points?after=&limit=` | Active member reads persisted Review Point projections; defaults to 50 and caps at 100 |
 | `POST` | `/collab/v1/rooms/:roomId/review-points` | Host captures the current workspace and creates one immutable Review Point |
 | `POST` | `/collab/v1/rooms/:roomId/review-points/refresh` | Host captures a new comparison snapshot used for freshness and workspace progress |
@@ -142,6 +149,36 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member publishes selected requester-local Review findings as one group |
 | `GET` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member reads persisted publication groups newest-first |
 | `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications/:publicationId/state` | Host accepts one publication group and idempotently creates its Mainline Integration Task |
+
+ChangeSet upload creation accepts `{ clientRequestId, draft }`.
+`clientRequestId` is namespaced by the authenticated room member. An exact
+retry resumes the same upload after a lost response or process restart; the
+same key with another valid content identity returns `REQUEST_CONFLICT`.
+The draft author must be that authenticated member, its base Workspace Version
+must already belong to the room, and its serialized manifest is capped at
+768 KiB so the creation request remains under the Gateway's 1 MiB body limit.
+The response includes the contiguous `patchOffset` and one `resultOffsets`
+entry per manifest file, so a newer client with a different chunk size resumes
+from server-confirmed bytes instead of replaying the old segmentation.
+
+Chunk creation accepts exactly
+`{ target, fileIndex?, offset, byteLength, chunkHash, data }`, where `target` is
+`patch` or `result`, `data` is canonical base64, and `chunkHash` is SHA-256 of
+the decoded bytes. Chunks are sequential per artifact, exact chunk retries are
+idempotent, and one upload is capped at 4096 chunks. Partial upload directories
+are temporary and are never returned by ChangeSet read routes.
+
+Finalize reconstructs every declared result blob, verifies path/hash/size and
+the base Workspace Version, then regenerates the deterministic unified diff
+from Owner-held base bytes plus the uploaded results. The uploaded patch,
+per-file additions/deletions and manifest must exactly match that regenerated
+artifact. Only then is one directory renamed into the Owner's local Staging
+Area. The default location is `DSH_HOME/collab/v1/change-sets`; it is separate
+from the Owner canonical workspace, and U16 exposes no canonical-workspace
+write or apply operation. Both Owner and Participant therefore read the same
+stored patch. ChangeSet bounds remain 1000 changed files, 2 MiB per text side,
+8 MiB aggregate base/result text and 16 MiB patch; binary/non-UTF-8 content is
+rejected.
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;

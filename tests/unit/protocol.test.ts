@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   COLLAB_CAPABILITY_HEADER,
   COLLAB_PROTOCOL,
+  CHANGE_SET_CAPABILITY,
   SIDECAR_REVIEW_CAPABILITY,
   WORKSPACE_VERSION_CAPABILITY,
   decodeCollaborationCapabilities,
@@ -126,9 +127,10 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeCollaborationCapabilities([
       SIDECAR_REVIEW_CAPABILITY,
       WORKSPACE_VERSION_CAPABILITY,
+      CHANGE_SET_CAPABILITY,
       "future-capability.v9",
       SIDECAR_REVIEW_CAPABILITY,
-    ])).toEqual([SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY]);
+    ])).toEqual([SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, CHANGE_SET_CAPABILITY]);
     expect(decodeCollaborationCapabilities(`future.v9, ${SIDECAR_REVIEW_CAPABILITY}`)).toEqual([SIDECAR_REVIEW_CAPABILITY]);
     expect(decodeCollaborationCapabilities(undefined)).toEqual([]);
     expect(() => decodeCollaborationCapabilities([SIDECAR_REVIEW_CAPABILITY, 42])).toThrow("capability");

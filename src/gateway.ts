@@ -10,7 +10,8 @@ import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
-import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
+import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
+import type { ChangeSetStagingService } from "./change-set-staging.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { WorkUpdateService } from "./work-updates.js";
 import type { WorkspaceVersionService } from "./workspace-versions.js";
@@ -55,6 +56,7 @@ interface GatewayOptions {
   activeRooms?: ActiveRoomRegistry;
   workspace?: WorkspaceService;
   workspaceVersions?: WorkspaceVersionService;
+  changeSets?: ChangeSetStagingService;
   workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
@@ -216,7 +218,8 @@ function authPrincipal(request: GatewayRequest): string {
 function statusFor(error: CollabError): number {
   if (error.code === "AUTH_REQUIRED" || error.code === "AUTH_INVALID") return 401;
   if (error.code === "ACTION_FORBIDDEN" || error.code === "TOKEN_SCOPE" || error.code === "MEMBER_INACTIVE" || error.code === "MEMBER_NOT_FOUND") return 403;
-  if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND" || error.code === "SNAPSHOT_NOT_FOUND") return 404;
+  if (error.code === "ROOM_NOT_FOUND" || error.code === "INVITE_NOT_FOUND" || error.code === "SNAPSHOT_NOT_FOUND"
+    || error.code === "CHANGE_SET_NOT_FOUND" || error.code === "UPLOAD_NOT_FOUND") return 404;
   if (error.code === "ROOM_INACTIVE" || error.code === "INVITE_EXISTS" || error.code === "EVENT_CONFLICT" || error.code === "REQUEST_CONFLICT" || error.code === "INVITE_USED" || error.code === "WORKSPACE_SHARING_DISABLED") return 409;
   if (error.code === "RESOURCE_LIMIT") return 429;
   return 422;
@@ -281,14 +284,17 @@ export class CollabGateway {
       const resource = segments[3];
       if (segments.length === 4 && request.method === "POST" && resource === "host") return await this.shareHostRoom(roomId, request);
       if (segments.length === 4 && request.method === "DELETE" && resource === "host") return this.stopSharing(roomId, request);
-      if (resource === "workspace-sharing" || resource === "workspace-snapshots" || resource === "workspace-versions" || resource === "review-points") {
+      if (resource === "workspace-sharing" || resource === "workspace-snapshots" || resource === "workspace-versions" || resource === "change-sets" || resource === "review-points") {
         const capabilities = decodeCollaborationCapabilities(getHeader(request, COLLAB_CAPABILITY_HEADER));
         const capabilityAvailable = resource === "workspace-versions"
           ? capabilities.includes(WORKSPACE_VERSION_CAPABILITY)
-          : capabilities.includes(SIDECAR_REVIEW_CAPABILITY);
+          : resource === "change-sets"
+            ? capabilities.includes(CHANGE_SET_CAPABILITY)
+            : capabilities.includes(SIDECAR_REVIEW_CAPABILITY);
         if (!this.options.workspace || !capabilityAvailable
           || ((resource === "workspace-snapshots" || resource === "review-points") && !this.options.workspace.snapshotsAvailable)
           || (resource === "workspace-versions" && (!this.options.workspace.snapshotsAvailable || !this.options.workspaceVersions))
+          || (resource === "change-sets" && !this.options.changeSets)
           || (resource === "review-points" && !this.options.reviewPoints)) {
           return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
         }
@@ -298,6 +304,7 @@ export class CollabGateway {
       if (segments.length === 4 && resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
       if (resource === "workspace-snapshots") return await this.workspaceSnapshots(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "workspace-versions") return await this.workspaceVersions(roomId, segments.slice(4), url.searchParams, request);
+      if (resource === "change-sets") return await this.changeSets(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "review-points") return await this.reviewPoints(roomId, segments.slice(4), url.searchParams, request);
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
@@ -833,6 +840,69 @@ export class CollabGateway {
         chunkHash: createHash("sha256").update(bytes).digest("hex"),
         data: Buffer.from(bytes).toString("base64"),
         eof: offset + bytes.byteLength === file.size,
+      } } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+  }
+
+  private async changeSets(roomId: string, tail: string[], query: URLSearchParams, request: GatewayRequest): Promise<GatewayResponse> {
+    const claims = this.claims(roomId, request);
+    this.options.workspace!.requireWorkspaceRead({ roomId, principalId: claims.principalId });
+    const changeSets = this.options.changeSets!;
+    if (request.method === "POST" && tail.length === 1 && tail[0] === "uploads") {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "draft"]);
+      const upload = await changeSets.createUpload({
+        roomId,
+        principalId: claims.principalId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+        draft: body.draft,
+      });
+      return { status: 201, body: { upload } };
+    }
+    const uploadId = tail[0] === "uploads" && tail.length >= 2 ? hashIdField(tail[1], "uploadId") : undefined;
+    if (request.method === "POST" && uploadId && tail.length === 3 && tail[2] === "chunks") {
+      const body = objectBody(request.body);
+      allowedFields(body, ["target", "fileIndex", "offset", "byteLength", "chunkHash", "data"]);
+      if (body.target !== "patch" && body.target !== "result") throw invalidInput("target must be patch or result", { field: "target" });
+      const offset = numberField(body, "offset");
+      const byteLength = numberField(body, "byteLength");
+      const chunkHash = hashIdField(body.chunkHash, "chunkHash");
+      if (typeof body.data !== "string" || body.data.length % 4 !== 0
+        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.data)) {
+        throw invalidInput("data must be canonical base64", { field: "data" });
+      }
+      const bytes = Buffer.from(body.data, "base64");
+      if (bytes.byteLength !== byteLength || createHash("sha256").update(bytes).digest("hex") !== chunkHash) {
+        throw invalidInput("ChangeSet chunk integrity check failed");
+      }
+      const fileIndex = body.fileIndex === undefined ? undefined : numberField(body, "fileIndex");
+      await changeSets.writeChunk({ roomId, principalId: claims.principalId, uploadId, target: body.target, ...(fileIndex === undefined ? {} : { fileIndex }), offset, bytes });
+      return { status: 200, body: { received: { target: body.target, ...(fileIndex === undefined ? {} : { fileIndex }), offset, byteLength } } };
+    }
+    if (request.method === "POST" && uploadId && tail.length === 3 && tail[2] === "finalize") {
+      const body = objectBody(request.body);
+      allowedFields(body, []);
+      const changeSet = await changeSets.finalize({ roomId, principalId: claims.principalId, uploadId });
+      return { status: 201, body: { changeSet } };
+    }
+    const changeSetId = tail.length >= 1 && tail[0] !== "uploads" ? hashIdField(tail[0], "changeSetId") : undefined;
+    if (request.method === "GET" && changeSetId && tail.length === 1) {
+      const changeSet = await changeSets.get(roomId, changeSetId);
+      if (!changeSet) throw new CollabError("CHANGE_SET_NOT_FOUND", "ChangeSet does not exist");
+      return { status: 200, body: { changeSet } };
+    }
+    if (request.method === "GET" && changeSetId && tail.length === 2 && tail[1] === "patch") {
+      const offset = this.parseQueryInteger(query.get("offset"), "offset");
+      const limit = this.parseQueryInteger(query.get("limit"), "limit");
+      const { changeSet, bytes } = await changeSets.readPatchChunk(roomId, changeSetId, offset, limit);
+      return { status: 200, body: { chunk: {
+        changeSetId,
+        offset,
+        byteLength: bytes.byteLength,
+        chunkHash: createHash("sha256").update(bytes).digest("hex"),
+        data: Buffer.from(bytes).toString("base64"),
+        eof: offset + bytes.byteLength === changeSet.draft.artifact.patchBytes,
       } } };
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };

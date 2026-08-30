@@ -20,6 +20,10 @@ export function resolveDefaultCollabRoomWorkspaceDir(env: Record<string, string 
   return join(resolveDshHome(undefined, env), "collab", "v1", "rooms");
 }
 
+export function resolveDefaultCollabChangeSetDir(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDshHome(undefined, env), "collab", "v1", "change-sets");
+}
+
 export function resolveDefaultCollabSideTaskFile(env: Record<string, string | undefined> = process.env): string {
   return join(resolveDshHome(undefined, env), "collab", "v1", "side-tasks.json");
 }

@@ -17,6 +17,8 @@ import { ReviewPointService, type ReviewPointServiceSnapshot } from "./review-po
 import { MAINLINE_REQUEST_PREFIX, ReviewService, type ReviewServiceSnapshot } from "./reviews.js";
 import { WorkUpdateService } from "./work-updates.js";
 import { WorkspaceVersionService } from "./workspace-versions.js";
+import { ChangeSetStagingService } from "./change-set-staging.js";
+import type { DshRepositorySubprocess } from "./repository-inspector.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -42,6 +44,8 @@ export interface DshCollabHostRuntimeOptions {
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
   approvalAnswerer?: object;
   workspaceSnapshots?: WorkspaceSnapshotProvider;
+  changeSetRoot?: string;
+  changeSetSubprocess?: DshRepositorySubprocess;
   commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
@@ -64,6 +68,7 @@ export interface DshCollabHostRuntime {
   readonly workspace: WorkspaceService;
   readonly workUpdates: WorkUpdateService;
   readonly workspaceVersions?: WorkspaceVersionService;
+  readonly changeSets?: ChangeSetStagingService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
@@ -111,6 +116,19 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
         },
       })
     : undefined;
+  const changeSets = workspaceVersions && options.changeSetRoot && options.changeSetSubprocess
+    ? new ChangeSetStagingService({
+        root: options.changeSetRoot,
+        rooms,
+        workspaceVersions,
+        artifacts: {
+          load: (snapshotId) => options.workspaceSnapshots!.load(snapshotId),
+          readFile: (snapshotId, path) => options.workspaceSnapshots!.readFile!(snapshotId, path),
+        },
+        subprocess: options.changeSetSubprocess,
+        now: options.now,
+      })
+    : undefined;
   const reviewPointOptions = {
     rooms,
     ledger,
@@ -149,6 +167,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     workspace,
     workUpdates,
     ...(workspaceVersions ? { workspaceVersions } : {}),
+    ...(changeSets ? { changeSets } : {}),
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
@@ -187,7 +206,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), reviewPoints, reviews,
     snapshot: () => ({ ...collabRuntime.snapshot(), resumes: resumes.snapshot(), reviewPoints: reviewPoints.snapshot(), reviews: reviews.snapshot() }),
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();

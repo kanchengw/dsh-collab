@@ -81,7 +81,7 @@ async function roomWorkspace(source: Record<string, Uint8Array | string>): Promi
 
 function service(input: {
   artifacts: WorkspaceSnapshotStore;
-  limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalTextBytes?: number };
+  limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalTextBytes?: number; maxManifestBytes?: number };
   now?: () => number;
 }): ChangeSetDraftService {
   return new ChangeSetDraftService({
@@ -261,6 +261,9 @@ describe("ChangeSet draft and immutable diff", () => {
     await expect(service({ ...limited, limits: { maxTotalTextBytes: 6 } }).create({
       workspace: limited.workspace, authorId: "participant-1", title: "Total", summary: "Total too large",
     })).rejects.toThrow(/aggregate text limit/i);
+    await expect(service({ ...limited, limits: { maxManifestBytes: 300 } }).create({
+      workspace: limited.workspace, authorId: "participant-1", title: "Manifest", summary: "Manifest too large",
+    })).rejects.toThrow(/manifest.*upload limit/i);
   });
 
   it("fails closed when a persisted draft manifest or result blob is modified", async () => {

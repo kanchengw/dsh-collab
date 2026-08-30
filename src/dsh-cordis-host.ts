@@ -1,7 +1,7 @@
 import { createDshCordisSessionService, type DshCordisAgentRegistry, type DshCordisSessionEventListener } from "./dsh-cordis-agent.js";
 import type { DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
-import { HostSnapshotFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
+import { HostSnapshotFile, resolveDefaultCollabChangeSetDir, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess } from "./repository-inspector.js";
 import { captureReviewDiffs } from "./review-diffs.js";
 import { createDshWorkspaceFilePort, WorkspaceSnapshotCapture, type DshWorkspaceFileSystem } from "./workspace-snapshot.js";
@@ -18,7 +18,7 @@ export interface DshCordisHostContext {
   };
 }
 
-export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId" | "workspaceSnapshots"> & {
+export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId" | "workspaceSnapshots" | "changeSetSubprocess"> & {
   enabled?: boolean;
   hostSessionId?: string;
   stateFile?: string | false;
@@ -82,7 +82,17 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
     : undefined;
   let runtime: DshCollabHostRuntime;
   const commitCriticalState = persistence ? () => persistence.saveLatest(() => runtime.snapshot()) : undefined;
-  runtime = createDshCollabHostRuntime({ ...config, sessions, snapshot, workspaceSnapshots, commitCriticalState });
+  runtime = createDshCollabHostRuntime({
+    ...config,
+    sessions,
+    snapshot,
+    workspaceSnapshots,
+    ...(workspaceSnapshots && context.subprocess ? {
+      changeSetRoot: config.changeSetRoot ?? resolveDefaultCollabChangeSetDir(),
+      changeSetSubprocess: context.subprocess,
+    } : {}),
+    commitCriticalState,
+  });
   const save = (): void => {
     void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   };

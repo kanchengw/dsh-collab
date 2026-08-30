@@ -11,6 +11,7 @@ const DEFAULT_MAX_FILES = 1_000;
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_TEXT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_PATCH_BYTES = 16 * 1024 * 1024;
+export const MAX_CHANGE_SET_MANIFEST_BYTES = 768 * 1024;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
 export type ChangeSetOperation = "add" | "modify" | "delete" | "rename";
@@ -270,7 +271,7 @@ function exactFields(value: Record<string, unknown>, fields: readonly string[], 
   if (Object.keys(value).some((field) => !allowed.has(field))) throw new Error(`${label} contains an unsupported field`);
 }
 
-function validateDraft(value: unknown, expectedId?: string): ChangeSetDraft {
+export function validateChangeSetDraft(value: unknown, expectedId?: string): ChangeSetDraft {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("ChangeSet draft manifest is malformed");
   const draft = value as Record<string, unknown>;
   exactFields(draft, ["version", "draftId", "roomId", "authorId", "baseWorkspaceVersionId", "title", "summary", "files", "artifact", "createdAt"], "ChangeSet draft manifest");
@@ -336,7 +337,7 @@ export class ChangeSetDraftStore {
   constructor(readonly root: string) {}
 
   async save(draftValue: ChangeSetDraft, patch: string, results: ReadonlyMap<string, Uint8Array>): Promise<ChangeSetDraftBundle> {
-    const draft = validateDraft(draftValue, draftValue.draftId);
+    const draft = validateChangeSetDraft(draftValue, draftValue.draftId);
     if (Buffer.byteLength(patch) !== draft.artifact.patchBytes || hash(patch) !== draft.artifact.patchHash) throw new Error("ChangeSet draft patch does not match manifest");
     let resultBytes = 0;
     for (const file of draft.files) {
@@ -387,7 +388,7 @@ export class ChangeSetDraftStore {
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) throw new Error("ChangeSet draft manifest is malformed");
     exactFields(stored as Record<string, unknown>, ["version", "draft"], "ChangeSet draft stored manifest");
     if ((stored as { version?: unknown }).version !== 1) throw new Error("ChangeSet draft manifest is malformed");
-    const draft = validateDraft((stored as { draft?: unknown }).draft, draftId);
+    const draft = validateChangeSetDraft((stored as { draft?: unknown }).draft, draftId);
     const patch = await readFile(join(directory, "patch.diff"), "utf8");
     if (Buffer.byteLength(patch) !== draft.artifact.patchBytes || hash(patch) !== draft.artifact.patchHash) throw new Error("ChangeSet draft patch is corrupted");
     let resultBytes = 0;
@@ -409,11 +410,103 @@ export class ChangeSetDraftStore {
   }
 }
 
+export async function verifyChangeSetDraftBundle(input: {
+  draft: unknown;
+  patch: string;
+  results: ReadonlyMap<string, Uint8Array>;
+  baseRecord: unknown;
+  artifacts: WorkspaceVersionArtifactStore;
+  subprocess: DshRepositorySubprocess;
+  maxFiles?: number;
+  maxFileBytes?: number;
+  maxTotalTextBytes?: number;
+  maxPatchBytes?: number;
+  maxManifestBytes?: number;
+}): Promise<ChangeSetDraft> {
+  const maxFiles = input.maxFiles ?? DEFAULT_MAX_FILES;
+  const maxFileBytes = input.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const maxTotalTextBytes = input.maxTotalTextBytes ?? DEFAULT_MAX_TOTAL_TEXT_BYTES;
+  const maxPatchBytes = input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
+  const maxManifestBytes = input.maxManifestBytes ?? MAX_CHANGE_SET_MANIFEST_BYTES;
+  const draft = validateChangeSetDraft(input.draft);
+  if (Buffer.byteLength(JSON.stringify(draft)) > maxManifestBytes) throw new Error("ChangeSet manifest exceeds the upload limit");
+  const record = validateWorkspaceVersionRecord(input.baseRecord);
+  if (record.version.roomId !== draft.roomId || record.version.workspaceVersionId !== draft.baseWorkspaceVersionId) {
+    throw new Error("ChangeSet base Workspace Version binding is invalid");
+  }
+  if (draft.files.length > maxFiles) throw new Error("ChangeSet exceeds the file count limit");
+  if (Buffer.byteLength(input.patch) !== draft.artifact.patchBytes || hash(input.patch) !== draft.artifact.patchHash
+    || draft.artifact.patchBytes > maxPatchBytes) {
+    throw new Error("ChangeSet patch does not match its manifest");
+  }
+
+  const baseFiles = new Map(record.version.files.map((file) => [file.path, file]));
+  const previousPaths = new Set<string>();
+  const operations: DraftOperation[] = [];
+  const baseContents = new Map<string, Uint8Array>();
+  let totalTextBytes = 0;
+  let resultBytes = 0;
+  for (const file of draft.files) {
+    const basePath = file.previousPath ?? file.path;
+    const base = file.baseContentHash === undefined ? undefined : baseFiles.get(basePath);
+    if ((base === undefined) !== (file.baseContentHash === undefined)
+      || (base && (base.contentHash !== file.baseContentHash || base.size !== file.baseSize || base.mode !== "text"))) {
+      throw new Error(`ChangeSet base file does not match Workspace Version: ${basePath}`);
+    }
+    if ((file.operation === "add" || file.operation === "rename") && baseFiles.has(file.path)) {
+      throw new Error(`ChangeSet result path already exists in the base Workspace Version: ${file.path}`);
+    }
+    if (base) {
+      if (previousPaths.has(basePath)) throw new Error(`ChangeSet base path is referenced more than once: ${basePath}`);
+      previousPaths.add(basePath);
+      if (base.size > maxFileBytes) throw new Error(`ChangeSet file size limit exceeded: ${basePath}`);
+      const content = await input.artifacts.readFile(record.artifact.snapshotId, basePath);
+      if (content.byteLength !== base.size || hash(content) !== base.contentHash || !isText(content)) {
+        throw new Error(`ChangeSet base content does not match Workspace Version: ${basePath}`);
+      }
+      baseContents.set(basePath, content);
+      totalTextBytes += content.byteLength;
+    }
+
+    let result: ChangedContent | undefined;
+    if (file.resultContentHash !== undefined) {
+      const content = input.results.get(file.path);
+      if (!content || content.byteLength !== file.resultSize || hash(content) !== file.resultContentHash || !isText(content)) {
+        throw new Error(`ChangeSet result content does not match manifest: ${file.path}`);
+      }
+      if (content.byteLength > maxFileBytes) throw new Error(`ChangeSet file size limit exceeded: ${file.path}`);
+      result = { path: file.path, bytes: content, contentHash: file.resultContentHash, size: content.byteLength };
+      totalTextBytes += content.byteLength;
+      resultBytes += content.byteLength;
+    }
+    if (!Number.isSafeInteger(totalTextBytes) || totalTextBytes > maxTotalTextBytes) throw new Error("ChangeSet aggregate text limit exceeded");
+    operations.push({
+      path: file.path,
+      ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+      operation: file.operation,
+      ...(base ? { base } : {}),
+      ...(result ? { result } : {}),
+    });
+  }
+  if (!Number.isSafeInteger(resultBytes) || resultBytes !== draft.artifact.resultBytes) throw new Error("ChangeSet result size does not match manifest");
+
+  const rendered = await renderDiff({ operations, baseContents, subprocess: input.subprocess, maxPatchBytes });
+  if (rendered.patch !== input.patch) throw new Error("ChangeSet patch does not match verified contents");
+  for (const file of draft.files) {
+    const stats = rendered.stats.get(file.path);
+    if (!stats || stats.additions !== file.additions || stats.deletions !== file.deletions) {
+      throw new Error(`ChangeSet diff stats do not match verified contents: ${file.path}`);
+    }
+  }
+  return draft;
+}
+
 export class ChangeSetDraftService {
   private readonly maxFiles: number;
   private readonly maxFileBytes: number;
   private readonly maxTotalTextBytes: number;
   private readonly maxPatchBytes: number;
+  private readonly maxManifestBytes: number;
 
   constructor(private readonly options: {
     artifacts: WorkspaceVersionArtifactStore;
@@ -423,12 +516,14 @@ export class ChangeSetDraftService {
     maxFileBytes?: number;
     maxTotalTextBytes?: number;
     maxPatchBytes?: number;
+    maxManifestBytes?: number;
   }) {
     this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
     this.maxTotalTextBytes = options.maxTotalTextBytes ?? DEFAULT_MAX_TOTAL_TEXT_BYTES;
     this.maxPatchBytes = options.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
-    for (const value of [this.maxFiles, this.maxFileBytes, this.maxTotalTextBytes, this.maxPatchBytes]) {
+    this.maxManifestBytes = options.maxManifestBytes ?? MAX_CHANGE_SET_MANIFEST_BYTES;
+    for (const value of [this.maxFiles, this.maxFileBytes, this.maxTotalTextBytes, this.maxPatchBytes, this.maxManifestBytes]) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error("ChangeSet draft limit is invalid");
     }
   }
@@ -568,6 +663,7 @@ export class ChangeSetDraftService {
       createdAt: this.options.now?.() ?? Date.now(),
     };
     if (!Number.isSafeInteger(draft.createdAt) || draft.createdAt < 0) throw new Error("ChangeSet draft timestamp is invalid");
+    if (Buffer.byteLength(JSON.stringify(draft)) > this.maxManifestBytes) throw new Error("ChangeSet manifest exceeds the upload limit");
     return await new ChangeSetDraftStore(input.workspace.draftsPath).save(draft, rendered.patch, resultContents);
   }
 }

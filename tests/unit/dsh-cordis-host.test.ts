@@ -8,6 +8,7 @@ import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, HostSnapshotFile, type DshCollabPersistedSettings } from "../../src/index.js";
 import { RoomStore } from "../../src/room.js";
+import { localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
 
 async function freeTcpPort(): Promise<number> {
   const server = createTcpServer();
@@ -145,6 +146,29 @@ describe("Cordis Host mount", () => {
     expect(await canConnect(port)).toBe(true);
     await mounted!.dispose();
     expect(await canConnect(port)).toBe(false);
+  });
+
+  it("composes the dormant ChangeSet Staging service only when real workspace dependencies are available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-staging-composition-"));
+    try {
+      const mounted = mountDshCollabCordisHost({
+        agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+        fs: {
+          resolve: async (path, options) => ({ targetKey: [options?.cwd, path], displayPath: path }),
+          contains: () => true,
+          lstat: async () => ({ type: "file" as const }),
+          readBytes: async () => new Uint8Array(),
+        },
+        subprocess: localDshSubprocess(),
+      }, {
+        roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+        port: 0, stateFile: false, changeSetRoot: root,
+      });
+      expect(mounted?.runtime.changeSets).toBeDefined();
+      await mounted?.dispose();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("waits for an in-flight Gateway listen before immediate disposal", async () => {

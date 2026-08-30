@@ -264,10 +264,11 @@ export function isActionAllowed(role: RoomMember["role"], action: CollabAction, 
     return action === "read"
       || action === "humanMessage"
       || action === "workUpdate"
+      || action === "changeSet"
       || action === "agentRequest"
       || (options.allowLeadControl === true && (action === "steer" || action === "cancel"));
   }
-  if (role === "participant") return action === "read" || action === "humanMessage" || action === "workUpdate" || action === "agentRequest";
+  if (role === "participant") return action === "read" || action === "humanMessage" || action === "workUpdate" || action === "changeSet" || action === "agentRequest";
   return action === "read";
 }
 
