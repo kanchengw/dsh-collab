@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { resolveDefaultCollabRoomWorkspaceDir } from "./persistence.js";
 import { validateWorkspaceSnapshotPackage } from "./workspace-snapshot-store.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionArtifactStore, type WorkspaceVersionRecord } from "./workspace-versions.js";
@@ -23,6 +23,39 @@ export interface RoomWorkspace {
   draftsPath: string;
   baseManifestPath: string;
   record: WorkspaceVersionRecord;
+}
+
+export async function findRoomWorkspaceChangedPaths(workspace: RoomWorkspace): Promise<string[]> {
+  const record = validateWorkspaceVersionRecord(workspace.record);
+  const actual = new Map<string, "file" | "unsupported">();
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (directory === workspace.workspacePath && entry.name === ".git") continue;
+      const path = resolve(directory, entry.name);
+      const relativePath = relative(workspace.workspacePath, path).split(sep).join("/");
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) actual.set(relativePath, "unsupported");
+      else if (info.isDirectory()) await visit(path);
+      else actual.set(relativePath, info.isFile() ? "file" : "unsupported");
+    }
+  };
+  await visit(workspace.workspacePath);
+
+  const expected = new Map(record.version.files.map((file) => [file.path, file]));
+  const changed = new Set<string>();
+  for (const [path, kind] of actual) {
+    const file = expected.get(path);
+    if (!file || kind !== "file") {
+      changed.add(path);
+      continue;
+    }
+    const content = await readFile(resolve(workspace.workspacePath, ...path.split("/")));
+    if (content.byteLength !== file.size || hash(content) !== file.contentHash) changed.add(path);
+  }
+  for (const path of expected.keys()) {
+    if (!actual.has(path)) changed.add(path);
+  }
+  return [...changed].sort((left, right) => left.localeCompare(right));
 }
 
 function hash(content: Uint8Array | string): string {

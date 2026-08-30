@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { RoomSessionLink, RoomSessionLinkStore } from "./room-session-links.js";
-import type { RoomWorkspace } from "./room-workspace.js";
+import { findRoomWorkspaceChangedPaths, type RoomWorkspace } from "./room-workspace.js";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess, type RepositoryCommandPort, type RepositoryCommandResult } from "./repository-inspector.js";
-import { validateWorkspaceVersionRecord } from "./workspace-versions.js";
 
 const BASELINE_COMMIT = "dsh-collab workspace baseline";
 
@@ -28,10 +26,6 @@ export interface RoomWorkspaceLookup {
   open(roomId: string): Promise<RoomWorkspace | undefined>;
 }
 
-function hash(content: Uint8Array): string {
-  return createHash("sha256").update(content).digest("hex");
-}
-
 function failure(command: string, result: RepositoryCommandResult): Error {
   const detail = result.stderr.trim();
   return new Error(`git ${command} failed with exit code ${String(result.exitCode)}${detail === "" ? "" : `: ${detail}`}`);
@@ -51,36 +45,8 @@ function samePath(left: string, right: string): boolean {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
-async function workspaceFiles(root: string): Promise<string[]> {
-  const files: string[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (directory === root && entry.name === ".git") continue;
-      const path = resolve(directory, entry.name);
-      const info = await lstat(path);
-      if (info.isSymbolicLink()) throw new Error("Room Workspace contains an unsupported symbolic link");
-      if (info.isDirectory()) await visit(path);
-      else if (info.isFile()) files.push(relative(root, path).split(sep).join("/"));
-      else throw new Error("Room Workspace contains an unsupported filesystem entry");
-    }
-  };
-  await visit(root);
-  return files.sort((left, right) => left.localeCompare(right));
-}
-
 async function assertUnchangedBase(workspace: RoomWorkspace): Promise<void> {
-  const record = validateWorkspaceVersionRecord(workspace.record);
-  const actual = await workspaceFiles(workspace.workspacePath);
-  const expected = record.version.files.map((file) => file.path).sort((left, right) => left.localeCompare(right));
-  if (actual.length !== expected.length || actual.some((path, index) => path !== expected[index])) {
-    throw new Error("Room Workspace no longer matches its base version");
-  }
-  for (const file of record.version.files) {
-    const content = await readFile(resolve(workspace.workspacePath, ...file.path.split("/")));
-    if (content.byteLength !== file.size || hash(content) !== file.contentHash) {
-      throw new Error("Room Workspace no longer matches its base version");
-    }
-  }
+  if ((await findRoomWorkspaceChangedPaths(workspace)).length > 0) throw new Error("Room Workspace no longer matches its base version");
 }
 
 async function repositoryRoot(commands: RepositoryCommandPort): Promise<string | undefined> {

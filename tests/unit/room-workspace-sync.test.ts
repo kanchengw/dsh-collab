@@ -1,0 +1,220 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { WorkspaceSnapshotFile, WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
+import { DshRoomWorkspaceBindingService } from "../../src/dsh-room-workspace.js";
+import { EventLedger } from "../../src/events.js";
+import { RoomSessionLinkStore } from "../../src/room-session-links.js";
+import { RoomWorkspaceMaterializer } from "../../src/room-workspace.js";
+import { RoomWorkspaceSyncService } from "../../src/room-workspace-sync.js";
+import { RoomStore } from "../../src/room.js";
+import { WorkspaceSnapshotStore } from "../../src/workspace-snapshot-store.js";
+import type { WorkspaceVersionArtifactStore, WorkspaceVersionRecord } from "../../src/workspace-versions.js";
+import { WorkspaceVersionService } from "../../src/workspace-versions.js";
+import { gitCommand, localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+function sha256(value: Uint8Array | string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+interface VersionFixture {
+  artifacts: WorkspaceSnapshotStore;
+  current: WorkspaceVersionRecord;
+  target: WorkspaceVersionRecord;
+}
+
+async function versionFixture(): Promise<VersionFixture> {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "dsh-collab-sync-artifacts-"));
+  roots.push(artifactRoot);
+  const artifacts = new WorkspaceSnapshotStore(artifactRoot);
+  const rooms = new RoomStore();
+  const ledger = new EventLedger();
+  rooms.createRoom({ roomId: "room-1", hostId: "owner", hostSessionId: "session-owner", title: "Room", hostDisplayName: "Owner", now: 1 });
+  const versions = new WorkspaceVersionService({ rooms, ledger, artifacts });
+
+  const save = async (snapshotId: string, raw: Array<{ path: string; text: string }>, createdAt: number): Promise<void> => {
+    const files: WorkspaceSnapshotFile[] = raw.map(({ path, text }) => {
+      const content = Buffer.from(text);
+      return { path, contentHash: sha256(content), size: content.byteLength, source: "tracked" };
+    });
+    const snapshot: WorkspaceSnapshotPackage = {
+      snapshotId,
+      roomId: "room-1",
+      hostSessionId: "session-owner",
+      roomEventSeq: 0,
+      headOid: String(createdAt).padStart(40, "a").slice(-40),
+      manifestHash: sha256(JSON.stringify(files)),
+      files,
+      createdAt,
+    };
+    await artifacts.save(snapshot, new Map(raw.map(({ path, text }) => [path, Buffer.from(text)])));
+  };
+
+  await save("version-1", [{ path: "README.md", text: "one\n" }, { path: "src/app.ts", text: "export const value = 1;\n" }], 10);
+  const current = (await versions.create({ roomId: "room-1", principalId: "owner", snapshotId: "version-1" })).record;
+  await save("version-2", [{ path: "README.md", text: "two\n" }, { path: "src/next.ts", text: "export const value = 2;\n" }], 20);
+  const target = (await versions.create({
+    roomId: "room-1",
+    principalId: "owner",
+    snapshotId: "version-2",
+    parentVersionId: current.version.workspaceVersionId,
+  })).record;
+  return { artifacts, current, target };
+}
+
+async function materializedFixture(): Promise<VersionFixture & { materializer: RoomWorkspaceMaterializer; workspaceRoot: string }> {
+  const fixture = await versionFixture();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "dsh-collab-sync-rooms-"));
+  roots.push(workspaceRoot);
+  const materializer = new RoomWorkspaceMaterializer({ root: workspaceRoot, artifacts: fixture.artifacts });
+  const workspace = await materializer.materialize({ roomId: "room-1", record: fixture.current });
+  const subprocess = localDshSubprocess();
+  await new DshRoomWorkspaceBindingService({
+    agents: { get: () => ({ session: { header: { cwd: workspace.workspacePath } } }) },
+    nativeWorkspaces: {
+      create: async (path) => ({ id: "native-1", path, attachSession: async () => {}, detachSession: async () => {} }),
+      resolveByPath: async () => undefined,
+    },
+    subprocess,
+    roomWorkspaces: materializer,
+    links: new RoomSessionLinkStore(),
+  }).bind({ roomId: "room-1", memberId: "participant-1", sessionId: "session-1" });
+  return { ...fixture, materializer, workspaceRoot };
+}
+
+describe("RoomWorkspaceSyncService", () => {
+  it("fast-forwards a clean workspace and amends the one local baseline", async () => {
+    const fixture = await materializedFixture();
+    const subprocess = localDshSubprocess();
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess });
+    const before = (await fixture.materializer.open("room-1"))!;
+    await writeFile(join(before.draftsPath, "local-draft.txt"), "keep\n");
+
+    const result = await service.sync({ roomId: "room-1", target: fixture.target });
+
+    expect(result.status).toBe("advanced");
+    const opened = await fixture.materializer.open("room-1");
+    expect(opened?.record).toEqual(fixture.target);
+    expect(await readFile(join(opened!.workspacePath, "README.md"), "utf8")).toBe("two\n");
+    await expect(readFile(join(opened!.workspacePath, "src/app.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(opened!.workspacePath, "src/next.ts"), "utf8")).toContain("value = 2");
+    expect(await readFile(join(opened!.draftsPath, "local-draft.txt"), "utf8")).toBe("keep\n");
+    expect((await gitCommand(subprocess, opened!.workspacePath, ["status", "--short"])).stdout).toBe("");
+    expect((await gitCommand(subprocess, opened!.workspacePath, ["rev-list", "--count", "HEAD"])).stdout.trim()).toBe("1");
+    expect((await gitCommand(subprocess, opened!.workspacePath, ["config", "--local", "--get", "collab.workspaceversion"])).stdout.trim()).toBe("version-2");
+  });
+
+  it("blocks a dirty workspace without replacing files or advancing the base", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    await writeFile(join(workspace.workspacePath, "README.md"), "participant work\n");
+    await writeFile(join(workspace.workspacePath, "untracked.txt"), "draft\n");
+    const subprocess = localDshSubprocess();
+    await gitCommand(subprocess, workspace.workspacePath, ["add", "--all"]);
+    await gitCommand(subprocess, workspace.workspacePath, ["-c", "user.name=Participant", "-c", "user.email=participant@localhost", "commit", "--no-gpg-sign", "--no-verify", "-m", "local work"]);
+    expect((await gitCommand(subprocess, workspace.workspacePath, ["status", "--short"])).stdout).toBe("");
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess });
+
+    const result = await service.sync({ roomId: "room-1", target: fixture.target });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "dirty",
+      currentVersionId: "version-1",
+      targetVersionId: "version-2",
+    });
+    if (result.status === "blocked") expect(result.paths).toEqual(["README.md", "untracked.txt"]);
+    const opened = await fixture.materializer.open("room-1");
+    expect(opened?.record).toEqual(fixture.current);
+    expect(await readFile(join(opened!.workspacePath, "README.md"), "utf8")).toBe("participant work\n");
+    expect((await readdir(fixture.workspaceRoot)).some((name) => name.includes("sync"))).toBe(false);
+  });
+
+  it("only discards local changes through the explicit discard operation", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    await writeFile(join(workspace.workspacePath, "README.md"), "discard me\n");
+    await writeFile(join(workspace.workspacePath, "untracked.txt"), "discard me too\n");
+    await writeFile(join(workspace.draftsPath, "saved-draft.txt"), "keep me\n");
+    const subprocess = localDshSubprocess();
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess });
+
+    const result = await service.discardAndSync({ roomId: "room-1", target: fixture.target });
+
+    expect(result).toMatchObject({ status: "advanced", previousVersionId: "version-1", versionId: "version-2" });
+    const opened = (await fixture.materializer.open("room-1"))!;
+    expect(await readFile(join(opened.workspacePath, "README.md"), "utf8")).toBe("two\n");
+    await expect(readFile(join(opened.workspacePath, "untracked.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(opened.draftsPath, "saved-draft.txt"), "utf8")).toBe("keep me\n");
+    expect((await gitCommand(subprocess, opened.workspacePath, ["status", "--short"])).stdout).toBe("");
+  });
+
+  it("blocks and restores a local edit that arrives while the target is being staged", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    let injected = false;
+    const racingArtifacts: WorkspaceVersionArtifactStore = {
+      load: (snapshotId) => fixture.artifacts.load(snapshotId),
+      readFile: async (snapshotId, path) => {
+        if (!injected && snapshotId === "version-2" && path === "src/next.ts") {
+          injected = true;
+          await writeFile(join(workspace.workspacePath, "README.md"), "late local edit\n");
+        }
+        return await fixture.artifacts.readFile(snapshotId, path);
+      },
+    };
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: racingArtifacts, subprocess: localDshSubprocess() });
+
+    const result = await service.sync({ roomId: "room-1", target: fixture.target });
+
+    expect(result).toMatchObject({ status: "blocked", reason: "dirty", paths: ["README.md"] });
+    const opened = (await fixture.materializer.open("room-1"))!;
+    expect(opened.record).toEqual(fixture.current);
+    expect(await readFile(join(opened.workspacePath, "README.md"), "utf8")).toBe("late local edit\n");
+    expect((await readdir(fixture.workspaceRoot)).some((name) => name.includes("sync"))).toBe(false);
+  });
+
+  it("is idempotent for the current target and rejects non-linear or cross-room targets", async () => {
+    const fixture = await materializedFixture();
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess: localDshSubprocess() });
+    await service.sync({ roomId: "room-1", target: fixture.target });
+
+    await expect(service.sync({ roomId: "room-1", target: fixture.target })).resolves.toMatchObject({ status: "current", versionId: "version-2" });
+    const wrongParent = structuredClone(fixture.current);
+    wrongParent.version.workspaceVersionId = "version-3";
+    wrongParent.artifact.snapshotId = "version-3";
+    wrongParent.version.parentVersionId = "version-0";
+    await expect(service.sync({ roomId: "room-1", target: wrongParent })).rejects.toThrow(/direct successor/i);
+    const wrongRoom = structuredClone(fixture.target);
+    wrongRoom.version.roomId = "room-2";
+    await expect(service.sync({ roomId: "room-1", target: wrongRoom })).rejects.toThrow(/room/i);
+    expect((await fixture.materializer.open("room-1"))?.record).toEqual(fixture.target);
+  });
+
+  it("leaves the old workspace and base visible when target staging fails", async () => {
+    const fixture = await materializedFixture();
+    const failingArtifacts: WorkspaceVersionArtifactStore = {
+      load: (snapshotId) => fixture.artifacts.load(snapshotId),
+      readFile: async (snapshotId, path) => {
+        if (snapshotId === "version-2" && path === "src/next.ts") throw new Error("target download interrupted");
+        return await fixture.artifacts.readFile(snapshotId, path);
+      },
+    };
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: failingArtifacts, subprocess: localDshSubprocess() });
+
+    await expect(service.sync({ roomId: "room-1", target: fixture.target })).rejects.toThrow("interrupted");
+
+    const opened = await fixture.materializer.open("room-1");
+    expect(opened?.record).toEqual(fixture.current);
+    expect(await readFile(join(opened!.workspacePath, "README.md"), "utf8")).toBe("one\n");
+    expect((await readdir(fixture.workspaceRoot)).some((name) => name.includes("sync"))).toBe(false);
+  });
+});
