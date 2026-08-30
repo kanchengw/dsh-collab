@@ -214,6 +214,21 @@ projects the predecessor as `superseded`. Decision and revision mutations use
 the same persistence barrier and emit `changeset.review-decided` or
 `changeset.revision-linked` live notifications.
 
+Apply preflight is currently a Host-domain contract rather than a public HTTP
+route. Only the active Owner member can invoke it. Its canonical-workspace port
+is read-only and returns only path hash/size inspection, so U20 cannot write,
+remove, or rename Owner files. Preflight validates the complete staged envelope,
+safe paths, approved decision and every result blob before returning either one
+fully verified in-memory plan or one conflict containing all stale touched
+paths. Add and rename operations also require an absent target. Artifact
+corruption fails closed and is not mislabeled as a workspace conflict.
+
+Conflict records use deterministic IDs, are append-only in the apply-preflight
+service snapshot, and exact retries do not emit duplicates. They do not enter
+the v1 RoomEvent cursor. The public apply route, integration lock, persistence
+barrier, journal, file replacement, applied state and next Workspace Version
+remain U21/U22 work; therefore `approved` still never implies `applied` in U20.
+
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
 `roomId` must equal `hostSessionId`, the title is trimmed and limited to 80
