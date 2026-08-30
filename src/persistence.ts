@@ -28,6 +28,10 @@ export function resolveDefaultCollabIntegrationJournalDir(env: Record<string, st
   return join(resolveDshHome(undefined, env), "collab", "v1", "integration-journals");
 }
 
+export function resolveDefaultCollabEasyTierDir(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDshHome(undefined, env), "collab", "v1", "easytier");
+}
+
 export function resolveDefaultCollabSideTaskFile(env: Record<string, string | undefined> = process.env): string {
   return join(resolveDshHome(undefined, env), "collab", "v1", "side-tasks.json");
 }

@@ -20,6 +20,10 @@ describe("installable package build", () => {
     expect(packageJson.exports["./nginx"]).toBeUndefined();
     expect(packageJson.files).not.toContain("vendor");
     expect(packageJson.files).not.toContain("LICENSE.nginx");
+    expect(packageJson.files).toContain("third_party/easytier/*");
+    for (const legalFile of ["NOTICE.md", "SOURCE.md", "LICENSE.LGPL-3.0", "LICENSE.GPL-3.0"]) {
+      expect(existsSync(resolve(process.cwd(), "third_party", "easytier", legalFile))).toBe(true);
+    }
     expect(existsSync(resolve(process.cwd(), "src/nginx.ts"))).toBe(false);
     expect(existsSync(resolve(process.cwd(), "src/webserver.ts"))).toBe(false);
     expect(existsSync(resolve(process.cwd(), "vendor/nginx/windows-x64/nginx.exe"))).toBe(false);
