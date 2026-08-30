@@ -99,6 +99,11 @@ describe("RepositoryInspector", () => {
     }));
     const resolveExecutable = vi.fn(async () => "C:/Git/bin/git.exe");
     const signal = new AbortController().signal;
+    expect(() => createDshRepositoryCommandPort({
+      subprocess: { resolveExecutable, spawn },
+      cwd: "C:/trusted/session-workspace",
+      maxStdoutBytes: 0,
+    })).toThrow(/stdout limit/i);
     const port = createDshRepositoryCommandPort({
       subprocess: { resolveExecutable, spawn },
       cwd: "C:/trusted/session-workspace",

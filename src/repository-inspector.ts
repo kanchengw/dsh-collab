@@ -203,7 +203,10 @@ export interface DshRepositorySubprocess {
 export function createDshRepositoryCommandPort(input: {
   subprocess: DshRepositorySubprocess;
   cwd: string;
+  maxStdoutBytes?: number;
 }): RepositoryCommandPort {
+  const maxStdoutBytes = input.maxStdoutBytes ?? 4 * 1024 * 1024;
+  if (!Number.isSafeInteger(maxStdoutBytes) || maxStdoutBytes < 1) throw new Error("git stdout limit is invalid");
   return {
     async run(argv, signal): Promise<RepositoryCommandResult> {
       const executable = await input.subprocess.resolveExecutable("git", undefined, signal);
@@ -212,7 +215,7 @@ export function createDshRepositoryCommandPort(input: {
         cwd: input.cwd,
         stdio: {
           stdin: "ignore",
-          stdout: { maxBytes: 4 * 1024 * 1024 },
+          stdout: { maxBytes: maxStdoutBytes },
           stderr: { maxBytes: 64 * 1024 },
         },
         graceMs: 1_000,

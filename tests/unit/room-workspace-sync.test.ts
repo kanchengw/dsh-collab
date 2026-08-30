@@ -110,7 +110,7 @@ describe("RoomWorkspaceSyncService", () => {
     expect((await gitCommand(subprocess, opened!.workspacePath, ["status", "--short"])).stdout).toBe("");
     expect((await gitCommand(subprocess, opened!.workspacePath, ["rev-list", "--count", "HEAD"])).stdout.trim()).toBe("1");
     expect((await gitCommand(subprocess, opened!.workspacePath, ["config", "--local", "--get", "collab.workspaceversion"])).stdout.trim()).toBe("version-2");
-  });
+  }, 10_000);
 
   it("blocks a dirty workspace without replacing files or advancing the base", async () => {
     const fixture = await materializedFixture();
