@@ -35,6 +35,7 @@ export * from "./workspace-service.js";
 export * from "./workspace-sharing.js";
 export * from "./workspace-snapshot.js";
 export * from "./workspace-snapshot-store.js";
+export * from "./workspace-versions.js";
 export * from "./snapshot-workspace.js";
 export * from "./work-updates.js";
 

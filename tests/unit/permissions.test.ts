@@ -37,6 +37,7 @@ describe("RoomStore authorization", () => {
     expect(() => rooms.authorize("room-1", "alice", "steer")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
     expect(() => rooms.authorize("room-1", "alice", "cancel")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
     expect(() => rooms.authorize("room-1", "alice", "approval")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
+    expect(() => rooms.authorize("room-1", "alice", "workspaceVersion")).toThrowError(expect.objectContaining({ code: "ACTION_FORBIDDEN" }));
   });
 
   it("limits an observer to read access", () => {
@@ -61,6 +62,7 @@ describe("RoomStore authorization", () => {
     const rooms = createRooms();
 
     expect(rooms.authorize("room-1", "host", "manageMembers").role).toBe("host");
+    expect(rooms.authorize("room-1", "host", "workspaceVersion").role).toBe("host");
     expect(() => rooms.setMemberStatus("room-1", "member-host", "removed")).toThrow(/host/i);
   });
 

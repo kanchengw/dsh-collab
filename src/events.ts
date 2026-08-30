@@ -147,6 +147,7 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "member.removed"
     || value === "human.message"
     || value === "work-update.published"
+    || value === "workspace-version.published"
     || value === "agent.request.created"
     || value === "agent.request.queued"
     || value === "agent.request.claimed"
