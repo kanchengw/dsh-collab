@@ -103,5 +103,6 @@ The automated `tests/integration/e2e-local.test.ts` exercises this dedicated lis
 ## Design and development log
 
 - Architecture, slot/service/patch boundaries, role model, UI states and phased plan: [design.md](./design.md)
+- Accepted native-Session, Better Sidebar, ChangeSet and EasyTier MVP: [Collab Workspace MVP v2](./docs/plans/collab-workspace-mvp-v2.md)
 - Unit-by-unit implementation records and commits: [dev_log.md](./dev_log.md)
 - HTTP/WebSocket wire contract: [protocol.md](./protocol.md)
