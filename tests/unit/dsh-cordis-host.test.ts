@@ -1,6 +1,6 @@
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -167,6 +167,62 @@ describe("Cordis Host mount", () => {
       expect(mounted?.runtime.changeSets).toBeDefined();
       await mounted?.dispose();
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("composes apply and crash recovery only with durable journal storage and the real DSH write seam", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-apply-composition-"));
+    try {
+      const mounted = mountDshCollabCordisHost({
+        agents: { get: () => ({
+          followup: () => {}, steer: () => {}, cancel: () => {},
+          session: { events: [], header: { cwd: root } },
+        }) },
+        fs: {
+          resolve: async (path, options) => ({ targetKey: join(options?.cwd ?? root, path), displayPath: path }),
+          contains: () => true,
+          processPath: (target) => String(target.targetKey),
+          lstat: async () => undefined,
+          readBytes: async () => new Uint8Array(),
+          writeText: async () => ({}),
+        },
+        subprocess: localDshSubprocess(),
+      }, {
+        roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+        port: 0,
+        stateFile: join(root, "state.json"),
+        changeSetRoot: join(root, "change-sets"),
+        integrationJournalRoot: join(root, "journals"),
+      });
+      expect(mounted?.runtime.changeSetIntegration).toBeDefined();
+      expect(mounted?.runtime.snapshot().changeSetApply).toEqual({ version: 1, conflicts: [] });
+      await mounted?.ready;
+      await mounted?.dispose();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to listen when a pending integration journal cannot be recovered", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-unavailable-recovery-"));
+    const journalRoot = join(root, "journals");
+    await mkdir(join(journalRoot, "a".repeat(64)), { recursive: true });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mounted = mountDshCollabCordisHost({
+      agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+    }, {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      port: 0,
+      stateFile: join(root, "state.json"),
+      integrationJournalRoot: journalRoot,
+    });
+    try {
+      await expect(mounted?.ready).rejects.toThrow(/recover/i);
+      expect(warning).toHaveBeenCalledWith("dsh-collab Gateway failed to listen", expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+    } finally {
+      await mounted?.dispose();
+      warning.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });

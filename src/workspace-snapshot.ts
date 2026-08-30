@@ -132,7 +132,7 @@ export class WorkspaceSnapshotCapture {
   }
 }
 
-interface DshFsTarget {
+export interface DshFsTarget {
   targetKey: unknown;
   displayPath: string;
 }
@@ -140,8 +140,10 @@ interface DshFsTarget {
 export interface DshWorkspaceFileSystem {
   resolve(path: string, options?: { cwd?: string; signal?: AbortSignal }): Promise<DshFsTarget>;
   contains(parent: DshFsTarget, child: DshFsTarget): boolean;
+  processPath?(target: DshFsTarget): string;
   lstat(path: string, options?: { cwd?: string }, signal?: AbortSignal): Promise<{ type: "file" | "directory" | "symlink" | "other" } | undefined>;
   readBytes(target: DshFsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>;
+  writeText?(target: DshFsTarget, content: string): Promise<unknown>;
 }
 
 export function createDshWorkspaceFilePort(input: { fs: DshWorkspaceFileSystem; cwd: string }): WorkspaceFilePort {

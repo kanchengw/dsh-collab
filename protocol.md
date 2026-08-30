@@ -142,6 +142,7 @@ The current routes are:
 | `PUT` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/reviewer` | ChangeSet author or Host idempotently assigns one active room member using `{ clientRequestId, reviewerId }` |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/decisions` | Current required reviewer records the first and only `approved` or `changes-requested` decision |
 | `PUT` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/revision` | New ChangeSet author idempotently links it to one same-author predecessor using `{ clientRequestId, supersedesChangeSetId }` |
+| `POST` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/apply` | Owner explicitly applies one approved ChangeSet using `{ clientRequestId }`; returns `200` when applied and `409` for a durable preflight conflict |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/findings?after=&limit=` | Active member reads immutable Findings newest-first; defaults to 50 and caps at 100 |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/findings` | Active member creates one idempotent `general`, `file`, or `line` Finding |
 | `GET` | `/collab/v1/rooms/:roomId/review-points?after=&limit=` | Active member reads persisted Review Point projections; defaults to 50 and caps at 100 |
@@ -225,9 +226,28 @@ corruption fails closed and is not mislabeled as a workspace conflict.
 
 Conflict records use deterministic IDs, are append-only in the apply-preflight
 service snapshot, and exact retries do not emit duplicates. They do not enter
-the v1 RoomEvent cursor. The public apply route, integration lock, persistence
-barrier, journal, file replacement, applied state and next Workspace Version
-remain U21/U22 work; therefore `approved` still never implies `applied` in U20.
+the v1 RoomEvent cursor. `approved` remains distinct from `applied`: only the
+Owner's explicit apply request may create the latter state.
+
+Apply re-runs the complete preflight, publishes a rollback journal before the
+first canonical workspace mutation, and checkpoints each concrete remove or
+replace. The executor supports add, modify, delete and rename without invoking
+an Agent or Git. Canonical writes reuse the DSH filesystem service's contained
+path resolution and atomic `writeText`; deletion alone uses Node `unlink` on
+the already-resolved DSH path because the current public DSH filesystem service
+does not expose delete. ChangeSet result bytes must be valid UTF-8 and an
+explicit UTF-8 BOM is preserved.
+
+The room integration lock also covers manual Workspace Version publication,
+so it cannot capture a partially applied workspace. The application record is
+installed before the next `workspace-version.published` ledger event becomes
+visible, then the whole runtime is durably saved before the journal is retired.
+If runtime persistence fails after the in-memory application and version were
+created, the completed journal remains; an exact ChangeSet retry only repeats
+the persistence barrier and does not rewrite files. On restart, a journal with
+a matching durable application is retired, while one without an application is
+rolled back. A pending journal that cannot be recovered prevents the Gateway
+from listening instead of exposing an indeterminate workspace.
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -690,6 +710,7 @@ snapshot contract.
 | Agent request queued, claimed/running, output, completed/failed/cancelled | Durable | Queue and ledger transitions are barrier-confirmed; an unconfirmed active delivery is failed as outcome-unknown on restart and is never redelivered automatically. |
 | Approval request and decision | Durable | Approval projection and ledger event are committed before the HTTP response. |
 | ChangeSet reviewer assignment, Finding, decision and revision link | Durable | Append-only review workflow state is captured by the whole-runtime snapshot barrier before the Gateway responds; capability-gated live notifications are not Room Ledger events. |
+| Applied ChangeSet and resulting Workspace Version | Durable | The Owner-only executor records `applied` before publishing the next Workspace Version event, saves both through the whole-runtime barrier, then retires the completed journal. Persistence retries never rewrite canonical files. |
 | Pending ChangeSet integration journal | Durable local recovery state | Before the first canonical workspace write, the Host atomically publishes the operation manifest, verified original blobs and checkpoint under `DSH_HOME/collab/v1/integration-journals`. Restart recovery is rollback-only: it validates the complete journal before mutation, restores every touched path to its recorded original state, and retires the journal only after full rollback or an explicitly completed apply. This state is not a Room Ledger event or wire route. |
 | Review Point, freshness comparison, reviewers, lifecycle, findings and publication | Durable | Review aggregates and their immutable references are committed before success. Mainline acceptance commits the accepted publication and integration request together. |
 | One-time invitation lifecycle | Ephemeral | Invite secrets and active/accepted/expired projections are held in memory; a restart invalidates them. A joined member is durable through the member and ledger commit. |

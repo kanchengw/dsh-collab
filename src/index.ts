@@ -12,6 +12,8 @@ export * from "./change-sets.js";
 export * from "./change-set-staging.js";
 export * from "./change-set-reviews.js";
 export * from "./change-set-apply.js";
+export * from "./change-set-integration.js";
+export * from "./canonical-workspace.js";
 export * from "./integration-journal.js";
 export * from "./dsh-collab-tools.js";
 export * from "./gateway.js";

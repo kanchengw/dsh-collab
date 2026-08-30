@@ -78,7 +78,7 @@ export interface ChangeSetApplyConflictEvent {
   conflict: ChangeSetApplyConflictRecord;
 }
 
-interface ChangeSetApplyPreflightServiceOptions {
+export interface ChangeSetApplyPreflightServiceOptions {
   rooms: RoomStore;
   changeSets: ChangeSetApplyStagingReader;
   reviews: ChangeSetApplyReviewReader;

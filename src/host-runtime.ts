@@ -19,6 +19,10 @@ import { WorkUpdateService } from "./work-updates.js";
 import { WorkspaceVersionService } from "./workspace-versions.js";
 import { ChangeSetStagingService } from "./change-set-staging.js";
 import { ChangeSetReviewService, type ChangeSetReviewServiceSnapshot } from "./change-set-reviews.js";
+import { ChangeSetApplyPreflightService, type ChangeSetApplyPreflightServiceSnapshot } from "./change-set-apply.js";
+import { ChangeSetIntegrationService } from "./change-set-integration.js";
+import { DshCanonicalWorkspace, type DshCanonicalFileSystem } from "./canonical-workspace.js";
+import { IntegrationJournalStore } from "./integration-journal.js";
 import { CollabError } from "./errors.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 
@@ -48,6 +52,8 @@ export interface DshCollabHostRuntimeOptions {
   workspaceSnapshots?: WorkspaceSnapshotProvider;
   changeSetRoot?: string;
   changeSetSubprocess?: DshRepositorySubprocess;
+  canonicalFiles?: DshCanonicalFileSystem;
+  integrationJournalRoot?: string;
   commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
 }
@@ -57,6 +63,7 @@ export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   reviewPoints?: ReviewPointServiceSnapshot;
   reviews?: ReviewServiceSnapshot;
   changeSetReviews?: ChangeSetReviewServiceSnapshot;
+  changeSetApply?: ChangeSetApplyPreflightServiceSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -73,9 +80,12 @@ export interface DshCollabHostRuntime {
   readonly workspaceVersions?: WorkspaceVersionService;
   readonly changeSets?: ChangeSetStagingService;
   readonly changeSetReviews?: ChangeSetReviewService;
+  readonly changeSetApply?: ChangeSetApplyPreflightService;
+  readonly changeSetIntegration?: ChangeSetIntegrationService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
+  recoverPendingIntegrations(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -141,6 +151,45 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       ? ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: options.now }, snapshot.changeSetReviews)
       : new ChangeSetReviewService({ rooms, changeSets, now: options.now })
     : undefined;
+  const canonicalWorkspace = options.canonicalFiles
+    ? new DshCanonicalWorkspace({ rooms, sessions: options.sessions, fs: options.canonicalFiles })
+    : undefined;
+  const integrationJournals = options.integrationJournalRoot ? new IntegrationJournalStore(options.integrationJournalRoot) : undefined;
+  if (snapshot?.changeSetApply && (!changeSets || !changeSetReviews || !canonicalWorkspace || !integrationJournals)) {
+    throw new CollabError("SNAPSHOT_INVALID", "ChangeSet apply state requires canonical integration services");
+  }
+  const changeSetApply = changeSets && changeSetReviews && canonicalWorkspace && integrationJournals
+    ? snapshot?.changeSetApply
+      ? ChangeSetApplyPreflightService.fromSnapshot({ rooms, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now }, snapshot.changeSetApply)
+      : new ChangeSetApplyPreflightService({ rooms, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now })
+    : undefined;
+  const changeSetIntegration = changeSetApply && changeSetReviews && canonicalWorkspace && integrationJournals && workspaceVersions && options.commitCriticalState
+    ? new ChangeSetIntegrationService({
+        rooms,
+        preflight: changeSetApply,
+        journals: integrationJournals,
+        workspace: canonicalWorkspace,
+        reviews: changeSetReviews,
+        versions: workspaceVersions,
+        snapshots: {
+          capture: async (input) => await workspace.captureLatest({
+            roomId: input.roomId,
+            principalId: input.principalId,
+            clientRequestId: input.clientRequestId,
+            purpose: "workspace-version",
+            roomEventSeq: ledger.latestSeq(input.roomId),
+          }),
+        },
+        commitCriticalState: options.commitCriticalState,
+      })
+    : undefined;
+  if (changeSetReviews && workspaceVersions) {
+    for (const application of changeSetReviews.listApplications()) {
+      if (!workspaceVersions.get(application.roomId, application.workspaceVersionId)) {
+        throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application references a missing Workspace Version");
+      }
+    }
+  }
   const reviewPointOptions = {
     rooms,
     ledger,
@@ -181,6 +230,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ...(workspaceVersions ? { workspaceVersions } : {}),
     ...(changeSets ? { changeSets } : {}),
     ...(changeSetReviews ? { changeSetReviews } : {}),
+    ...(changeSetIntegration ? { changeSetIntegration } : {}),
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
   });
@@ -220,14 +270,24 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), ...(changeSetApply ? { changeSetApply } : {}), ...(changeSetIntegration ? { changeSetIntegration } : {}), reviewPoints, reviews,
     snapshot: () => ({
       ...collabRuntime.snapshot(),
       resumes: resumes.snapshot(),
       reviewPoints: reviewPoints.snapshot(),
       reviews: reviews.snapshot(),
       ...(changeSetReviews ? { changeSetReviews: changeSetReviews.snapshot() } : {}),
+      ...(changeSetApply ? { changeSetApply: changeSetApply.snapshot() } : {}),
     }),
+    recoverPendingIntegrations: async () => {
+      if (changeSetIntegration) {
+        await changeSetIntegration.recoverPending();
+        return;
+      }
+      if (integrationJournals && (await integrationJournals.list()).length > 0) {
+        throw new CollabError("SNAPSHOT_INVALID", "pending ChangeSet integration cannot be recovered without canonical workspace and persistence services");
+      }
+    },
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
       unsubscribeChangeSetReviews?.();

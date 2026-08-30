@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { StagedChangeSet } from "./change-set-staging.js";
+import { createChangeSetApplication, type ChangeSetApplication, type PreparedChangeSetApplication } from "./change-set-integration.js";
 import type { CollaborationEvent, ReviewFinding, ReviewFindingLocation } from "./collaboration-types.js";
 import { CollabError, invalidInput } from "./errors.js";
 import type { RoomStore } from "./room.js";
@@ -31,7 +32,7 @@ export interface ChangeSetReviewFinding {
   createdAt: number;
 }
 
-export type ChangeSetReviewStatus = "submitted" | "in-review" | "changes-requested" | "approved" | "superseded";
+export type ChangeSetReviewStatus = "submitted" | "in-review" | "changes-requested" | "approved" | "applied" | "superseded";
 
 export interface ChangeSetReviewDecision {
   decisionId: string;
@@ -60,6 +61,7 @@ export interface ChangeSetReview {
   status: ChangeSetReviewStatus;
   requiredReviewerId?: string;
   decision?: ChangeSetReviewDecision;
+  application?: ChangeSetApplication;
   supersedesChangeSetId?: string;
   supersededByChangeSetId?: string;
   assignmentCount: number;
@@ -87,6 +89,7 @@ export interface ChangeSetReviewServiceSnapshot {
     findings: ChangeSetReviewFinding[];
     decisions?: ChangeSetReviewDecision[];
     revision?: ChangeSetRevisionLink;
+    application?: ChangeSetApplication;
   }>;
 }
 
@@ -212,6 +215,24 @@ function validateRestoredRecord(value: SnapshotReviewRecord, rooms: RoomStore): 
     throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review revision snapshot is invalid");
   }
   if (revision) memberById(rooms, value.roomId, revision.linkedBy);
+  const application = value.application;
+  if (application) {
+    const expected = createChangeSetApplication({
+      roomId: application.roomId,
+      changeSetId: application.changeSetId,
+      appliedBy: application.appliedBy,
+      workspaceVersionId: application.workspaceVersionId,
+      integrationId: application.integrationId,
+      createdAt: application.createdAt,
+    });
+    const appliedBy = memberById(rooms, value.roomId, application.appliedBy);
+    if (application.version !== 1 || application.roomId !== value.roomId || application.changeSetId !== value.changeSetId
+      || application.applicationId !== expected.applicationId || !HASH_PATTERN.test(application.workspaceVersionId)
+      || !HASH_PATTERN.test(application.integrationId) || !Number.isSafeInteger(application.createdAt) || application.createdAt < 0
+      || appliedBy.role !== "host" || decisions.at(-1)?.outcome !== "approved") {
+      throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application snapshot is invalid");
+    }
+  }
   return structuredClone({ ...value, decisions });
 }
 
@@ -221,6 +242,7 @@ export class ChangeSetReviewService {
   private readonly findingsById = new Map<string, ChangeSetReviewFinding>();
   private readonly decisionsById = new Map<string, ChangeSetReviewDecision>();
   private readonly revisionLinksById = new Map<string, ChangeSetRevisionLink>();
+  private readonly applicationsById = new Map<string, ChangeSetApplication>();
   private readonly successorByChangeSetId = new Map<string, string>();
   private readonly listeners = new Set<(event: CollaborationEvent) => void>();
   private readonly now: () => number;
@@ -259,6 +281,12 @@ export class ChangeSetReviewService {
       if (record.revision) {
         if (service.revisionLinksById.has(record.revision.revisionLinkId)) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot contains duplicate revision links");
         service.revisionLinksById.set(record.revision.revisionLinkId, record.revision);
+      }
+      if (record.application) {
+        if (service.applicationsById.has(record.application.applicationId)) {
+          throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot contains duplicate applications");
+        }
+        service.applicationsById.set(record.application.applicationId, record.application);
       }
       service.records.set(recordKey, record);
     }
@@ -526,6 +554,57 @@ export class ChangeSetReviewService {
     return { findings: structuredClone(page), ...(nextCursor ? { nextCursor } : {}) };
   }
 
+  getApplication(roomId: string, changeSetId: string): ChangeSetApplication | undefined {
+    const application = this.records.get(key(roomId, changeSetId))?.application;
+    return application ? structuredClone(application) : undefined;
+  }
+
+  listApplications(): ChangeSetApplication[] {
+    return structuredClone([...this.applicationsById.values()]);
+  }
+
+  async prepareApplication(input: {
+    roomId: string;
+    principalId: string;
+    changeSetId: string;
+  }): Promise<PreparedChangeSetApplication> {
+    const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
+    if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can apply a ChangeSet");
+    const changeSet = await this.requireChangeSet(input.roomId, input.changeSetId);
+    const record = this.records.get(key(input.roomId, input.changeSetId));
+    if (!record) throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
+    this.assertRecord(record, changeSet);
+    if (record.application) return { existing: structuredClone(record.application), commit: () => structuredClone(record.application!) };
+    const review = this.view(changeSet, record);
+    if (review.status !== "approved") throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
+    this.requireOpenRoom(input.roomId);
+    const createdAt = this.timestamp();
+    return {
+      commit: (workspaceVersionId, integrationId) => {
+        if (record.application) return structuredClone(record.application);
+        if (!HASH_PATTERN.test(workspaceVersionId) || !HASH_PATTERN.test(integrationId)) {
+          throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application identity is invalid");
+        }
+        const application = createChangeSetApplication({
+          roomId: input.roomId,
+          changeSetId: input.changeSetId,
+          appliedBy: actor.memberId,
+          workspaceVersionId,
+          integrationId,
+          createdAt,
+        });
+        record.application = application;
+        this.applicationsById.set(application.applicationId, application);
+        return structuredClone(application);
+      },
+      rollback: (applicationId) => {
+        if (record.application?.applicationId !== applicationId) return;
+        this.applicationsById.delete(applicationId);
+        delete record.application;
+      },
+    };
+  }
+
   snapshot(): ChangeSetReviewServiceSnapshot {
     return { version: 1, reviews: structuredClone([...this.records.values()]) };
   }
@@ -570,7 +649,7 @@ export class ChangeSetReviewService {
     const supersededByChangeSetId = this.successorByChangeSetId.get(changeSet.changeSetId);
     const status: ChangeSetReviewStatus = supersededByChangeSetId
       ? "superseded"
-      : decision?.outcome ?? (requiredReviewerId ? "in-review" : "submitted");
+      : record?.application ? "applied" : decision?.outcome ?? (requiredReviewerId ? "in-review" : "submitted");
     return {
       version: 1,
       roomId: changeSet.draft.roomId,
@@ -579,6 +658,7 @@ export class ChangeSetReviewService {
       status,
       ...(requiredReviewerId ? { requiredReviewerId } : {}),
       ...(decision ? { decision: structuredClone(decision) } : {}),
+      ...(record?.application ? { application: structuredClone(record.application) } : {}),
       ...(record?.revision ? { supersedesChangeSetId: record.revision.supersedesChangeSetId } : {}),
       ...(supersededByChangeSetId ? { supersededByChangeSetId } : {}),
       assignmentCount: record?.assignments.length ?? 0,
@@ -631,7 +711,7 @@ export class ChangeSetReviewService {
 
   private lastActivity(record: ReviewRecord): number {
     return Math.max(record.assignments.at(-1)?.createdAt ?? -1, record.findings.at(-1)?.createdAt ?? -1,
-      record.decisions.at(-1)?.createdAt ?? -1, record.revision?.createdAt ?? -1);
+      record.decisions.at(-1)?.createdAt ?? -1, record.revision?.createdAt ?? -1, record.application?.createdAt ?? -1);
   }
 
   private emit(event: CollaborationEvent): void {

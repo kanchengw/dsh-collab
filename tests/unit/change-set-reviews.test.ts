@@ -220,6 +220,33 @@ describe("ChangeSetReviewService", () => {
     })).rejects.toMatchObject({ code: "MEMBER_INACTIVE" });
   });
 
+  it("records one Owner application only after approval and restores it as applied", async () => {
+    const { changeSets, rooms, service } = setup();
+    await service.assignReviewer({
+      roomId: "room-1", principalId: "principal-author", changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer", clientRequestId: "assign-apply",
+    });
+    await service.decide({
+      roomId: "room-1", principalId: "principal-reviewer", changeSetId: "a".repeat(64),
+      outcome: "approved", clientRequestId: "approve-apply",
+    });
+
+    const prepared = await service.prepareApplication({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) });
+    const application = prepared.commit("b".repeat(64), "c".repeat(64));
+    expect(await service.getReview({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) }))
+      .toMatchObject({ status: "applied", application });
+
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: () => 2000 }, service.snapshot());
+    expect(restored.getApplication("room-1", "a".repeat(64))).toEqual(application);
+    const retry = await restored.prepareApplication({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) });
+    expect(retry.existing).toEqual(application);
+    expect(retry.commit("d".repeat(64), "e".repeat(64))).toEqual(application);
+
+    const damaged = service.snapshot();
+    damaged.reviews[0]!.application!.appliedBy = "member-author";
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, damaged)).toThrow(/application/i);
+  });
+
   it("makes Finding request IDs idempotent, rejects mutations, and restores append-only history", async () => {
     const { changeSets, ledger, rooms, service } = setup();
     const input = {

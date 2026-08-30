@@ -1,12 +1,13 @@
 import { createDshCordisSessionService, type DshCordisAgentRegistry, type DshCordisSessionEventListener } from "./dsh-cordis-agent.js";
 import type { DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
-import { HostSnapshotFile, resolveDefaultCollabChangeSetDir, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
+import { HostSnapshotFile, resolveDefaultCollabChangeSetDir, resolveDefaultCollabIntegrationJournalDir, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess } from "./repository-inspector.js";
 import { captureReviewDiffs } from "./review-diffs.js";
 import { createDshWorkspaceFilePort, WorkspaceSnapshotCapture, type DshWorkspaceFileSystem } from "./workspace-snapshot.js";
 import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
+import { supportsDshCanonicalWorkspace } from "./canonical-workspace.js";
 
 export interface DshCordisHostContext {
   agents: DshCordisAgentRegistry;
@@ -18,11 +19,12 @@ export interface DshCordisHostContext {
   };
 }
 
-export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId" | "workspaceSnapshots" | "changeSetSubprocess"> & {
+export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId" | "workspaceSnapshots" | "changeSetSubprocess" | "canonicalFiles" | "integrationJournalRoot"> & {
   enabled?: boolean;
   hostSessionId?: string;
   stateFile?: string | false;
   sideTaskFile?: string | false;
+  integrationJournalRoot?: string | false;
 };
 
 export interface MountedDshCollabHost {
@@ -66,6 +68,7 @@ export function createDshWorkspaceSnapshotProvider(input: {
 /** Mount one collab Gateway into the real Cordis WebServer and Agent registry. */
 export function mountDshCollabCordisHost(context: DshCordisHostContext, config: DshCordisHostConfig): MountedDshCollabHost | undefined {
   if (config.enabled === false) return undefined;
+  const { integrationJournalRoot, ...runtimeConfig } = config;
   const sessions: DshSessionService = createDshCordisSessionService({
     agents: context.agents,
     ...(context.on ? { onSessionEvent: (listener: DshCordisSessionEventListener) => context.on!("session/event", listener) } : {}),
@@ -83,10 +86,14 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   let runtime: DshCollabHostRuntime;
   const commitCriticalState = persistence ? () => persistence.saveLatest(() => runtime.snapshot()) : undefined;
   runtime = createDshCollabHostRuntime({
-    ...config,
+    ...runtimeConfig,
     sessions,
     snapshot,
     workspaceSnapshots,
+    ...(context.fs && supportsDshCanonicalWorkspace(context.fs) ? { canonicalFiles: context.fs } : {}),
+    ...(integrationJournalRoot === false || config.stateFile === false
+      ? {}
+      : { integrationJournalRoot: integrationJournalRoot ?? resolveDefaultCollabIntegrationJournalDir() }),
     ...(workspaceSnapshots && context.subprocess ? {
       changeSetRoot: config.changeSetRoot ?? resolveDefaultCollabChangeSetDir(),
       changeSetSubprocess: context.subprocess,
@@ -101,7 +108,10 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   const unsubscribeReviewPoints = persistence ? runtime.reviewPoints.subscribe(save) : undefined;
   const unsubscribeReviews = persistence ? runtime.reviews.subscribe(save) : undefined;
   const unsubscribeChangeSetReviews = persistence ? runtime.changeSetReviews?.subscribe(save) : undefined;
-  const ready = runtime.http.listen();
+  const ready = (async () => {
+    await runtime.recoverPendingIntegrations();
+    return await runtime.http.listen();
+  })();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
   void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   return {

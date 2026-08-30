@@ -13,6 +13,7 @@ import { ActiveRoomRegistry } from "./active-rooms.js";
 import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { ChangeSetStagingService } from "./change-set-staging.js";
 import type { ChangeSetReviewService } from "./change-set-reviews.js";
+import type { ChangeSetIntegrationService } from "./change-set-integration.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import type { WorkUpdateService } from "./work-updates.js";
 import type { WorkspaceVersionService } from "./workspace-versions.js";
@@ -59,6 +60,7 @@ interface GatewayOptions {
   workspaceVersions?: WorkspaceVersionService;
   changeSets?: ChangeSetStagingService;
   changeSetReviews?: ChangeSetReviewService;
+  changeSetIntegration?: ChangeSetIntegrationService;
   workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
@@ -794,21 +796,27 @@ export class CollabGateway {
       const body = objectBody(request.body);
       allowedFields(body, ["clientRequestId", "parentVersionId"]);
       const parentVersionId = body.parentVersionId === undefined ? undefined : hashIdField(body.parentVersionId, "parentVersionId");
-      const snapshot = await workspace.captureLatest({
-        roomId,
-        principalId: claims.principalId,
-        clientRequestId: requestIdField(body, "clientRequestId"),
-        purpose: "workspace-version",
-        roomEventSeq: this.options.ledger.latestSeq(roomId),
-      });
-      const result = await versions.create({
-        roomId,
-        principalId: claims.principalId,
-        snapshotId: snapshot.snapshotId,
-        ...(parentVersionId ? { parentVersionId } : {}),
-      });
-      await this.options.commitCriticalState?.();
-      return { status: result.created ? 201 : 200, body: { record: result.record } };
+      const clientRequestId = requestIdField(body, "clientRequestId");
+      const publish = async (): Promise<GatewayResponse> => {
+        const snapshot = await workspace.captureLatest({
+          roomId,
+          principalId: claims.principalId,
+          clientRequestId,
+          purpose: "workspace-version",
+          roomEventSeq: this.options.ledger.latestSeq(roomId),
+        });
+        const result = await versions.create({
+          roomId,
+          principalId: claims.principalId,
+          snapshotId: snapshot.snapshotId,
+          ...(parentVersionId ? { parentVersionId } : {}),
+        });
+        await this.options.commitCriticalState?.();
+        return { status: result.created ? 201 : 200, body: { record: result.record } };
+      };
+      return this.options.changeSetIntegration
+        ? await this.options.changeSetIntegration.runWithRoomIntegrationLock(roomId, publish)
+        : await publish();
     }
     workspace.requireWorkspaceRead({ roomId, principalId: claims.principalId });
     const requestedId = tail[0] === "latest" ? versions.latest(roomId)?.version.workspaceVersionId : tail[0];
@@ -947,6 +955,17 @@ export class CollabGateway {
       await this.options.commitCriticalState?.();
       return { status: 200, body: result };
     }
+    if (request.method === "POST" && changeSetId && tail.length === 2 && tail[1] === "apply" && this.options.changeSetIntegration) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId"]);
+      const result = await this.options.changeSetIntegration.apply({
+        roomId,
+        principalId: claims.principalId,
+        changeSetId,
+        clientRequestId: requestIdField(body, "clientRequestId"),
+      });
+      return { status: result.outcome === "conflicted" ? 409 : 200, body: result };
+    }
     if (changeSetId && tail.length === 2 && tail[1] === "findings" && reviews) {
       if (request.method === "GET") {
         const after = query.get("after") ?? undefined;
@@ -976,6 +995,9 @@ export class CollabGateway {
       }
     }
     if (changeSetId && tail.length === 2 && ["review", "reviewer", "findings", "decisions", "revision"].includes(tail[1]!) && !reviews) {
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    }
+    if (changeSetId && tail.length === 2 && tail[1] === "apply" && !this.options.changeSetIntegration) {
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
     }
     if (request.method === "GET" && changeSetId && tail.length === 1) {

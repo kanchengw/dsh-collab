@@ -208,7 +208,7 @@ export class WorkspaceVersionService {
     }
   }
 
-  async create(input: CreateWorkspaceVersionInput): Promise<CreatedWorkspaceVersion> {
+  async create(input: CreateWorkspaceVersionInput, hooks?: { beforePublish(record: WorkspaceVersionRecord): void | (() => void) }): Promise<CreatedWorkspaceVersion> {
     const roomId = requiredText(input.roomId, "roomId");
     const principalId = requiredText(input.principalId, "principalId");
     const snapshotId = identifier(input.snapshotId, "snapshotId");
@@ -263,14 +263,21 @@ export class WorkspaceVersionService {
     if (parentVersionId !== this.latest(roomId)?.version.workspaceVersionId) {
       throw new CollabError("REQUEST_CONFLICT", "Workspace Version parent is no longer the latest version");
     }
-    const event = this.options.ledger.append({
-      eventId: `workspace-version:${record.version.workspaceVersionId}`,
-      roomId,
-      type: "workspace-version.published",
-      actor: { memberId: member.memberId, principalId },
-      createdAt: record.version.createdAt,
-      payload: record,
-    });
+    const rollback = hooks?.beforePublish(record);
+    let event: RoomEvent;
+    try {
+      event = this.options.ledger.append({
+        eventId: `workspace-version:${record.version.workspaceVersionId}`,
+        roomId,
+        type: "workspace-version.published",
+        actor: { memberId: member.memberId, principalId },
+        createdAt: record.version.createdAt,
+        payload: record,
+      });
+    } catch (error) {
+      rollback?.();
+      throw error;
+    }
     this.add(record, event);
     return { record: structuredClone(record), event: structuredClone(event), created: true };
   }
