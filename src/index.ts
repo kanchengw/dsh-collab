@@ -5,6 +5,7 @@ export * from "./room-client.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
+export * from "./dsh-native-agent-context.js";
 export * from "./local-sidecar.js";
 export * from "./local-sidecar-store.js";
 export * from "./local-sidecar-workspace.js";
