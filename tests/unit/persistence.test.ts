@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HostSnapshotFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile, resolveDefaultCollabWorkspaceDir } from "../../src/persistence.js";
+import { HostSnapshotFile, resolveDefaultCollabIntegrationJournalDir, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile, resolveDefaultCollabWorkspaceDir } from "../../src/persistence.js";
 import type { DshCollabHostRuntimeSnapshot } from "../../src/host-runtime.js";
 
 const dirs: string[] = [];
@@ -27,6 +27,7 @@ describe("Host snapshot file", () => {
     expect(resolveDefaultCollabSnapshotDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "snapshots"));
     expect(resolveDefaultCollabWorkspaceDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "workspaces"));
     expect(resolveDefaultCollabRoomWorkspaceDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "rooms"));
+    expect(resolveDefaultCollabIntegrationJournalDir({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "integration-journals"));
     expect(resolveDefaultCollabSideTaskFile({ DSH_HOME: "C:\\dsh-test" })).toBe(join("C:\\dsh-test", "collab", "v1", "side-tasks.json"));
     const dir = await mkdtemp(join(tmpdir(), "dsh-collab-state-"));
     dirs.push(dir);

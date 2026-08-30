@@ -24,6 +24,10 @@ export function resolveDefaultCollabChangeSetDir(env: Record<string, string | un
   return join(resolveDshHome(undefined, env), "collab", "v1", "change-sets");
 }
 
+export function resolveDefaultCollabIntegrationJournalDir(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDshHome(undefined, env), "collab", "v1", "integration-journals");
+}
+
 export function resolveDefaultCollabSideTaskFile(env: Record<string, string | undefined> = process.env): string {
   return join(resolveDshHome(undefined, env), "collab", "v1", "side-tasks.json");
 }
