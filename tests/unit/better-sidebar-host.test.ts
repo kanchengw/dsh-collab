@@ -21,6 +21,7 @@ function service(overrides: Partial<BetterSidebarServicePort> = {}): BetterSideb
       return vi.fn();
     }),
     openTab: vi.fn(),
+    getSnapshot: () => ({ sessionId: "session-current", cwd: "C:/work/current" }),
     ...overrides,
   };
   return result;
@@ -87,6 +88,17 @@ describe("BetterSidebarHost provider", () => {
       { type: COLLAB_PANEL_ID, url: "dsh-collab://panel" },
       { sessionId: "session-participant", cwd: "C:/work/room-release" },
     );
+  });
+
+  it("exposes the active Session target for root-scoped room navigation", () => {
+    const resolution = resolveBetterSidebarHost(service({
+      getSnapshot: () => ({ sessionId: "session-current", cwd: "C:/work/current" }),
+    }));
+
+    expect(resolution.kind).toBe("ready");
+    if (resolution.kind === "ready") {
+      expect(resolution.getActiveTarget()).toEqual({ sessionId: "session-current", cwd: "C:/work/current" });
+    }
   });
 
   it("rejects duplicate registration and releases the provider descriptor on dispose", () => {

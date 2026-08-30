@@ -955,6 +955,7 @@ describe("browser Gateway client", () => {
       { kind: "human", text: "hello" },
       { kind: "agent", text: "done", state: "output" },
     ]);
+    expect(client.getSnapshot().roomEvents?.map((event) => event.eventId)).toEqual(["human-1", "agent-1"]);
 
     socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
       eventId: "foreign", roomId: "room-2", seq: 999, type: "human.message",
@@ -995,6 +996,7 @@ describe("browser Gateway client", () => {
       actor: { memberId: "member-host", principalId: "host" }, createdAt: 4, payload: { text: "live" },
     } }) });
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
+    expect(client.getSnapshot().roomEvents?.at(-1)?.eventId).toBe("human-2");
 
     socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
       eventId: "member-joined", roomId: "room-1", seq: 5, type: "member.joined",

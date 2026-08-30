@@ -393,7 +393,6 @@ describe("real DSH client slot adapter", () => {
       { name: "conversation.session.header.actions", options: expect.objectContaining({ id: "dsh-collab", order: 30, locale: "dsh-collab" }) },
       { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20, locale: "dsh-collab" }) },
       { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10, locale: "dsh-collab" }) },
-      { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-room", order: 20, locale: "dsh-collab" }) },
       { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab", locale: "dsh-collab" }) },
     ]);
     expect(context.slots.inject).toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
@@ -403,14 +402,16 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
-  it("publishes Better Sidebar as an optional local Panel Host without blocking the client plugin", () => {
+  it("registers the Collab Bar with Better Sidebar without blocking the client plugin", () => {
     let panelHost: { register(input: { id: string; title: string; render(): null }): () => void; open(input: { sessionId: string }): void } | undefined;
-    const registerTab = vi.fn(() => () => {});
+    let descriptor: { id: string; title: string | (() => string); component(input: { scope: { sessionId: string; cwd?: string }; visible: boolean }): unknown } | undefined;
+    const registerTab = vi.fn((input) => { descriptor = input; return () => {}; });
     const betterSidebar = {
       version: "0.17.1",
       features: ["targetedOpen"],
       registerTab,
       openTab: vi.fn(),
+      getSnapshot: () => ({ sessionId: "session-current" }),
     };
     const context = {
       slots: { inject: vi.fn((_name: string, register: () => unknown) => register()), register: vi.fn(() => () => {}) },
@@ -424,8 +425,11 @@ describe("real DSH client slot adapter", () => {
     expect(inject).not.toContain("betterSidebar");
     expect(context.inject).toHaveBeenCalledWith(["betterSidebar"], expect.any(Function));
     expect(panelHost).toBeDefined();
-    panelHost?.register({ id: "dsh-collab:room", title: "Collab", render: () => null });
     expect(registerTab).toHaveBeenCalledOnce();
+    expect(descriptor).toMatchObject({ id: "dsh-collab:room", single: true });
+    const html = renderToStaticMarkup(descriptor?.component({ scope: { sessionId: "session-current" }, visible: true }) as React.ReactElement);
+    expect(html).toContain('data-collab-bar="true"');
+    expect(html).not.toContain('data-collab-surface="room"');
   });
 
   it("uses the dedicated Gateway default instead of the DSH origin", () => {

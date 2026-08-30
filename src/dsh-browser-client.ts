@@ -503,6 +503,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       members: [],
       timeline: [],
       agentQueue: [],
+      roomEvents: [],
     };
   }
 
@@ -926,6 +927,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         : []),
       timeline: projectTimeline([...events.values()], []),
       agentQueue: projectAgentQueue([...events.values()]),
+      roomEvents: [...events.values()],
       ...(sameRoom && this.snapshot.workspaceSharing ? { workspaceSharing: this.snapshot.workspaceSharing } : {}),
     };
     this.manuallyDisconnected = false;
@@ -1060,7 +1062,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         const memberId = (event.payload as Record<string, unknown>).memberId;
         if (typeof memberId === "string") members = (members ?? []).filter((member) => member.memberId !== memberId);
       }
-      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline(), agentQueue: projectAgentQueue([...this.events.values()]) };
+      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline(), agentQueue: projectAgentQueue([...this.events.values()]), roomEvents: [...this.events.values()] };
       this.emit();
     }
   }

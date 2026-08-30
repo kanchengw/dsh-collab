@@ -1,8 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
+import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
 import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
+import type { CollabPanelHost } from "../../src/collab-panel-host.js";
 
 function port(): DshCollabSettingsPort {
   return {
@@ -55,6 +56,18 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Participating rooms");
   });
 
+  it("keeps invitation creation in the shared Owned room manager", () => {
+    const actions = port();
+    actions.getOwnedRooms = () => [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true }];
+    actions.createInvite = vi.fn();
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: actions }));
+    setDshCollabRoomsOpen(false);
+
+    expect(html).toContain("Create invitation");
+    expect(html).toContain("Stop sharing");
+  });
+
   it("explains the optional Better Sidebar requirement without hiding room management", () => {
     setDshCollabRoomsOpen(true);
     const missing = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
@@ -82,6 +95,71 @@ describe("Collab Rooms navigation", () => {
 
     closeDshCollabRoom();
     expect(getDshCollabRoomSelection()).toBeUndefined();
+  });
+
+  it("binds the selected room to the Session targeted by the Collab Panel Host", () => {
+    const opened: Array<{ sessionId: string; cwd?: string }> = [];
+    const panelHost: CollabPanelHost = {
+      register: () => () => {},
+      open: (target) => { opened.push(target); },
+    };
+
+    openDshCollabRoom({ kind: "owned", roomId: "room-owned", hostSessionId: "session-owner", roomTitle: "Owned" }, panelHost);
+    expect(opened).toEqual([{ sessionId: "session-owner" }]);
+
+    openDshCollabRoom({ kind: "joined", roomId: "room-joined", gatewayEndpoint: "wss://alice.example/collab", roomTitle: "Joined" }, panelHost, {
+      sessionId: "session-local", cwd: "C:/work/local",
+    });
+    expect(getDshCollabRoomSelection()).toMatchObject({ kind: "joined", localSessionId: "session-local" });
+    expect(opened.at(-1)).toEqual({ sessionId: "session-local", cwd: "C:/work/local" });
+    closeDshCollabRoom();
+  });
+
+  it("keeps room selection independent across DSH Sessions", () => {
+    const panelHost: CollabPanelHost = { register: () => () => {}, open: () => {} };
+    openDshCollabRoom({ kind: "owned", roomId: "room-a", hostSessionId: "session-a", roomTitle: "A" }, panelHost);
+    openDshCollabRoom({ kind: "joined", roomId: "room-b", gatewayEndpoint: "wss://host.example/collab", roomTitle: "B" }, panelHost, { sessionId: "session-b" });
+
+    expect(getDshCollabRoomSelection("session-a")).toMatchObject({ roomId: "room-a" });
+    expect(getDshCollabRoomSelection("session-b")).toMatchObject({ roomId: "room-b" });
+
+    closeDshCollabRoom("session-a");
+    expect(getDshCollabRoomSelection("session-a")).toBeUndefined();
+    expect(getDshCollabRoomSelection("session-b")).toMatchObject({ roomId: "room-b" });
+    closeDshCollabRoom("session-b");
+  });
+
+  it("starts the Gateway only from an explicit share action before creating the Owner room", async () => {
+    const actions = port();
+    const order: string[] = [];
+    actions.getGatewaySnapshot = () => ({ status: "stopped" });
+    actions.startGateway = vi.fn(async () => { order.push("gateway"); return { status: "running" as const, port: 4310 }; });
+    actions.shareHostRoom = vi.fn(async () => { order.push("room"); });
+
+    await shareDshCollabOwnedRoom(actions, { sessionId: "session-current", title: "Release planning" });
+
+    expect(order).toEqual(["gateway", "room"]);
+    expect(actions.shareHostRoom).toHaveBeenCalledWith({ sessionId: "session-current", title: "Release planning" });
+
+    order.length = 0;
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
+    await shareDshCollabOwnedRoom(actions, { sessionId: "session-current", title: "Release planning" });
+    expect(order).toEqual(["room"]);
+  });
+
+  it("creates invitations from the applied private-network endpoint", async () => {
+    const actions = port();
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4311, exposeMode: "network", advertisedEndpoint: "ws://draft.example:4311/collab",
+      appliedGateway: { gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.20:4310/collab" },
+    });
+    actions.createInvite = vi.fn(async () => ({ invitation: "collab-invite" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("collab-invite");
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({
+      gatewayEndpoint: "ws://192.168.1.20:4310/collab",
+      expiresAt: expect.any(Number),
+    }), "room-owned");
   });
 
   it("reconnects the browser projection before opening an Owned room that is already shared", async () => {

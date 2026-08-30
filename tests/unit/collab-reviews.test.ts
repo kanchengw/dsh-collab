@@ -107,6 +107,7 @@ function port(value: CollabReviewsSnapshot): CollabReviewsPort {
     assignReviewer: vi.fn(),
     createFinding: vi.fn(),
     decide: vi.fn(),
+    apply: vi.fn(),
   };
 }
 
@@ -164,5 +165,35 @@ describe("Collab Reviews", () => {
     expect(html).toContain("审阅中");
     expect(html).toContain("添加审阅意见");
     expect(html).toContain("要求修改");
+  });
+
+  it("keeps Owner apply explicit and renders the durable applied state", () => {
+    const ownerPort = port(snapshot({ role: "owner", currentMemberId: "member-author", reviews: [{
+      ...snapshot().reviews[0]!,
+      review: review({
+        status: "approved",
+        decision: {
+          decisionId: "d".repeat(64), roomId: "room-1", changeSetId: "a".repeat(64),
+          reviewerId: "member-reviewer", outcome: "approved", createdAt: 40,
+        },
+      }),
+    }] }));
+    const approved = renderToStaticMarkup(createElement(CollabReviews, { port: ownerPort }));
+
+    expect(approved).toContain(">Apply<");
+    expect(approved).toContain("Awaiting Owner apply");
+
+    const applied = renderToStaticMarkup(createElement(CollabReviews, { port: port(snapshot({ reviews: [{
+      ...snapshot().reviews[0]!, review: review({
+        status: "applied",
+        application: {
+          version: 1, applicationId: "e".repeat(64), roomId: "room-1", changeSetId: "a".repeat(64),
+          appliedBy: "member-author", workspaceVersionId: "f".repeat(64), integrationId: "1".repeat(64), createdAt: 50,
+        },
+      }),
+    }] })) }));
+
+    expect(applied).toContain("Applied");
+    expect(applied).not.toContain(">Apply<");
   });
 });

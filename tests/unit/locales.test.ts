@@ -46,7 +46,7 @@ describe("dsh-collab locale dictionaries", () => {
     } as DshCollabClientContext);
 
     expect(registerLocale).toHaveBeenCalledWith(COLLAB_LOCALE_NAMESPACE, { zh, en });
-    expect(registrations).toHaveLength(5);
+    expect(registrations).toHaveLength(4);
     expect(registrations.every(({ options }) => options.locale === COLLAB_LOCALE_NAMESPACE)).toBe(true);
     const launcher = registrations.find(({ options }) => options.name === "sidebar.footer.action");
     expect(renderToStaticMarkup(launcher!.component({ wide: true, t }))).toContain("协作房间");

@@ -3,7 +3,7 @@ import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives
 import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
+import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
@@ -12,9 +12,14 @@ import type { RepositoryDiff, RepositoryInspection } from "./repository-inspecto
 import roomCss from "./collab-room.module.css";
 import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
-import type { AgentQueueItem } from "./types.js";
+import type { AgentQueueItem, RoomEvent } from "./types.js";
 import { MAX_CONTEXT_REFS } from "./messages.js";
 import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
+import { CollabBarView } from "./collab-bar.js";
+import { projectCollabActivity } from "./collab-activity.js";
+import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelRenderScope } from "./collab-panel-host.js";
+import type { CollabChangesPort } from "./collab-changes.js";
+import type { CollabReviewsPort } from "./collab-reviews.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -30,6 +35,7 @@ export interface DshCollabClientSnapshot {
   members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
   agentQueue?: readonly AgentQueueItem[];
+  roomEvents?: readonly RoomEvent[];
   workspaceSharing?: WorkspaceSharingState;
 }
 
@@ -748,7 +754,7 @@ function DshAgentQueueTable(props: {
 }
 
 /** Shared timeline and composer rendered inside the Collab room surface. */
-export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; t?: CollabTranslate }): ReactNode {
+export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; showQueue?: boolean; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const fallback = props.fallback ?? fallbackSnapshot;
   const snapshot = usePortSnapshot(props.port, fallback);
@@ -818,7 +824,7 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
     contextMenu ? createElement("div", { className: roomCss.contextMenu, role: "menu", style: { left: contextMenu.x, top: contextMenu.y } },
       createElement("button", { type: "button", role: "menuitem", onClick: () => { addContextRef(contextMenu.item); } }, t("composer.quote")),
     ) : null,
-    createElement(DshAgentQueueTable, { items: snapshot.agentQueue ?? [], members: snapshot.members ?? [], memberId: snapshot.memberId, role: snapshot.role, port: props.port, t }),
+    props.showQueue === false ? null : createElement(DshAgentQueueTable, { items: snapshot.agentQueue ?? [], members: snapshot.members ?? [], memberId: snapshot.memberId, role: snapshot.role, port: props.port, t }),
     createElement("form", { className: roomCss.composer, onSubmit: submit },
       referencedItems.length > 0 ? createElement("div", { className: roomCss.contextRefs, "aria-label": t("composer.quotedMessages") },
         referencedItems.map((item) => createElement("div", { className: roomCss.contextRef, key: item.contextEventId },
@@ -871,17 +877,39 @@ export function DshCollabSessionAction(props: {
   port?: DshCollabClientPort;
   fallback?: DshCollabClientSnapshot;
   t?: CollabTranslate;
+  panelHost?: CollabPanelHost;
+  settingsPort?: DshCollabSettingsPort;
 }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   const hosted = snapshot.role === "host" && snapshot.roomId === props.sessionId && snapshot.connection !== "offline";
   const roomTitle = hosted ? snapshot.roomTitle : props.defaultRoomName;
+  const activate = async (): Promise<void> => {
+    if (!hosted) {
+      if (!props.settingsPort) return;
+      setBusy(true);
+      setError(undefined);
+      try {
+        await shareDshCollabOwnedRoom(props.settingsPort, { sessionId: props.sessionId, title: roomTitle });
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : t("rooms.actionError"));
+        return;
+      } finally {
+        setBusy(false);
+      }
+    }
+    openDshCollabRoom({ kind: "owned", roomId: props.sessionId, hostSessionId: props.sessionId, roomTitle }, props.panelHost);
+  };
   return createElement("button", {
     type: "button",
     className: roomCss.sessionAction,
     "data-collab-session-action": true,
-    onClick: () => { openDshCollabRoom({ kind: "owned", roomId: props.sessionId, hostSessionId: props.sessionId, roomTitle }); },
-  }, t(hosted ? "share.openRoom" : "share.asRoom"));
+    disabled: busy || !props.panelHost || (!hosted && !props.settingsPort?.shareHostRoom),
+    ...(error ? { title: error } : {}),
+    onClick: () => { void activate(); },
+  }, t(hosted ? "share.openRoom" : busy ? "share.sharing" : "share.asRoom"));
 }
 
 /** Full frame-wide room surface shared by Owner and Participant roles. */
@@ -957,8 +985,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
   const createInvitation = async (): Promise<void> => {
     if (selection.kind !== "owned" || !props.settingsPort?.createInvite || gatewayEndpoint === "") return;
     await perform("invite", async () => {
-      const created = await props.settingsPort!.createInvite!({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, selection.roomId);
-      setInvitation(created.invitation);
+      setInvitation(await createDshCollabInvitation(props.settingsPort!, selection.roomId));
     }, t("share.invitationCreatedNotice"));
   };
   const copyInvitation = async (): Promise<void> => {
@@ -1045,13 +1072,49 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
   try { return context.get?.<T>(name); } catch { return undefined; }
 }
 
-function provideOptionalCollabPanelHost(context: DshCollabClientContext): void {
-  const provide = (providerContext: DshCollabClientContext): void => {
+function DshCollabBarPanel(props: {
+  scope: CollabPanelRenderScope;
+  port?: DshCollabClientPort;
+  changesPort?: CollabChangesPort;
+  reviewsPort?: CollabReviewsPort;
+  t: CollabTranslate;
+}): ReactNode {
+  const selection = useDshCollabRoomSelection(props.scope.sessionId);
+  const snapshot = usePortSnapshot(props.port, fallbackSnapshot);
+  const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
+  const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
+  const memberNames = new Map((snapshot.members ?? []).map((member) => [member.memberId, member.displayName]));
+  return createElement(CollabBarView, {
+    key: roomKey,
+    scope: props.scope,
+    selection,
+    roomSnapshot: snapshot,
+    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, showQueue: false, t: props.t }),
+    activityItems,
+    memberNames,
+    ...(props.changesPort ? { changesPort: props.changesPort } : {}),
+    ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
+    t: props.t,
+  });
+}
+
+function installOptionalCollabPanelHost(
+  context: DshCollabClientContext,
+  render: (scope: CollabPanelRenderScope) => ReactNode,
+  title: () => string,
+  onResolution: (resolution: ReturnType<typeof resolveBetterSidebarHost>) => void,
+): void {
+  const install = (providerContext: DshCollabClientContext): void => {
     const resolution = resolveBetterSidebarHost(optionalService<BetterSidebarServicePort>(providerContext, "betterSidebar"));
-    if (resolution.kind === "ready") providerContext.provide?.("collabPanelHost", resolution.host);
+    onResolution(resolution);
+    if (resolution.kind !== "ready") return;
+    providerContext.provide?.("collabPanelHost", resolution.host);
+    const register = (): (() => void) => resolution.host.register({ id: COLLAB_PANEL_ID, title, render });
+    if (providerContext.effect) providerContext.effect(register, "dsh-collab: Collab Bar registration");
+    else register();
   };
-  if (context.inject) context.inject(["betterSidebar"], provide);
-  else provide(context);
+  if (context.inject) context.inject(["betterSidebar"], install);
+  else install(context);
 }
 
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
@@ -1060,7 +1123,6 @@ function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | 
 
 /** Register additive conversation and settings contributions through real DSH slots. */
 export function applyDshCollabClient(context: DshCollabClientContext): void {
-  provideOptionalCollabPanelHost(context);
   const locale = context.locale ?? optionalService<DshCollabLocaleService>(context, "locale");
   if (locale) {
     if (context.effect) context.effect(() => locale.register(COLLAB_LOCALE_NAMESPACE, { zh, en }), "dsh-collab: locale dictionaries");
@@ -1079,6 +1141,10 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
+  const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
+  const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
+  let panelResolution = resolveBetterSidebarHost(undefined);
+  installOptionalCollabPanelHost(context, (scope) => createElement(DshCollabBarPanel, { scope, port: client, changesPort, reviewsPort, t: fallbackT }), () => fallbackT("bar.title"), (resolution) => { panelResolution = resolution; });
   context.slots.inject("conversation.session.header.actions", () => context.slots.register({
     name: "conversation.session.header.actions",
     id: "dsh-collab",
@@ -1088,15 +1154,14 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     const sessionId = String(props.sessionId ?? "");
     const useSessions = props.useSessions as undefined | (<T>(selector: (state: { byId: Record<string, { displayTitle: string }> }) => T) => T);
     const defaultRoomName = useSessions ? useSessions((state) => state.byId[sessionId]?.displayTitle ?? sessionId) : sessionId;
-    return createElement(DshCollabSessionAction, { key: sessionId, sessionId, defaultRoomName, port: client, t: translationFor(props) });
+    return createElement(DshCollabSessionAction, { key: sessionId, sessionId, defaultRoomName, port: client, settingsPort: settings, panelHost: panelResolution.kind === "ready" ? panelResolution.host : undefined, t: translationFor(props) });
   }));
   context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
     port: settings,
-    panelHost: resolveBetterSidebarHost(optionalService<BetterSidebarServicePort>(context, "betterSidebar")),
+    panelHost: panelResolution,
     t: translationFor(props),
   })));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-room", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomSurface, { port: client, settingsPort: settings, t: translationFor(props) })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, { port: settings, t: translationFor(props) })));
 }
 
@@ -1108,4 +1173,6 @@ export { CollabChanges, validateCollabChangesSnapshot } from "./collab-changes.j
 export type { CollabChangesPort, CollabChangesSnapshot, CollabChangesWorkspaceSnapshot } from "./collab-changes.js";
 export { CollabReviews, validateCollabReviewsSnapshot } from "./collab-reviews.js";
 export type { CollabReviewItem, CollabReviewMember, CollabReviewsPort, CollabReviewsSnapshot } from "./collab-reviews.js";
+export { CollabBarView, collabRoomMatchesScope, nextCollabBarTab } from "./collab-bar.js";
+export type { CollabBarRoomSnapshot, CollabBarTab } from "./collab-bar.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";

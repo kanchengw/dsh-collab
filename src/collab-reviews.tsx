@@ -39,9 +39,10 @@ export interface CollabReviewsPort {
     body: string;
   }): Promise<void>;
   decide(changeSetId: string, outcome: "approved" | "changes-requested", note?: string): Promise<void>;
+  apply?(changeSetId: string): Promise<void>;
 }
 
-const STATUSES = new Set<ChangeSetReviewStatus>(["submitted", "in-review", "changes-requested", "approved", "superseded"]);
+const STATUSES = new Set<ChangeSetReviewStatus>(["submitted", "in-review", "changes-requested", "approved", "applied", "superseded"]);
 
 export function validateCollabReviewsSnapshot(snapshot: CollabReviewsSnapshot): CollabReviewsSnapshot {
   if (!snapshot || typeof snapshot.roomId !== "string" || snapshot.roomId.trim() === "") throw new Error("Collab Reviews room is invalid");
@@ -203,6 +204,9 @@ function ReviewDetail(props: {
       <div><dt>{props.t("reviews.requiredReviewer")}</dt><dd>{memberName(props.snapshot, review.requiredReviewerId)}</dd></div>
     </dl>
     {review.status === "approved" ? <p className={css.hint}>{props.t("reviews.awaitingApply")}</p> : null}
+    {review.status === "approved" && props.snapshot.role === "owner" && props.port.apply ? <div className={css.actions}>
+      <button type="button" className={css.primary} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("apply", () => props.port.apply!(changeSet.changeSetId)); }}>{props.t("reviews.apply")}</button>
+    </div> : null}
     {review.supersedesChangeSetId ? <p className={css.hint}>{props.t("reviews.supersedes")} <code>{shortId(review.supersedesChangeSetId)}</code></p> : null}
     {review.supersededByChangeSetId ? <p className={css.hint}>{props.t("reviews.supersededBy")} <code>{shortId(review.supersededByChangeSetId)}</code></p> : null}
     {review.decision?.note ? <p className={css.summary}>{review.decision.note}</p> : null}

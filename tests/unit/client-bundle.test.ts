@@ -14,8 +14,9 @@ describe("browser client bundle", () => {
     expect(bundle).toContain('"collab-inspector"');
     expect(bundle).toContain('"collab-activity"');
     expect(bundle).toContain('"collab-changes"');
+    expect(bundle).toContain('"collab-bar"');
     expect(
       bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId(?:\$\d+)?\)/g),
-    ).toHaveLength(6);
+    ).toHaveLength(7);
   });
 });

@@ -4,47 +4,71 @@ import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-rooms.module.css";
 import type { BetterSidebarHostResolution } from "./better-sidebar-host.js";
+import type { CollabPanelHost, CollabPanelOpenTarget } from "./collab-panel-host.js";
 
 let panelOpen = false;
 const panelListeners = new Set<() => void>();
 let roomSelection: DshCollabRoomSelection | undefined;
+const roomSelectionsBySession = new Map<string, DshCollabRoomSelection>();
 const roomSelectionListeners = new Set<() => void>();
 
 export type DshCollabRoomSelection =
   | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string }
-  | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string };
+  | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; localSessionId?: string };
 
-export function getDshCollabRoomSelection(): DshCollabRoomSelection | undefined {
-  return roomSelection;
+export function getDshCollabRoomSelection(sessionId?: string): DshCollabRoomSelection | undefined {
+  return sessionId === undefined ? roomSelection : roomSelectionsBySession.get(sessionId);
 }
 
-export function openDshCollabRoom(selection: DshCollabRoomSelection): void {
-  roomSelection = selection;
+export function openDshCollabRoom(selection: DshCollabRoomSelection, panelHost?: CollabPanelHost, target?: CollabPanelOpenTarget): void {
+  const destination = selection.kind === "owned" ? { sessionId: selection.hostSessionId } : target;
+  const nextSelection = selection.kind === "joined" && destination
+    ? { ...selection, localSessionId: destination.sessionId }
+    : selection;
+  roomSelection = nextSelection;
+  if (destination) roomSelectionsBySession.set(destination.sessionId, nextSelection);
   setDshCollabRoomsOpen(false);
   for (const listener of roomSelectionListeners) listener();
+  if (panelHost && destination) panelHost.open(destination);
 }
 
-export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: DshCollabOwnedRoom): Promise<void> {
+export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: DshCollabOwnedRoom, panelHost?: CollabPanelHost): Promise<void> {
   if (room.sharing) {
     if (!port.bootstrap) throw new Error("Owned room connection is unavailable");
     await port.bootstrap(room.roomId);
   }
-  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title });
+  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title }, panelHost);
 }
 
-export function closeDshCollabRoom(): void {
-  if (!roomSelection) return;
-  roomSelection = undefined;
+export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { sessionId: string; title: string }): Promise<void> {
+  if (!port.shareHostRoom) throw new Error("Owner room sharing is unavailable");
+  if (port.getGatewaySnapshot?.().status !== "running") await port.startGateway?.();
+  await port.shareHostRoom(input);
+}
+
+export async function createDshCollabInvitation(port: DshCollabSettingsPort, roomId: string): Promise<string> {
+  if (!port.createInvite) throw new Error("Invitation creation is unavailable");
+  const settings = port.getSnapshot();
+  const gatewayEndpoint = (settings.appliedGateway ?? settings).advertisedEndpoint;
+  if (!gatewayEndpoint) throw new Error("Configure a private-network address before creating an invitation");
+  const created = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, roomId);
+  return created.invitation;
+}
+
+export function closeDshCollabRoom(sessionId?: string): void {
+  const targetSessionId = sessionId ?? (roomSelection?.kind === "owned" ? roomSelection.hostSessionId : roomSelection?.localSessionId);
+  if (targetSessionId) roomSelectionsBySession.delete(targetSessionId);
+  if (sessionId === undefined || (roomSelection?.kind === "owned" ? roomSelection.hostSessionId : roomSelection?.localSessionId) === sessionId) roomSelection = undefined;
   for (const listener of roomSelectionListeners) listener();
 }
 
-export function useDshCollabRoomSelection(): DshCollabRoomSelection | undefined {
-  const [selection, setSelection] = useState(roomSelection);
+export function useDshCollabRoomSelection(sessionId?: string): DshCollabRoomSelection | undefined {
+  const [selection, setSelection] = useState(() => getDshCollabRoomSelection(sessionId));
   useEffect(() => {
-    const listener = (): void => { setSelection(roomSelection); };
+    const listener = (): void => { setSelection(getDshCollabRoomSelection(sessionId)); };
     roomSelectionListeners.add(listener);
     return () => { roomSelectionListeners.delete(listener); };
-  }, []);
+  }, [sessionId]);
   return selection;
 }
 
@@ -105,13 +129,9 @@ function Action(props: { children: ReactNode; disabled?: boolean; onClick: () =>
 /** Additive action rendered in DSH's official sidebar footer slot. */
 export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { wide: boolean; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
-  const selection = useDshCollabRoomSelection();
   return (
     <div className={wide ? css.launcherLayer : `${css.launcherLayer} ${css.rail}`}>
-      <button type="button" className={css.launcher} aria-label={t("rooms.title")} aria-expanded={open || selection !== undefined} onClick={() => {
-        if (selection) closeDshCollabRoom();
-        setDshCollabRoomsOpen(selection !== undefined || !open);
-      }}>
+      <button type="button" className={css.launcher} aria-label={t("rooms.title")} aria-expanded={open} onClick={() => { setDshCollabRoomsOpen(!open); }}>
         <span className={css.peopleIcon} aria-hidden="true"><span /><span /></span>
         {wide ? <span className={css.launcherLabel}>{t("rooms.title")}</span> : null}
       </button>
@@ -127,7 +147,8 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const [displayName, setDisplayName] = useState("");
-  const [invitation, setInvitation] = useState("");
+  const [joinInvitation, setJoinInvitation] = useState("");
+  const [hostInvitation, setHostInvitation] = useState<{ roomId: string; value: string }>();
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; message: string }>();
   const participantConnected = activeRoom?.role === "participant" && activeRoom.connection !== "offline";
@@ -158,16 +179,15 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
     }
   };
   const startSharing = async (room: DshCollabOwnedRoom): Promise<void> => {
-    if (port?.getGatewaySnapshot?.().status !== "running") await port?.startGateway?.();
     if (!port?.shareHostRoom) throw new Error(t("owned.unavailable"));
-    await port.shareHostRoom({ sessionId: room.hostSessionId, title: room.title });
+    await shareDshCollabOwnedRoom(port, { sessionId: room.hostSessionId, title: room.title });
   };
   const join = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (!port?.join || participantConnected) return;
     await perform("join", async () => {
-      await port.join?.({ invitation, displayName: displayName.trim() });
-      setInvitation("");
+      await port.join?.({ invitation: joinInvitation, displayName: displayName.trim() });
+      setJoinInvitation("");
     }, t("join.savedNotice"));
   };
   const stopSharing = port?.stopSharing;
@@ -201,11 +221,21 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>
               <div className={css.roomHead}><div><strong>{room.title}</strong><span>{room.hostSessionId}</span></div><Status tone={room.sharing ? "active" : "neutral"}>{t(room.sharing ? "owned.sharing" : "owned.notSharing")}</Status></div>
               <div className={css.actions}>
-                <Action disabled={busy !== undefined} onClick={() => { if (port) void perform(`open:${room.roomId}`, () => openDshCollabOwnedRoom(port, room)); }}>{t("owned.openRoom")}</Action>
+                <Action disabled={busy !== undefined || panelHost?.kind !== "ready"} onClick={() => { if (port && panelHost?.kind === "ready") void perform(`open:${room.roomId}`, () => openDshCollabOwnedRoom(port, room, panelHost.host)); }}>{t("owned.openRoom")}</Action>
                 {room.sharing
-                  ? <Action disabled={!stopSharing || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, async () => { await stopSharing?.(room.roomId); }, t("owned.stoppedNotice")); }}>{t("owned.stopSharing")}</Action>
+                  ? <>
+                    <Action disabled={!port?.createInvite || busy !== undefined} onClick={() => { if (port) void perform(`invite:${room.roomId}`, async () => { setHostInvitation({ roomId: room.roomId, value: await createDshCollabInvitation(port, room.roomId) }); }, t("share.invitationCreatedNotice")); }}>{t(busy === `invite:${room.roomId}` ? "share.creating" : "share.createInvitation")}</Action>
+                    <Action disabled={!stopSharing || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, async () => { await stopSharing?.(room.roomId); setHostInvitation(undefined); }, t("owned.stoppedNotice")); }}>{t("owned.stopSharing")}</Action>
+                  </>
                   : <Action primary disabled={!port?.shareHostRoom || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, () => startSharing(room), t("owned.startedNotice")); }}>{t("owned.startSharing")}</Action>}
               </div>
+              {hostInvitation?.roomId === room.roomId ? <div className={css.hostInvitation}>
+                <input type="text" value={hostInvitation.value} readOnly aria-label={t("share.invitationAria")} />
+                <div className={css.actions}>
+                  <Action disabled={busy !== undefined} onClick={() => { void perform("copy", () => navigator.clipboard.writeText(hostInvitation.value), t("share.copiedNotice")); }}>{t(busy === "copy" ? "share.copying" : "share.copyInvitation")}</Action>
+                  <Action onClick={() => { setHostInvitation(undefined); }}>{t("share.hideInvitation")}</Action>
+                </div>
+              </div> : null}
             </li>)}</ul>}
           </section>
 
@@ -218,7 +248,12 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
               return <li key={`${room.gatewayEndpoint}:${room.roomId}`} className={css.roomRow}>
                 <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span></div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>
                 <div className={css.actions}>
-                  <Action disabled={busy !== undefined} onClick={() => { openDshCollabRoom({ kind: "joined", roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) }); }}>{t("joined.openRoom")}</Action>
+                  <Action disabled={busy !== undefined || panelHost?.kind !== "ready" || !panelHost.getActiveTarget()} onClick={() => {
+                    if (panelHost?.kind !== "ready") return;
+                    const target = panelHost.getActiveTarget();
+                    if (!target) return;
+                    openDshCollabRoom({ kind: "joined", roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) }, panelHost.host, target);
+                  }}>{t("joined.openRoom")}</Action>
                   {active
                     ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { port?.disconnectJoinedRoom?.(); }}>{t("joined.disconnect")}</Action>
                     : <Action primary disabled={!connectJoinedRoom || participantConnected || busy !== undefined} onClick={() => { void perform(`joined:${room.roomId}`, async () => { await connectJoinedRoom?.(ref); }); }}>{t("joined.connect")}</Action>}
@@ -231,9 +266,9 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
           <form className={css.joinSection} onSubmit={(event) => { void join(event); }}>
             <div className={css.sectionHeading}><div><h3>{t("join.title")}</h3><p>{t("join.description")}</p></div></div>
             <label className={css.field}>{t("join.displayName")}<input name="displayName" value={displayName} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
-            <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={invitation} rows={4} spellCheck={false} onChange={(event) => { setInvitation(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
+            <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
             {participantConnected ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
-            <button type="submit" className={css.joinButton} disabled={!port?.join || participantConnected || busy !== undefined || displayName.trim() === "" || invitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
+            <button type="submit" className={css.joinButton} disabled={!port?.join || participantConnected || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
           </form>
           {notice ? <p className={notice.tone === "error" ? css.error : css.success} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}
         </div>

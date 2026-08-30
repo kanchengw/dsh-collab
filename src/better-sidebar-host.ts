@@ -26,12 +26,13 @@ export interface BetterSidebarServicePort {
     seed: { type: string; url?: string },
     scope?: { sessionId: string; cwd?: string },
   ): void;
+  getSnapshot?(): { sessionId?: string; cwd?: string };
 }
 
 export type BetterSidebarHostResolution =
   | { kind: "missing"; requiredVersion: string }
   | { kind: "incompatible"; reason: "service" | "version" | "features"; requiredVersion: string; actualVersion?: string; missingFeatures?: string[] }
-  | { kind: "ready"; host: CollabPanelHost; version: string };
+  | { kind: "ready"; host: CollabPanelHost; version: string; getActiveTarget(): CollabPanelOpenTarget | undefined };
 
 function isCompatibleVersion(version: string): boolean {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -63,7 +64,16 @@ export function resolveBetterSidebarHost(service: unknown): BetterSidebarHostRes
   if (missingFeatures.length > 0) {
     return { kind: "incompatible", reason: "features", requiredVersion: BETTER_SIDEBAR_MIN_VERSION, actualVersion: service.version, missingFeatures };
   }
-  return { kind: "ready", host: createBetterSidebarHost(service), version: service.version };
+  return {
+    kind: "ready",
+    host: createBetterSidebarHost(service),
+    version: service.version,
+    getActiveTarget: () => {
+      const snapshot = service.getSnapshot?.();
+      if (!snapshot || typeof snapshot.sessionId !== "string" || snapshot.sessionId.trim() === "") return undefined;
+      return { sessionId: snapshot.sessionId, ...(typeof snapshot.cwd === "string" && snapshot.cwd.trim() !== "" ? { cwd: snapshot.cwd } : {}) };
+    },
+  };
 }
 
 export function createBetterSidebarHost(service: BetterSidebarServicePort): CollabPanelHost {
