@@ -6,6 +6,7 @@ export * from "./room-context.js";
 export * from "./room-context-delivery.js";
 export * from "./room-session-links.js";
 export * from "./room-workspace.js";
+export * from "./dsh-room-workspace.js";
 export * from "./dsh-collab-tools.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
