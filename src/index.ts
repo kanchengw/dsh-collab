@@ -2,6 +2,7 @@ export * from "./approvals.js";
 export * from "./active-rooms.js";
 export * from "./audit.js";
 export * from "./room-client.js";
+export * from "./room-session-links.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
