@@ -3,6 +3,7 @@ import type { JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client
 import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-rooms.module.css";
+import type { BetterSidebarHostResolution } from "./better-sidebar-host.js";
 
 let panelOpen = false;
 const panelListeners = new Set<() => void>();
@@ -118,7 +119,7 @@ export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { w
   );
 }
 
-export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
+export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; panelHost?: BetterSidebarHostResolution; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
   const ownedRooms = useOwnedRooms(port);
   const joinedRooms = useJoinedRooms(port);
@@ -191,6 +192,10 @@ export function DshCollabRoomsPanel({ port, t = defaultCollabTranslate }: { port
           <button ref={closeRef} type="button" className={css.close} aria-label={t("rooms.close")} onClick={() => { setDshCollabRoomsOpen(false); }}><span className={css.closeIcon} aria-hidden="true" /></button>
         </header>
         <div className={css.body}>
+          {panelHost && panelHost.kind !== "ready" ? <div className={css.providerNotice} role="status" data-collab-panel-provider={panelHost.kind}>
+            <strong>{t("panelHost.unavailable")}</strong>
+            <span>{t(panelHost.kind === "missing" ? "panelHost.install" : "panelHost.upgrade", { version: panelHost.requiredVersion })}</span>
+          </div> : null}
           <section className={css.roomSection} aria-labelledby="owned-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="owned-rooms-title">{t("owned.title")}</h3><p>{t("owned.description")}</p></div><span className={css.count}>{ownedRooms.length}</span></div>
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>

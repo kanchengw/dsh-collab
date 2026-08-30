@@ -204,6 +204,23 @@
   padding: 16px 18px 24px;
 }
 
+.providerNotice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.providerNotice strong {
+  font-weight: 500;
+}
+
 .gatewaySection,
 .roomSection,
 .joinSection {

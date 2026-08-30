@@ -403,6 +403,31 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
+  it("publishes Better Sidebar as an optional local Panel Host without blocking the client plugin", () => {
+    let panelHost: { register(input: { id: string; title: string; render(): null }): () => void; open(input: { sessionId: string }): void } | undefined;
+    const registerTab = vi.fn(() => () => {});
+    const betterSidebar = {
+      version: "0.17.1",
+      features: ["targetedOpen"],
+      registerTab,
+      openTab: vi.fn(),
+    };
+    const context = {
+      slots: { inject: vi.fn((_name: string, register: () => unknown) => register()), register: vi.fn(() => () => {}) },
+      get: vi.fn((name: string) => name === "betterSidebar" ? betterSidebar : undefined),
+      provide: vi.fn((name: string, value: unknown) => { if (name === "collabPanelHost") panelHost = value as typeof panelHost; }),
+      inject: vi.fn((_services: string[], callback: (scope: unknown) => void) => callback(context)),
+    };
+
+    applyDshCollabClient(context as unknown as DshCollabClientContext);
+
+    expect(inject).not.toContain("betterSidebar");
+    expect(context.inject).toHaveBeenCalledWith(["betterSidebar"], expect.any(Function));
+    expect(panelHost).toBeDefined();
+    panelHost?.register({ id: "dsh-collab:room", title: "Collab", render: () => null });
+    expect(registerTab).toHaveBeenCalledOnce();
+  });
+
   it("uses the dedicated Gateway default instead of the DSH origin", () => {
     const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
     const socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");

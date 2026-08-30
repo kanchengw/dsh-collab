@@ -14,6 +14,7 @@ import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
 import type { AgentQueueItem } from "./types.js";
 import { MAX_CONTEXT_REFS } from "./messages.js";
+import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -129,6 +130,7 @@ export interface DshCollabClientContext {
   get?<T = unknown>(name: string): T;
   provide?<T = unknown>(name: string, value: T): unknown;
   effect?(callback: () => void | (() => void), label?: string): unknown;
+  inject?(services: string[], callback: (context: DshCollabClientContext) => void): unknown;
 }
 
 /** DSH client runner service required by this browser contribution. */
@@ -1043,12 +1045,22 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
   try { return context.get?.<T>(name); } catch { return undefined; }
 }
 
+function provideOptionalCollabPanelHost(context: DshCollabClientContext): void {
+  const provide = (providerContext: DshCollabClientContext): void => {
+    const resolution = resolveBetterSidebarHost(optionalService<BetterSidebarServicePort>(providerContext, "betterSidebar"));
+    if (resolution.kind === "ready") providerContext.provide?.("collabPanelHost", resolution.host);
+  };
+  if (context.inject) context.inject(["betterSidebar"], provide);
+  else provide(context);
+}
+
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
   return { gatewayUrl: `http://127.0.0.1:${String(defaultCollabSettings.gatewayPort)}/collab`, roomId: "dsh-room" };
 }
 
 /** Register additive conversation and settings contributions through real DSH slots. */
 export function applyDshCollabClient(context: DshCollabClientContext): void {
+  provideOptionalCollabPanelHost(context);
   const locale = context.locale ?? optionalService<DshCollabLocaleService>(context, "locale");
   if (locale) {
     if (context.effect) context.effect(() => locale.register(COLLAB_LOCALE_NAMESPACE, { zh, en }), "dsh-collab: locale dictionaries");
@@ -1079,7 +1091,11 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     return createElement(DshCollabSessionAction, { key: sessionId, sessionId, defaultRoomName, port: client, t: translationFor(props) });
   }));
   context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, { port: settings, t: translationFor(props) })));
+  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
+    port: settings,
+    panelHost: resolveBetterSidebarHost(optionalService<BetterSidebarServicePort>(context, "betterSidebar")),
+    t: translationFor(props),
+  })));
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-room", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomSurface, { port: client, settingsPort: settings, t: translationFor(props) })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, { port: settings, t: translationFor(props) })));
 }

@@ -60,7 +60,13 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": ">=0.1.1-rc.2 <0.2.0",
     "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.1-rc.2 <0.2.0",
-    "@deepseek-ai/dsh-user-approval": ">=0.1.1-rc.2 <0.2.0"
+    "@deepseek-ai/dsh-user-approval": ">=0.1.1-rc.2 <0.2.0",
+    "dsh-better-sidebar": ">=0.17.1 <0.18.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
