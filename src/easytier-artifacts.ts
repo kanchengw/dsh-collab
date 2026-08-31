@@ -23,6 +23,11 @@ export interface EasyTierArtifactManifest {
     commit: string;
     archiveUrl: string;
     buildInstructionsUrl: string;
+    upstream: {
+      repository: string;
+      tag: string;
+      commit: string;
+    };
   };
   legal: {
     notice: string;
@@ -35,7 +40,11 @@ export interface EasyTierArtifactManifest {
   artifacts: EasyTierArtifactDescriptor[];
 }
 
-const EASYTIER_REPOSITORY = "https://github.com/EasyTier/EasyTier";
+const EASYTIER_REPOSITORY = "https://github.com/kanchengw/easytier-collab";
+const EASYTIER_COMMIT = "631b5539bff59adee292c8f8e1b1b43b40742b2f";
+const EASYTIER_TAG = "v2.6.4-collab.1";
+const EASYTIER_UPSTREAM_REPOSITORY = "https://github.com/EasyTier/EasyTier";
+const EASYTIER_UPSTREAM_COMMIT = "8428a89d2dabc94c97d370ec607c6ca142473626";
 const EASYTIER_LGPL_SHA256 = "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118";
 const GPL_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986";
 
@@ -43,12 +52,17 @@ export const EASYTIER_ARTIFACT_MANIFEST: EasyTierArtifactManifest = {
   schemaVersion: 1,
   project: "EasyTier",
   version: "2.6.4",
-  tag: "v2.6.4",
+  tag: EASYTIER_TAG,
   source: {
     repository: EASYTIER_REPOSITORY,
-    commit: "8428a89d2dabc94c97d370ec607c6ca142473626",
-    archiveUrl: `${EASYTIER_REPOSITORY}/archive/8428a89d2dabc94c97d370ec607c6ca142473626.zip`,
-    buildInstructionsUrl: `${EASYTIER_REPOSITORY}/blob/v2.6.4/.github/workflows/core.yml`,
+    commit: EASYTIER_COMMIT,
+    archiveUrl: `${EASYTIER_REPOSITORY}/archive/${EASYTIER_COMMIT}.zip`,
+    buildInstructionsUrl: `${EASYTIER_REPOSITORY}/blob/${EASYTIER_COMMIT}/collab/windows-no-tun/build.ps1`,
+    upstream: {
+      repository: EASYTIER_UPSTREAM_REPOSITORY,
+      tag: "v2.6.4",
+      commit: EASYTIER_UPSTREAM_COMMIT,
+    },
   },
   legal: {
     notice: "NOTICE.md",
@@ -61,10 +75,10 @@ export const EASYTIER_ARTIFACT_MANIFEST: EasyTierArtifactManifest = {
   artifacts: [{
     platform: "win32",
     arch: "x64",
-    archiveName: "easytier-windows-x86_64-v2.6.4.zip",
-    archiveUrl: `${EASYTIER_REPOSITORY}/releases/download/v2.6.4/easytier-windows-x86_64-v2.6.4.zip`,
-    byteLength: 32_657_720,
-    sha256: "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84",
+    archiveName: "easytier-windows-x86_64-v2.6.4-collab.1.zip",
+    archiveUrl: `${EASYTIER_REPOSITORY}/releases/download/${EASYTIER_TAG}/easytier-windows-x86_64-v2.6.4-collab.1.zip`,
+    byteLength: 13_248_117,
+    sha256: "86ae7bd23014dbec29d0b5fe1d5e46da202a4c4773f81b5feb99bfa20b9a902b",
   }],
 };
 
@@ -73,11 +87,14 @@ function legalFile(value: string, expected: string): void {
 }
 
 export function validateEasyTierArtifactManifest(manifest: EasyTierArtifactManifest): EasyTierArtifactManifest {
-  if (manifest.schemaVersion !== 1 || manifest.project !== "EasyTier" || !/^\d+\.\d+\.\d+$/.test(manifest.version)
-    || manifest.tag !== `v${manifest.version}`) throw new Error("EasyTier manifest version is invalid");
-  if (manifest.source.repository !== EASYTIER_REPOSITORY || !/^[a-f0-9]{40}$/.test(manifest.source.commit)
+  if (manifest.schemaVersion !== 1 || manifest.project !== "EasyTier" || manifest.version !== "2.6.4"
+    || manifest.tag !== EASYTIER_TAG) throw new Error("EasyTier manifest version is invalid");
+  if (manifest.source.repository !== EASYTIER_REPOSITORY || manifest.source.commit !== EASYTIER_COMMIT
     || manifest.source.archiveUrl !== `${EASYTIER_REPOSITORY}/archive/${manifest.source.commit}.zip`
-    || manifest.source.buildInstructionsUrl !== `${EASYTIER_REPOSITORY}/blob/${manifest.tag}/.github/workflows/core.yml`) {
+    || manifest.source.buildInstructionsUrl !== `${EASYTIER_REPOSITORY}/blob/${manifest.source.commit}/collab/windows-no-tun/build.ps1`
+    || manifest.source.upstream.repository !== EASYTIER_UPSTREAM_REPOSITORY
+    || manifest.source.upstream.tag !== "v2.6.4"
+    || manifest.source.upstream.commit !== EASYTIER_UPSTREAM_COMMIT) {
     throw new Error("EasyTier manifest source is invalid");
   }
   legalFile(manifest.legal.notice, "NOTICE.md");

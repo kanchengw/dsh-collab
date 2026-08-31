@@ -32,6 +32,10 @@ export function resolveDefaultCollabEasyTierDir(env: Record<string, string | und
   return join(resolveDshHome(undefined, env), "collab", "v1", "easytier");
 }
 
+export function resolveDefaultCollabEasyTierRunDir(env: Record<string, string | undefined> = process.env): string {
+  return join(resolveDefaultCollabEasyTierDir(env), "runs");
+}
+
 export function resolveDefaultCollabSideTaskFile(env: Record<string, string | undefined> = process.env): string {
   return join(resolveDshHome(undefined, env), "collab", "v1", "side-tasks.json");
 }

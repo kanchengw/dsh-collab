@@ -27,7 +27,7 @@ function fixtureManifest(bytes: Uint8Array): EasyTierArtifactManifest {
   const source = EASYTIER_ARTIFACT_MANIFEST.source;
   return {
     ...EASYTIER_ARTIFACT_MANIFEST,
-    source: { ...source },
+    source: { ...source, upstream: { ...source.upstream } },
     legal: { ...EASYTIER_ARTIFACT_MANIFEST.legal },
     artifacts: [{
       ...EASYTIER_ARTIFACT_MANIFEST.artifacts[0]!,
@@ -48,30 +48,35 @@ async function legalRoot(commit = EASYTIER_ARTIFACT_MANIFEST.source.commit): Pro
     writeFile(join(root, "NOTICE.md"), `EasyTier v2.6.4\n${commit}\n`, "utf8"),
     writeFile(join(root, "LICENSE.LGPL-3.0"), lgpl, "utf8"),
     writeFile(join(root, "LICENSE.GPL-3.0"), gpl, "utf8"),
-    writeFile(join(root, "SOURCE.md"), `Corresponding source ${commit}\nhttps://github.com/EasyTier/EasyTier/blob/v2.6.4/.github/workflows/core.yml\n`, "utf8"),
+    writeFile(join(root, "SOURCE.md"), `Corresponding source ${commit}\n${EASYTIER_ARTIFACT_MANIFEST.source.buildInstructionsUrl}\n`, "utf8"),
   ]);
   return root;
 }
 
 describe("EasyTier artifact supply chain", () => {
-  it("pins the one release artifact proven by the transport spike", () => {
+  it("pins the verified no-Npcap fork while retaining the exact upstream base", () => {
     expect(EASYTIER_ARTIFACT_MANIFEST).toMatchObject({
       version: "2.6.4",
-      tag: "v2.6.4",
+      tag: "v2.6.4-collab.1",
       source: {
-        repository: "https://github.com/EasyTier/EasyTier",
-        commit: "8428a89d2dabc94c97d370ec607c6ca142473626",
+        repository: "https://github.com/kanchengw/easytier-collab",
+        commit: "631b5539bff59adee292c8f8e1b1b43b40742b2f",
+        upstream: {
+          repository: "https://github.com/EasyTier/EasyTier",
+          tag: "v2.6.4",
+          commit: "8428a89d2dabc94c97d370ec607c6ca142473626",
+        },
       },
       artifacts: [{
         platform: "win32",
         arch: "x64",
-        archiveName: "easytier-windows-x86_64-v2.6.4.zip",
-        byteLength: 32_657_720,
-        sha256: "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84",
+        archiveName: "easytier-windows-x86_64-v2.6.4-collab.1.zip",
+        byteLength: 13_248_117,
+        sha256: "86ae7bd23014dbec29d0b5fe1d5e46da202a4c4773f81b5feb99bfa20b9a902b",
       }],
     });
     expect(resolveEasyTierArtifact({ platform: "win32", arch: "x64", version: "2.6.4" }).archiveUrl)
-      .toBe("https://github.com/EasyTier/EasyTier/releases/download/v2.6.4/easytier-windows-x86_64-v2.6.4.zip");
+      .toBe("https://github.com/kanchengw/easytier-collab/releases/download/v2.6.4-collab.1/easytier-windows-x86_64-v2.6.4-collab.1.zip");
     expect(() => resolveEasyTierArtifact({ platform: "linux", arch: "x64", version: "2.6.4" })).toThrow("unsupported");
     expect(() => resolveEasyTierArtifact({ platform: "win32", arch: "x64", version: "2.6.5" })).toThrow("unsupported");
   });
@@ -82,6 +87,14 @@ describe("EasyTier artifact supply chain", () => {
       source: { ...EASYTIER_ARTIFACT_MANIFEST.source, repository: "https://mirror.invalid/EasyTier" },
     };
     expect(() => validateEasyTierArtifactManifest(forged)).toThrow("source");
+    const forgedUpstream = {
+      ...EASYTIER_ARTIFACT_MANIFEST,
+      source: {
+        ...EASYTIER_ARTIFACT_MANIFEST.source,
+        upstream: { ...EASYTIER_ARTIFACT_MANIFEST.source.upstream, commit: "0".repeat(40) },
+      },
+    };
+    expect(() => validateEasyTierArtifactManifest(forgedUpstream)).toThrow("source");
   });
 
   it("cancels the HTTP response body when artifact consumption stops early", async () => {
@@ -167,10 +180,11 @@ describe("EasyTier artifact supply chain", () => {
     roots.push(root);
     const cache = join(root, "v2.6.4", "win32-x64");
     await mkdir(cache, { recursive: true });
-    const archivePath = join(cache, "easytier-windows-x86_64-v2.6.4.zip");
+    const manifest = fixtureManifest(expected);
+    const archivePath = join(cache, manifest.artifacts[0]!.archiveName);
     await writeFile(archivePath, Buffer.from("tampered archive"));
     const downloader: EasyTierArtifactDownloader = { download: vi.fn(async function* () { yield expected; }) };
-    const store = new EasyTierArtifactStore({ root, downloader, manifest: fixtureManifest(expected) });
+    const store = new EasyTierArtifactStore({ root, downloader, manifest });
 
     await expect(store.prepare({ platform: "win32", arch: "x64", version: "2.6.4" })).rejects.toThrow("Cached EasyTier artifact");
     expect(downloader.download).not.toHaveBeenCalled();

@@ -328,3 +328,4 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
 
 export default apply;
 export * from "./easytier-artifacts.js";
+export * from "./easytier-runtime.js";

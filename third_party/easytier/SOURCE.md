@@ -1,27 +1,39 @@
-# EasyTier v2.6.4 corresponding source
+# EasyTier v2.6.4-collab.1 corresponding source
 
-`dsh-collab` uses the unmodified official EasyTier `v2.6.4` release identified by commit:
+The distributed Windows no-TUN runtime corresponds exactly to fork commit:
+
+```text
+631b5539bff59adee292c8f8e1b1b43b40742b2f
+```
+
+It is based on upstream EasyTier `v2.6.4` commit:
 
 ```text
 8428a89d2dabc94c97d370ec607c6ca142473626
 ```
 
-The complete corresponding source archive is available from the upstream project:
+Complete source and release material:
 
-- Tag: <https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4>
-- Commit archive: <https://github.com/EasyTier/EasyTier/archive/8428a89d2dabc94c97d370ec607c6ca142473626.zip>
-- Repository: <https://github.com/EasyTier/EasyTier>
+- Fork tag: <https://github.com/kanchengw/easytier-collab/releases/tag/v2.6.4-collab.1>
+- Fork commit archive: <https://github.com/kanchengw/easytier-collab/archive/631b5539bff59adee292c8f8e1b1b43b40742b2f.zip>
+- Fork repository: <https://github.com/kanchengw/easytier-collab>
+- Upstream tag: <https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4>
+- Upstream commit archive: <https://github.com/EasyTier/EasyTier/archive/8428a89d2dabc94c97d370ec607c6ca142473626.zip>
+- Patch from upstream base: `EASYTIER-COLLAB.patch` beside this file
 
-The authoritative upstream Windows build workflow is:
+The pinned build and verification scripts are:
 
-<https://github.com/EasyTier/EasyTier/blob/v2.6.4/.github/workflows/core.yml>
+- <https://github.com/kanchengw/easytier-collab/blob/631b5539bff59adee292c8f8e1b1b43b40742b2f/collab/windows-no-tun/build.ps1>
+- <https://github.com/kanchengw/easytier-collab/blob/631b5539bff59adee292c8f8e1b1b43b40742b2f/collab/windows-no-tun/verify.ps1>
+- <https://github.com/kanchengw/easytier-collab/blob/631b5539bff59adee292c8f8e1b1b43b40742b2f/.github/workflows/collab-windows-no-tun.yml>
 
-Its Windows x86_64 target is `x86_64-pc-windows-msvc`; the release workflow selects the `mimalloc` feature and builds the EasyTier workspace in release mode. A local source checkout can be verified and built with the same core inputs:
+Reproduce the release from the complete fork source on Windows with Rust `1.95.0`, MSVC x64 build tools and protobuf compiler `26.0`:
 
 ```powershell
-git clone --branch v2.6.4 --depth 1 https://github.com/EasyTier/EasyTier.git
-git -C EasyTier rev-parse HEAD
-cargo build --manifest-path EasyTier/Cargo.toml --release --target x86_64-pc-windows-msvc --features mimalloc
+git clone --branch v2.6.4-collab.1 --depth 1 https://github.com/kanchengw/easytier-collab.git
+git -C easytier-collab rev-parse HEAD
+pwsh -NoProfile -File easytier-collab/collab/windows-no-tun/build.ps1
+pwsh -NoProfile -File easytier-collab/collab/windows-no-tun/verify.ps1
 ```
 
-The reported commit must equal the 40-character commit above. `dsh-collab` carries no EasyTier patch for this release. If a future Collab distribution modifies EasyTier, that distribution must replace this file with the exact modified source and matching build materials.
+The reported commit must equal the fork commit above. The verified release archive is `easytier-windows-x86_64-v2.6.4-collab.1.zip`, length `13,248,117` bytes, SHA-256 `86ae7bd23014dbec29d0b5fe1d5e46da202a4c4773f81b5feb99bfa20b9a902b`. No EasyTier binary or build directory is committed to `dsh-collab`.
