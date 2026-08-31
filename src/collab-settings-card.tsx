@@ -5,9 +5,10 @@ import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
-type ConnectionMethod = "unconfigured" | "private-network" | "custom-wss";
+type ConnectionMethod = "unconfigured" | "private-network" | "easytier" | "custom-wss";
 
 function connectionMethodFor(settings: DshCollabSettingsSnapshot): ConnectionMethod {
+  if (settings.connectionMethod) return settings.connectionMethod;
   if (settings.exposeMode === "network") return "private-network";
   return settings.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
 }
@@ -51,6 +52,7 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
   const [saved, setSaved] = useState(initial);
   const [connectionMethod, setConnectionMethod] = useState<ConnectionMethod>(() => connectionMethodFor(initial));
   const [advertisedEndpoint, setAdvertisedEndpoint] = useState(initial.advertisedEndpoint);
+  const [easyTierSharedNode, setEasyTierSharedNode] = useState(initial.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode);
   const [tokenTtlOption, setTokenTtlOption] = useState(() => tokenTtlOptionFromMs(initial.tokenTtlMs));
   const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
   const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
@@ -79,6 +81,7 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
   const resetDraft = (snapshot = saved): void => {
     setConnectionMethod(connectionMethodFor(snapshot));
     setAdvertisedEndpoint(snapshot.advertisedEndpoint);
+    setEasyTierSharedNode(snapshot.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode);
     setTokenTtlOption(tokenTtlOptionFromMs(snapshot.tokenTtlMs));
     setMaxMembers(String(snapshot.maxMembers ?? defaultCollabSettings.maxMembers));
     setMaxMessageBytes(String(snapshot.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
@@ -91,8 +94,10 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
     resetDraft(snapshot);
   }), [port]);
 
-  const exposeMode: "loopback" | "network" = connectionMethod === "private-network" ? "network" : "loopback";
-  const dirty = exposeMode !== saved.exposeMode
+  const exposeMode: "loopback" | "network" = connectionMethod === "private-network" || connectionMethod === "easytier" ? "network" : "loopback";
+  const dirty = connectionMethod !== connectionMethodFor(saved)
+    || exposeMode !== saved.exposeMode
+    || (connectionMethod === "easytier" && easyTierSharedNode.trim() !== (saved.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode))
     || (connectionMethod === "custom-wss" ? advertisedEndpoint : "") !== (connectionMethod === "private-network" ? "" : saved.advertisedEndpoint)
     || tokenTtlMsFromOption(tokenTtlOption) !== (saved.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : saved.tokenTtlMs)
     || maxMembers !== String(saved.maxMembers ?? defaultCollabSettings.maxMembers)
@@ -111,6 +116,8 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
         advertisedEndpoint: connectionMethod === "private-network"
           ? ""
           : connectionMethod === "custom-wss" ? advertisedEndpoint.trim() : "",
+        connectionMethod,
+        easyTierSharedNode: easyTierSharedNode.trim(),
         tokenTtlMs: tokenTtlMsFromOption(tokenTtlOption),
         approvalPolicy: "host-only" as const,
         maxMembers: Number(maxMembers),
@@ -167,15 +174,19 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
               }} disabled={configurationDisabled}>
                 <option value="unconfigured" disabled>{t("settings.notConfigured")}</option>
                 <option value="private-network">{t("settings.privateNetwork")}</option>
+                <option value="easytier">{t("settings.easyTier")}</option>
                 <option value="custom-wss">{t("settings.customWss")}</option>
               </select>
             </Field>
             {connectionMethod === "custom-wss" ? <Field id="collab-address" label={t("settings.customWss")} hint={t("settings.customWssHint")}>
               <input id="collab-address" name="advertisedEndpoint" className={inputClass} type="url" value={advertisedEndpoint} onChange={(event) => { setAdvertisedEndpoint(event.target.value); }} placeholder="wss://collab.example.com/collab" disabled={configurationDisabled} />
             </Field> : null}
-            {connectionMethod === "private-network" ? <>
+            {connectionMethod === "easytier" ? <Field id="collab-easytier-shared-node" label={t("settings.easyTierSharedNode")} hint={t("settings.easyTierSharedNodeHint")}>
+              <input id="collab-easytier-shared-node" name="easyTierSharedNode" className={inputClass} type="text" value={easyTierSharedNode} onChange={(event) => { setEasyTierSharedNode(event.target.value); }} disabled={configurationDisabled} />
+            </Field> : null}
+            {connectionMethod === "private-network" || connectionMethod === "easytier" ? <>
               {restartRequired ? <p className={css.warning} role="alert"><strong>{t("settings.runningGatewayOutdated")}</strong><span>{t("settings.restartGatewayNow")}</span><span>{t("settings.roomSharingRestartNotEnough")}</span></p> : null}
-              <p className={css.warning} role="status"><strong>{t("settings.privateExposure")}</strong><span>{t("settings.privateExposureHint")}</span></p>
+              {connectionMethod === "private-network" ? <p className={css.warning} role="status"><strong>{t("settings.privateExposure")}</strong><span>{t("settings.privateExposureHint")}</span></p> : null}
             </> : null}
             <p className={css.hint}>{t("settings.privateNetworkAuto")}</p>
           </section>

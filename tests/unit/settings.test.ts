@@ -28,6 +28,20 @@ describe("collab settings", () => {
     expect(html).not.toContain("participantGatewayUrl");
   });
 
+  it("accepts EasyTier as an explicit connection method without making it an automatic startup role", () => {
+    const gateway = { gatewayHost: "0.0.0.0" as const, gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "" };
+    expect(() => validateDshCollabPersistedSettings({
+      gateway,
+      connectionMethod: "easytier",
+      easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
+    })).not.toThrow();
+    expect(() => validateDshCollabPersistedSettings({
+      gateway,
+      connectionMethod: "easytier",
+      easyTierSharedNode: "not-a-peer",
+    })).toThrow("shared node");
+  });
+
   it("warns before non-loopback exposure and rejects unsafe values", () => {
     const settings: CollabSettings = { ...defaultCollabSettings, exposeMode: "network", gatewayHost: "0.0.0.0", advertisedEndpoint: "ws://192.168.1.20:4310/collab" };
     expect(renderCollabSettings(settings)).toContain("trusted network");

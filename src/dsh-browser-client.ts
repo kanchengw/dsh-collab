@@ -1,7 +1,8 @@
 import type { ComposerTarget } from "./ui.js";
 import { projectAgentQueue, projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
-import { decodeCollabInvitation, encodeCollabInvitation } from "./invitation.js";
+import { decodeCollabInvitation, encodeCollabInvitation, type CollabInvitationNetwork } from "./invitation.js";
+import type { EasyTierInvitationNetwork } from "./easytier-invitation.js";
 import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, AgentQueueItem, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
@@ -42,6 +43,17 @@ export interface DshBrowserCollabOptions {
   WebSocket?: new (url: string) => BrowserSocket;
   connectionIdFactory?: () => string;
   participantPersistence?: ParticipantPersistence;
+  easyTierTransport?: DshBrowserEasyTierTransport;
+}
+
+export interface DshBrowserEasyTierTransport {
+  startParticipant(input: {
+    roomId: string;
+    gatewayPort: number;
+    network: EasyTierInvitationNetwork;
+    localVirtualAddress?: string;
+  }): Promise<{ gatewayEndpoint: string; localVirtualAddress: string }>;
+  stop(): Promise<void>;
 }
 
 export interface ParticipantResumeState {
@@ -51,6 +63,7 @@ export interface ParticipantResumeState {
   credential: string;
   roomTitle?: string;
   hostDisplayName?: string;
+  easyTier?: { network: EasyTierInvitationNetwork; localVirtualAddress: string };
 }
 
 export interface JoinedRoomRef { gatewayEndpoint: string; roomId: string }
@@ -74,6 +87,7 @@ export interface DshBrowserInviteInput {
   inviteId?: string;
   expiresAt: number;
   gatewayEndpoint: string;
+  network?: CollabInvitationNetwork;
 }
 
 export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
@@ -85,7 +99,7 @@ export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   listJoinedRooms(): readonly ParticipantResumeState[];
   subscribeJoinedRooms(listener: () => void): () => void;
   connectJoinedRoom(ref: JoinedRoomRef): Promise<void>;
-  disconnectJoinedRoom(): void;
+  disconnectJoinedRoom(): Promise<void>;
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
@@ -572,18 +586,31 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
     const invitation = decodeCollabInvitation(input.invitation);
-    const nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
+    let nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
     const nextRoomId = invitation.roomId;
     const ref = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
     const pendingKey = JSON.stringify({ ...ref, inviteId: invitation.inviteId, memberId: input.memberId?.trim(), displayName: input.displayName.trim() });
     const saved = this.options.participantPersistence?.load(ref);
+    let easyTier = saved?.easyTier;
+    if (invitation.protocol === "dsh-collab.invitation.v2" && invitation.network.mode === "easytier") {
+      if (!this.options.easyTierTransport) throw new Error("EasyTier transport is unavailable on this DSH client");
+      const gateway = new URL(invitation.gatewayEndpoint);
+      const active = await this.options.easyTierTransport.startParticipant({
+        roomId: nextRoomId,
+        gatewayPort: Number(gateway.port || 80),
+        network: invitation.network,
+        ...(easyTier ? { localVirtualAddress: easyTier.localVirtualAddress } : {}),
+      });
+      nextBase = normalizeBase(gatewayHttpUrl(active.gatewayEndpoint));
+      easyTier = { network: invitation.network, localVirtualAddress: active.localVirtualAddress };
+    }
     const binding = saved ?? this.pendingJoins.get(pendingKey) ?? {
       memberId: input.memberId?.trim() || randomId("member"),
       credential: randomCredential(),
     };
     this.pendingJoins.set(pendingKey, binding);
     if (!saved && this.options.participantPersistence) {
-      await this.options.participantPersistence.save({ ...ref, memberId: binding.memberId, credential: binding.credential });
+      await this.options.participantPersistence.save({ ...ref, memberId: binding.memberId, credential: binding.credential, ...(easyTier ? { easyTier } : {}) });
     }
     let data: RoomData;
     try {
@@ -599,6 +626,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
         else await this.options.participantPersistence?.clear?.();
         this.pendingJoins.delete(pendingKey);
+        if (easyTier) await this.options.easyTierTransport?.stop().catch(() => undefined);
       }
       throw error;
     }
@@ -610,6 +638,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         credential: data.resumeCredential,
         roomTitle: data.room.title,
         ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
+        ...(easyTier ? { easyTier } : {}),
       });
     }
     this.pendingJoins.delete(pendingKey);
@@ -625,9 +654,20 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
     const nextRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
-    const nextBase = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
+    let nextBase = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
     const preserveCurrentRoom = this.socket?.readyState === OPEN && this.snapshot.connection === "online";
     try {
+      if (state.easyTier) {
+        if (!this.options.easyTierTransport) throw new EasyTierConnectionError("transport-failed", "EasyTier transport is unavailable on this DSH client");
+        const gateway = new URL(state.gatewayEndpoint);
+        const active = await this.options.easyTierTransport.startParticipant({
+          roomId: state.roomId,
+          gatewayPort: Number(gateway.port || 80),
+          network: state.easyTier.network,
+          localVirtualAddress: state.easyTier.localVirtualAddress,
+        });
+        nextBase = normalizeBase(gatewayHttpUrl(active.gatewayEndpoint));
+      }
       const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(state.roomId)}/resume`, { credential: state.credential }, false, nextBase)), state.roomId);
       await this.connect({ base: nextBase, roomId: state.roomId, participantRef: nextRef, data });
       return true;
@@ -659,12 +699,19 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (!(await this.restoreParticipant(ref))) throw new Error("Joined room is not saved");
   }
 
-  disconnectJoinedRoom(): void { this.disconnect(); }
+  async disconnectJoinedRoom(): Promise<void> {
+    const saved = this.participantRef ? this.options.participantPersistence?.load(this.participantRef) : undefined;
+    this.disconnect();
+    if (saved?.easyTier) await this.options.easyTierTransport?.stop();
+  }
 
   async forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> {
     const saved = this.options.participantPersistence?.load(ref);
     if (!saved) return;
-    if (this.snapshot.role === "participant" && this.roomId === ref.roomId && this.base === normalizeBase(gatewayHttpUrl(ref.gatewayEndpoint))) this.disconnect();
+    if (this.snapshot.role === "participant" && this.participantRef?.roomId === ref.roomId && this.participantRef.gatewayEndpoint === ref.gatewayEndpoint) {
+      this.disconnect();
+      if (saved.easyTier) await this.options.easyTierTransport?.stop();
+    }
     if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
     else await this.options.participantPersistence?.clear?.();
   }
@@ -678,15 +725,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     if (!created?.invite || typeof created.invite.inviteId !== "string" || typeof created.invite.roomId !== "string" || typeof created.invite.expiresAt !== "number" || typeof created.token !== "string") {
       throw new Error("Gateway invite response is invalid");
     }
-    return { invitation: encodeCollabInvitation({
-      protocol: "dsh-collab.v1",
+    const common = {
       type: "invite",
       gatewayEndpoint: input.gatewayEndpoint,
       roomId: created.invite.roomId,
       inviteId: created.invite.inviteId,
       token: created.token,
       expiresAt: created.invite.expiresAt,
-    }) };
+    } as const;
+    return { invitation: encodeCollabInvitation(input.network
+      ? { protocol: "dsh-collab.invitation.v2", ...common, network: input.network }
+      : { protocol: "dsh-collab.v1", ...common }) };
   }
 
   async send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void> {
@@ -857,6 +906,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     socket?.close(1000, "client_closed");
     this.setConnection("offline");
     this.listeners.clear();
+    const saved = this.participantRef ? this.options.participantPersistence?.load(this.participantRef) : undefined;
+    if (saved?.easyTier) void this.options.easyTierTransport?.stop().catch(() => undefined);
   }
 
   private async connect(input: { base: string; roomId: string; participantRef?: JoinedRoomRef; data: RoomData }): Promise<void> {
@@ -1111,6 +1162,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
           : undefined
       : error instanceof GatewayConnectionError
         ? "host-unreachable"
+        : error instanceof EasyTierConnectionError
+          ? error.code
         : undefined;
     if (!unavailableReason) return;
     this.snapshot = {
@@ -1156,6 +1209,13 @@ export class GatewayConnectionError extends Error {
   }
 }
 
+export class EasyTierConnectionError extends Error {
+  constructor(readonly code: "network-offline" | "transport-failed", message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "EasyTierConnectionError";
+  }
+}
+
 class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   constructor(private readonly client: DshBrowserCollabClient) {}
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } {
@@ -1172,7 +1232,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   listJoinedRooms(): readonly ParticipantResumeState[] { return this.client.listJoinedRooms(); }
   subscribeJoinedRooms(listener: () => void): () => void { return this.client.subscribeJoinedRooms(listener); }
   connectJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.connectJoinedRoom(ref); }
-  disconnectJoinedRoom(): void { this.client.disconnectJoinedRoom(); }
+  disconnectJoinedRoom(): Promise<void> { return this.client.disconnectJoinedRoom(); }
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.forgetJoinedRoom(ref); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess { return this.client.getLocalSnapshotAccess(roomId); }

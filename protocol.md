@@ -75,6 +75,27 @@ submit the separate top-level `token` to the normal `/join` route. Unknown
 invitation protocols, network versions and modes fail closed. Invitation
 validation errors never include either secret.
 
+### EasyTier connection lifecycle
+
+EasyTier changes reachability, not the Collab application protocol. On an
+explicit Owner share, the Host starts one headless no-TUN EasyTier process for
+that room and persists its network descriptor locally. On an explicit
+Participant join or later `Connect`, the Participant starts one headless
+process, waits until diagnostics report `direct` or `relayed`, and creates a
+loopback port-forward to the Owner virtual address and original Gateway port.
+Only then does the browser send the normal `/join` or `/resume` request through
+the bridge.
+
+One DSH instance has at most one active EasyTier room. Installing the plugin,
+starting DSH, loading settings, and listing a saved Joined room never start the
+Gateway or EasyTier and never reconnect a room. Explicit disconnect, forget,
+stop sharing, Gateway stop, and DSH disposal stop the managed process. A route
+that remains unavailable for 15 seconds is reported as `network-offline` and
+the process is stopped; a local process/start failure is reported as
+`transport-failed`. Gateway HTTP errors retain their existing authentication,
+room-inactive and resource-limit meanings instead of being rewritten as
+EasyTier errors.
+
 ## Additive capability negotiation
 
 Post-v1 collaboration mechanisms are gated by additive capability tokens. The

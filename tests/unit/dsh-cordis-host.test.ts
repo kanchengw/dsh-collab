@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
-import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, HostSnapshotFile, type DshCollabPersistedSettings } from "../../src/index.js";
+import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, EasyTierTransportCoordinator, HostSnapshotFile, type DshCollabPersistedSettings, type EasyTierRuntimeStatus } from "../../src/index.js";
 import { RoomStore } from "../../src/room.js";
 import { localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
 
@@ -347,6 +347,55 @@ describe("Cordis Host mount", () => {
     await control!("gateway/stop", {}, new AbortController().signal);
     expect(await canConnect(gatewayPort)).toBe(false);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+  });
+
+  it("starts EasyTier only after explicit Owner control and persists one network per room", async () => {
+    const gatewayPort = await freeTcpPort();
+    const disposeEffects: Array<() => void | Promise<void>> = [];
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    let persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "0.0.0.0", gatewayPort, exposeMode: "network", advertisedEndpoint: "" },
+      connectionMethod: "easytier",
+      easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
+    };
+    let runtimeStatus: EasyTierRuntimeStatus = { kind: "idle" };
+    const runtime = {
+      status: () => runtimeStatus,
+      start: vi.fn(async () => runtimeStatus = { kind: "starting", startedAt: 1 }),
+      diagnose: vi.fn(async (targetIpv4: string) => ({ kind: "direct" as const, targetIpv4, checkedAt: 1 })),
+      stop: vi.fn(async () => runtimeStatus = { kind: "stopped", stoppedAt: 2 }),
+    };
+    const portQueue = [44001, 44002];
+    const context = {
+      agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
+      easyTierTransport: new EasyTierTransportCoordinator({
+        runtime,
+        ports: { allocate: async () => portQueue.shift()! },
+        credentials: {
+          networkName: () => "dsh-collab-room-1",
+          networkSecret: () => "network-secret-room-1",
+          participantVirtualAddress: () => "10.231.2.3",
+        },
+      }),
+      effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({
+        get: () => persisted,
+        update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; },
+      }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+    apply(context as unknown as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", port: gatewayPort, ...noPersistence });
+
+    expect(runtime.start).not.toHaveBeenCalled();
+    await control!("gateway/start", {}, new AbortController().signal);
+    expect(runtime.start).not.toHaveBeenCalled();
+    const started = await control!("easytier/owner/start", { roomId: "room-1", gatewayPort }, new AbortController().signal);
+
+    expect(started).toMatchObject({ ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: `ws://10.231.0.1:${String(gatewayPort)}/collab` } });
+    expect(runtime.start).toHaveBeenCalledOnce();
+    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({ roomId: "room-1", network: expect.objectContaining({ networkSecret: "network-secret-room-1" }) })]);
+    await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
+    expect(runtime.stop).toHaveBeenCalled();
   });
 
   it("runs private Sidecar Explain tasks through the requester's loopback DSH without starting the Gateway", async () => {

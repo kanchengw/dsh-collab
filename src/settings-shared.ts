@@ -1,4 +1,7 @@
+import type { EasyTierInvitationNetwork } from "./easytier-invitation.js";
+
 export type CollabExposeMode = "loopback" | "network";
+export type CollabConnectionMethod = "unconfigured" | "private-network" | "easytier" | "custom-wss";
 export type CollabApprovalPolicy = "host-only" | "disabled";
 export type CollabTokenTtl = number | null;
 
@@ -27,6 +30,8 @@ export interface CollabSettings {
   gatewayPort: number;
   exposeMode: CollabExposeMode;
   advertisedEndpoint: string;
+  connectionMethod: CollabConnectionMethod;
+  easyTierSharedNode: string;
   tokenTtlMs: CollabTokenTtl;
   approvalPolicy: CollabApprovalPolicy;
   maxMembers: number;
@@ -40,6 +45,8 @@ export const defaultCollabSettings: CollabSettings = {
   gatewayPort: 4310,
   exposeMode: "loopback",
   advertisedEndpoint: "",
+  connectionMethod: "unconfigured",
+  easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
   tokenTtlMs: 24 * 60 * 60 * 1000,
   approvalPolicy: "host-only",
   maxMembers: 16,
@@ -74,6 +81,14 @@ export interface DshCollabPersistedSettings {
   gateway: DshCollabGatewaySettings;
   appliedGateway?: DshCollabGatewaySettings;
   security?: DshCollabSecuritySettings;
+  connectionMethod?: CollabConnectionMethod;
+  easyTierSharedNode?: string;
+  easyTierRooms?: DshCollabEasyTierRoom[];
+}
+
+export interface DshCollabEasyTierRoom {
+  roomId: string;
+  network: EasyTierInvitationNetwork;
 }
 
 export interface DshCollabJoinedRoom {
@@ -83,6 +98,10 @@ export interface DshCollabJoinedRoom {
   credential: string;
   roomTitle?: string;
   hostDisplayName?: string;
+  easyTier?: {
+    network: EasyTierInvitationNetwork;
+    localVirtualAddress: string;
+  };
 }
 
 export interface DshCollabParticipantSettings {

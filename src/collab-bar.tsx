@@ -16,7 +16,7 @@ export interface CollabBarRoomSnapshot {
   roomTitle: string;
   role: "host" | "participant";
   connection: "connecting" | "online" | "offline";
-  unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited";
+  unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
 }
 
 export function nextCollabBarTab(current: CollabBarTab, key: string): CollabBarTab {
@@ -64,7 +64,9 @@ export function CollabBarView(props: {
     const key = snapshot?.connection === "connecting" ? "bar.connecting"
       : snapshot?.unavailableReason === "host-stopped-sharing" ? "room.hostStoppedSharing"
         : snapshot?.unavailableReason === "host-unreachable" ? "room.hostUnreachable"
-          : "bar.offline";
+          : snapshot?.unavailableReason === "network-offline" ? "room.networkOffline"
+            : snapshot?.unavailableReason === "transport-failed" ? "room.transportFailed"
+              : "bar.offline";
     return <aside className={css.bar} data-collab-bar="true">
       <header className={css.header}><strong>{selection.roomTitle}</strong><span>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span></header>
       <EmptyState>{t(key)}</EmptyState>

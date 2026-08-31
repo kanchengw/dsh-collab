@@ -8,19 +8,20 @@
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
 - Unified room UI (`src/session-ui.ts`) with Host/Participant identity, connection states, responsive room/timeline/member layout, explicit message target selection and keyboard-friendly native form controls.
-- Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers two released connection methods: direct `Private network` access or a user-supplied `Custom WSS endpoint`. Participants get their remote endpoint from the invitation instead of persistent configuration.
+- Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers three released connection methods: `EasyTier virtual network`, direct `Private network` access, or a user-supplied `Custom WSS endpoint`. Participants get the selected transport from the invitation instead of persistent endpoint configuration.
 - The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. A room is created only when the Owner uses `Share this session` in a real DSH conversation; its room ID is that exact native session ID and its editable Room Name defaults to the DSH conversation title.
 - Host runtime settings now apply token lifetime, member/message/queue limits; Agent tool approvals remain on DSH's native Host approval chain. Runtime snapshots restore room, ledger, dispatcher and approval projection state while short-lived invites and room tokens are reissued after restart.
-- After the first invite is accepted, the Participant's own DSH stores one hidden resume record and automatically exchanges it for a fresh room token after either DSH restarts. Opening a local Host room clears that remote Participant role.
+- After the first invite is accepted, the Participant's own DSH stores a hidden Joined-room resume record. Restarting DSH never reconnects it automatically; an explicit `Connect` action re-establishes EasyTier when required and then exchanges the saved credential for a fresh room token.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
 
 ## Important deployment decision
 
 The plugin does **not** download, install, or start nginx. The plugin owns a
 dedicated Collab Gateway, room authorization, HTTP/WebSocket routes, and DSH
-UI. A trusted LAN/VPN deployment connects directly to that Gateway and does
-not require a reverse proxy. The two-DSH browser environment also connects
-directly and keeps all same-machine isolation under `e2e/`.
+UI. A trusted LAN deployment connects directly to that Gateway and does not
+require a reverse proxy. EasyTier is the built-in virtual-network option for
+cross-network reachability without a public Host address. The two-DSH browser
+environment keeps all same-machine isolation under `e2e/`.
 
 ## Gateway boundary
 
@@ -28,7 +29,7 @@ The in-process Collab Gateway is the application service owned by this package. 
 
 A reverse proxy/tunnel is optional and user-supplied only when the Host wants an external `wss://` endpoint. It terminates TLS and forwards HTTP plus WebSocket upgrades to the dedicated Gateway. It is not needed for the LAN MVP, is not a replacement for the Collab Gateway, and is not provisioned by this package.
 
-Same-device local-only collaboration is not a released connection mode. A fresh install binds the Gateway to loopback as a safe internal state, but cannot create an invitation until the Owner chooses `Private network` or supplies a `Custom WSS endpoint`. Same-machine multi-DSH accommodations remain under `e2e/` only.
+Same-device local-only collaboration is not a released connection mode. A fresh install binds the Gateway to loopback as a safe internal state, but cannot create an invitation until the Owner chooses `EasyTier virtual network`, `Private network`, or supplies a `Custom WSS endpoint`. Same-machine multi-DSH accommodations remain under `e2e/` only.
 
 Participant identity is first bound by possession of a valid invite; the same invite can be accepted by multiple members during its one-hour lifetime. Subsequent requests use each member's issued room token. Optional trusted-proxy identity headers remain a deployment extension, but direct clients cannot self-assert them.
 
@@ -90,7 +91,7 @@ The package's `dsh.client` declaration supplies the browser face. A DSH profile 
 
 The Host row registers the formal `dsh-collab` settings namespace. Gateway binding, the auto-selected port, exposure mode and advertised invitation endpoint are stored as one atomic object through DSH `ctx.settings`; invite tokens and short-lived room tokens remain ephemeral. Private-network users do not configure an address: the Gateway discovers a reachable private address at startup and generates the fixed `/collab` endpoint. These Gateway settings apply after a DSH restart.
 
-Participant recovery uses a separate `dsh-collab-participant` settings namespace whose `resume` object is marked hidden in the DSH schema and is never rendered by the Collab settings card. The Participant's own DSH stores the remote endpoint, room/member binding and raw high-entropy resume credential in its local settings file. This is local private state, not Host configuration and not browser `localStorage`. A rejected credential is cleared; a temporary network failure keeps it for the next start. The room owner stores only the credential digest.
+Participant recovery uses a separate `dsh-collab-participant` settings namespace whose `joinedRooms` entries are hidden by the DSH schema and never rendered as configuration fields. The Participant's own DSH stores the remote endpoint, room/member binding, raw high-entropy resume credential and, for EasyTier rooms, the private overlay descriptor plus its local virtual address. This is local private state, not Host configuration and not browser `localStorage`. A rejected credential is cleared; a temporary network failure keeps it for a later explicit `Connect`. The room owner stores only the Collab resume credential digest.
 
 ## LAN Participant deployment
 
@@ -99,6 +100,23 @@ Do not expose the DSH listener. In network mode the dedicated Collab Gateway bin
 Plain `ws://` accepts only literal loopback, RFC1918/link-local, `100.64.0.0/10`, ULA and IPv6 link-local addresses. Public IPs and hostnames require a user-supplied `wss://` endpoint. The plugin does not create a tunnel, configure a router, issue a certificate, or operate an official Relay in this MVP.
 
 The automated `tests/integration/e2e-local.test.ts` exercises this dedicated listener directly with two Participant clients. The isolated two-DSH environment under `e2e/` is the browser-level test harness; it adds no production port rewriting or proxy behavior.
+
+## EasyTier Participant deployment
+
+EasyTier is opt-in per explicit share or join action. The Owner Gateway binds
+its normal dedicated port and a headless EasyTier process advertises the fixed
+room-owner virtual address `10.231.0.1`. A Participant starts its own headless
+process, waits for a direct or relayed route, and exposes a loopback bridge to
+the browser client. The browser then uses the unchanged Collab `/join`, token,
+room, event and WebSocket protocol through that bridge.
+
+Each DSH instance supports one active EasyTier room at a time. Installing the
+plugin, starting DSH and merely listing a saved room do not download or start
+EasyTier, start the Gateway, share a room or reconnect a Participant. The first
+explicit EasyTier action prepares the pinned Windows no-TUN artifact. Disconnect,
+forget, stop sharing and DSH shutdown stop the managed process. The default
+community shared node is best-effort and can be replaced in settings; Collab
+does not operate or promise availability for that node.
 
 ## Design and development log
 

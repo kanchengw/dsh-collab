@@ -4,6 +4,7 @@ import {
   decodeCollabInvitation,
   encodeCollabInvitation,
 } from "../../src/invitation.js";
+import { decodeEasyTierInvitationNetwork } from "../../src/easytier-invitation.js";
 import { COLLAB_PROTOCOL } from "../../src/protocol.js";
 
 describe("EasyTier invitation contract", () => {
@@ -116,5 +117,16 @@ describe("EasyTier invitation contract", () => {
     expect(validationError).toBeInstanceOf(Error);
     expect(String(validationError)).toContain("networkSecret");
     expect(String(validationError)).not.toContain(secret);
+  });
+
+  it("rejects a non-EasyTier mode at the direct network decoder boundary", () => {
+    expect(() => decodeEasyTierInvitationNetwork({
+      mode: "lan",
+      version: 1,
+      networkName: "dsh-collab-room-1",
+      networkSecret: "overlay-network-secret",
+      ownerVirtualAddress: "10.231.0.1",
+      sharedNode: "tcp://shared.example.com:11010",
+    })).toThrow("mode");
   });
 });

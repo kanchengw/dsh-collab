@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDshBrowserCollabClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket, type ParticipantResumeState } from "../../src/dsh-browser-client.js";
-import { decodeCollabInvitation } from "../../src/invitation.js";
+import { decodeCollabInvitation, encodeCollabInvitation } from "../../src/invitation.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 function response(data: unknown, status = 200): { ok: boolean; status: number; json(): Promise<unknown> } {
@@ -12,6 +12,76 @@ function errorResponse(code: string, message: string, status: number): { ok: boo
 }
 
 describe("browser Gateway client", () => {
+  it("establishes EasyTier before joining and reconnects a saved room only after an explicit action", async () => {
+    const network = {
+      mode: "easytier" as const,
+      version: 1 as const,
+      networkName: "dsh-collab-room-2",
+      networkSecret: "network-secret-room-2",
+      ownerVirtualAddress: "10.231.0.1",
+      sharedNode: "tcp://public.kkrainbow.top:11010",
+    };
+    const invitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+      roomId: "room-2",
+      inviteId: "invite-2",
+      token: "invite-token",
+      expiresAt: 100,
+      network,
+    });
+    let persisted: ParticipantResumeState | undefined;
+    const transport = {
+      startParticipant: vi.fn(async () => ({ gatewayEndpoint: "ws://127.0.0.1:45231/collab", localVirtualAddress: "10.231.2.3" })),
+      stop: vi.fn(async () => {}),
+    };
+    const urls: string[] = [];
+    const fetch: BrowserFetch = async (url) => {
+      urls.push(url);
+      if (url.endsWith("/join")) return response({ room: { roomId: "room-2", title: "Remote" }, member: { memberId: "member-bob", role: "participant" }, roomToken: "room-token", resumeCredential: "resume-secret" }, 201);
+      if (url.endsWith("/resume")) return response({ room: { roomId: "room-2", title: "Remote" }, member: { memberId: "member-bob", role: "participant" }, roomToken: "room-token-2" });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-2", title: "Remote" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor(public readonly url: string) { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const persistence = {
+      load: () => persisted,
+      save: vi.fn(async (state: ParticipantResumeState) => { persisted = structuredClone(state); }),
+      remove: vi.fn(async () => { persisted = undefined; }),
+    };
+    const first = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence, easyTierTransport: transport });
+
+    await first.join({ invitation, displayName: "Bob" });
+
+    expect(transport.startParticipant).toHaveBeenCalledWith(expect.objectContaining({ roomId: "room-2", gatewayPort: 4310, network }));
+    expect(urls.every((url) => url.startsWith("http://127.0.0.1:45231/collab"))).toBe(true);
+    expect(persisted).toMatchObject({
+      gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+      easyTier: { network, localVirtualAddress: "10.231.2.3" },
+    });
+    const disconnected = first.disconnectJoinedRoom();
+    expect(disconnected).toBeInstanceOf(Promise);
+    await disconnected;
+    expect(transport.stop).toHaveBeenCalledOnce();
+
+    transport.startParticipant.mockClear();
+    urls.length = 0;
+    const restarted = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence, easyTierTransport: transport });
+    expect(transport.startParticipant).not.toHaveBeenCalled();
+    expect(urls).toHaveLength(0);
+
+    await restarted.connectJoinedRoom({ gatewayEndpoint: persisted!.gatewayEndpoint, roomId: persisted!.roomId });
+    expect(transport.startParticipant).toHaveBeenCalledWith(expect.objectContaining({ localVirtualAddress: "10.231.2.3" }));
+    await restarted.forgetJoinedRoom({ gatewayEndpoint: persisted!.gatewayEndpoint, roomId: persisted!.roomId });
+    expect(transport.stop).toHaveBeenCalledTimes(2);
+    expect(persisted).toBeUndefined();
+  });
   it("publishes, lists and accepts SideTask findings through validated contracts", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const reviewPointId = "d".repeat(64);
@@ -458,17 +528,19 @@ describe("browser Gateway client", () => {
       save: async () => {},
       remove: async (ref: { gatewayEndpoint: string; roomId: string }) => { const index = saved.findIndex((room) => room.gatewayEndpoint === ref.gatewayEndpoint && room.roomId === ref.roomId); if (index >= 0) saved.splice(index, 1); },
     };
-    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence });
+    const easyTierTransport = { startParticipant: vi.fn(), stop: vi.fn(async () => {}) };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket, participantPersistence: persistence, easyTierTransport });
     expect(client.listJoinedRooms()).toHaveLength(2);
     expect(requests).toEqual([]);
 
     const selected = { gatewayEndpoint: "wss://two.example/collab", roomId: "room-2" };
     await client.connectJoinedRoom(selected);
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-2", role: "participant", connection: "online" });
-    client.disconnectJoinedRoom();
+    await client.disconnectJoinedRoom();
     expect(client.getSnapshot().connection).toBe("offline");
     await client.forgetJoinedRoom(selected);
     expect(client.listJoinedRooms()).toEqual([expect.objectContaining({ roomId: "room-1" })]);
+    expect(easyTierTransport.stop).not.toHaveBeenCalled();
   });
 
   it("stops sharing without deleting the saved Host room", async () => {

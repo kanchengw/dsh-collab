@@ -1,6 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { COLLAB_TOKEN_TTL_OPTIONS, defaultCollabSettings, tokenTtlOptionFromMs, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
+import { assertEasyTierPeer, assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
 export * from "./settings-shared.js";
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
@@ -29,6 +30,19 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
     maxMessageBytes: defaultCollabSettings.maxMessageBytes,
     maxQueue: defaultCollabSettings.maxQueue,
   }),
+  connectionMethod: z.union([z.const("unconfigured"), z.const("private-network"), z.const("easytier"), z.const("custom-wss")]).default("unconfigured"),
+  easyTierSharedNode: z.string().default(defaultCollabSettings.easyTierSharedNode),
+  easyTierRooms: z.array(z.object({
+    roomId: z.string().min(1).required(),
+    network: z.object({
+      mode: z.const("easytier").required(),
+      version: z.const(1).required(),
+      networkName: z.string().min(1).required(),
+      networkSecret: z.string().min(1).required(),
+      ownerVirtualAddress: z.string().min(1).required(),
+      sharedNode: z.string().min(1).required(),
+    }).required(),
+  })).default([]).hidden(),
 });
 
 export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.object({
@@ -39,6 +53,17 @@ export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.
     credential: z.string().min(1).required(),
     roomTitle: z.string().default(""),
     hostDisplayName: z.string().default(""),
+    easyTier: z.object({
+      network: z.object({
+        mode: z.const("easytier").required(),
+        version: z.const(1).required(),
+        networkName: z.string().min(1).required(),
+        networkSecret: z.string().min(1).required(),
+        ownerVirtualAddress: z.string().min(1).required(),
+        sharedNode: z.string().min(1).required(),
+      }).required(),
+      localVirtualAddress: z.string().min(1).required(),
+    }).default(undefined as unknown as NonNullable<NonNullable<DshCollabParticipantSettings["joinedRooms"]>[number]["easyTier"]>).hidden(),
   })).default([]).hidden(),
   resume: z.object({
     gatewayEndpoint: z.string().min(1).required(),
@@ -65,6 +90,17 @@ function validateGateway(gateway: DshCollabPersistedSettings["gateway"]): void {
 export function validateDshCollabPersistedSettings(settings: DshCollabPersistedSettings): void {
   validateGateway(settings.gateway);
   if (settings.appliedGateway) validateGateway(settings.appliedGateway);
+  if (settings.connectionMethod === "easytier") {
+    if (settings.gateway.gatewayHost !== "0.0.0.0" || settings.gateway.exposeMode !== "network") throw new Error("EasyTier requires network Gateway binding");
+    try { assertEasyTierPeer("EasyTier shared node", settings.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode); }
+    catch (error) { throw new Error("EasyTier shared node is invalid", { cause: error }); }
+  }
+  const roomIds = new Set<string>();
+  for (const room of settings.easyTierRooms ?? []) {
+    if (room.roomId.trim() === "" || roomIds.has(room.roomId)) throw new Error("EasyTier room is invalid");
+    roomIds.add(room.roomId);
+    decodeEasyTierInvitationNetwork(room.network);
+  }
   if (settings.security) {
     const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...settings.gateway };
     validateCollabSettings(security);
@@ -78,6 +114,11 @@ export function validateDshCollabParticipantSettings(settings: DshCollabParticip
     normalizeGatewayEndpoint(room.gatewayEndpoint);
     for (const field of ["roomId", "memberId", "credential"] as const) {
       if (room[field].trim() === "") throw new Error(field + " must not be blank");
+    }
+    if (room.easyTier) {
+      decodeEasyTierInvitationNetwork(room.easyTier.network);
+      try { assertEasyTierPrivateIpv4("Participant EasyTier address", room.easyTier.localVirtualAddress); }
+      catch (error) { throw new Error("Participant EasyTier address is invalid", { cause: error }); }
     }
     const key = `${room.gatewayEndpoint}\n${room.roomId}`;
     if (keys.has(key)) throw new Error("joined room must be unique");
@@ -100,6 +141,7 @@ export function validateCollabSettings(settings: CollabSettings): void {
   if (settings.exposeMode === "loopback" && settings.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
   if (settings.exposeMode === "network" && settings.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
   validateAdvertisedEndpoint(settings);
+  if (settings.connectionMethod === "easytier") assertEasyTierPeer("EasyTier shared node", settings.easyTierSharedNode);
 }
 
 function escapeHtml(value: string): string {
@@ -108,7 +150,9 @@ function escapeHtml(value: string): string {
 
 export function renderCollabSettings(settings: CollabSettings): string {
   validateCollabSettings(settings);
-  const connectionMethod = settings.exposeMode === "network" ? "private-network" : settings.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
+  const connectionMethod = settings.connectionMethod === "unconfigured" && settings.exposeMode === "network"
+    ? "private-network"
+    : settings.connectionMethod;
   const warning = connectionMethod === "private-network"
     ? `<p class="collab-settings__warning" role="alert">Anyone on this trusted network can reach the Gateway; invite and room tokens still control access.</p>`
     : connectionMethod === "unconfigured" ? `<p class="collab-settings__safe" role="status">Not configured: choose a connection method before creating invitations.</p>` : "";
@@ -117,7 +161,7 @@ export function renderCollabSettings(settings: CollabSettings): string {
     : "";
   const tokenTtlOption = tokenTtlOptionFromMs(settings.tokenTtlMs);
   const tokenTtlOptions = COLLAB_TOKEN_TTL_OPTIONS.map((option) => `<option value="${option.value}"${option.value === tokenTtlOption ? " selected" : ""}>${option.value === "never" ? "Never" : option.value.slice(0, -1) + " day" + (option.value === "1d" ? "" : "s")}</option>`).join("");
-  const connectionField = `<label>Connection method <select name="connectionMethod"><option value="unconfigured"${connectionMethod === "unconfigured" ? " selected" : ""} disabled>Not configured</option><option value="private-network"${connectionMethod === "private-network" ? " selected" : ""}>Private network</option><option value="custom-wss"${connectionMethod === "custom-wss" ? " selected" : ""}>Custom WSS endpoint</option></select></label>`;
+  const connectionField = `<label>Connection method <select name="connectionMethod"><option value="unconfigured"${connectionMethod === "unconfigured" ? " selected" : ""} disabled>Not configured</option><option value="private-network"${connectionMethod === "private-network" ? " selected" : ""}>Private network</option><option value="easytier"${connectionMethod === "easytier" ? " selected" : ""}>EasyTier virtual network</option><option value="custom-wss"${connectionMethod === "custom-wss" ? " selected" : ""}>Custom WSS endpoint</option></select></label>`;
   const lanSettings = `<fieldset><legend>LAN settings</legend>${connectionField}${endpointField}${connectionMethod === "private-network" ? warning : ""}<p>Private network discovery and the invitation endpoint are handled automatically when the Gateway starts.</p></fieldset>`;
   return `<section class="collab-settings" data-settings-namespace="collab"><h2>dsh-collab</h2><p>Configure the dedicated Host Gateway.</p><fieldset><legend>Host gateway</legend><label><input type="checkbox" name="enabled"${settings.enabled ? " checked" : ""}> Enable collaboration</label></fieldset><details><summary>Advanced options</summary><fieldset><legend>Security</legend><label>Token lifetime <select name="tokenTtl">${tokenTtlOptions}</select></label></fieldset><fieldset><legend>Chat</legend><label>Max members <input name="maxMembers" type="number" min="1" value="${String(settings.maxMembers)}"></label><label>Max message bytes <input name="maxMessageBytes" type="number" min="1" value="${String(settings.maxMessageBytes)}"></label><label>Max queued Agent requests <input name="maxQueue" type="number" min="0" value="${String(settings.maxQueue)}"></label></fieldset>${lanSettings}</details><button type="submit" data-action="save-settings">Save</button></section>`;
 }

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabRoomSurface, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabRoomSurface, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 
@@ -402,6 +402,69 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
+  it("prepares an EasyTier Owner invitation through loopback RPC while preserving the Gateway invite token", async () => {
+    const network = {
+      mode: "easytier" as const, version: 1 as const, networkName: "room-1", networkSecret: "network-secret",
+      ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010",
+    };
+    const createInvite = vi.fn(async (input: object) => ({ invitation: JSON.stringify(input) }));
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://10.231.0.1:4310/collab", connectionMethod: "easytier" as const }),
+      save: vi.fn(async () => {}),
+      createInvite,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
+      if (endpoint === "gateway/status") return { ok: true, value: { status: "running", port: 4310 } };
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
+      if (endpoint === "easytier/owner/start") return { ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: "ws://10.231.0.1:4310/collab", localVirtualAddress: "10.231.0.1", network } };
+      throw new Error(endpoint);
+    }) };
+    const port = createDshGatewayControlPort(base, rpc);
+    await port.refreshGateway?.();
+
+    await port.createInvite?.({ expiresAt: 100, gatewayEndpoint: "ws://10.231.0.1:4310/collab" }, "room-1");
+
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/owner/start", { roomId: "room-1", gatewayPort: 4310 });
+    expect(createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://10.231.0.1:4310/collab", network }), "room-1");
+  });
+
+  it("restarts a saved EasyTier Owner network when the user explicitly shares the room again", async () => {
+    const shareHostRoom = vi.fn(async () => {});
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://10.231.0.1:4310/collab", connectionMethod: "easytier" as const }),
+      save: vi.fn(async () => {}),
+      shareHostRoom,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
+      if (endpoint === "gateway/status") return { ok: true, value: { status: "running", port: 4310 } };
+      if (endpoint === "easytier/owner/start") return { ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: "ws://10.231.0.1:4310/collab", localVirtualAddress: "10.231.0.1", network: { mode: "easytier", version: 1, networkName: "room-1", networkSecret: "network-secret", ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010" } } };
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
+      throw new Error(endpoint);
+    }) };
+    const port = createDshGatewayControlPort(base, rpc);
+    await port.refreshGateway?.();
+
+    await port.shareHostRoom?.({ sessionId: "room-1", title: "Release" });
+
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/owner/start", { roomId: "room-1", gatewayPort: 4310 });
+    expect(shareHostRoom).toHaveBeenCalledWith({ sessionId: "room-1", title: "Release" });
+  });
+
+  it("maps Participant EasyTier control responses into a browser-local bridge", async () => {
+    const rpc = { call: vi.fn(async () => ({ ok: true, value: { role: "participant", roomId: "room-1", gatewayEndpoint: "ws://127.0.0.1:45231/collab", localVirtualAddress: "10.231.2.3" } })) };
+    const transport = createDshBrowserEasyTierTransport(rpc);
+    const network = {
+      mode: "easytier" as const, version: 1 as const, networkName: "room-1", networkSecret: "network-secret",
+      ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010",
+    };
+
+    await expect(transport.startParticipant({ roomId: "room-1", gatewayPort: 4310, network })).resolves.toEqual({
+      gatewayEndpoint: "ws://127.0.0.1:45231/collab",
+      localVirtualAddress: "10.231.2.3",
+    });
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/participant/start", { roomId: "room-1", gatewayPort: 4310, network });
+  });
+
   it("registers the Collab Bar with Better Sidebar without blocking the client plugin", () => {
     let panelHost: { register(input: { id: string; title: string; render(): null }): () => void; open(input: { sessionId: string }): void } | undefined;
     let descriptor: { id: string; title: string | (() => string); component(input: { scope: { sessionId: string; cwd?: string }; visible: boolean }): unknown } | undefined;
@@ -481,6 +544,40 @@ describe("real DSH client slot adapter", () => {
 
     await port.save({ gatewayHost: "0.0.0.0", gatewayPort: 8443, exposeMode: "network", advertisedEndpoint: "not a URL" });
     expect(set).toHaveBeenCalledTimes(4);
+  });
+
+  it("renders and persists the EasyTier virtual-network connection choice", async () => {
+    let persisted = {
+      gateway: { gatewayHost: "127.0.0.1" as const, gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" },
+    };
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value: persisted, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async (field: string, value: unknown) => { persisted = { ...persisted, [field]: value } as typeof persisted; }),
+      unset: vi.fn(async () => {}),
+    };
+    const actions = {
+      getSnapshot: () => ({ ...persisted.gateway }),
+      configureGateway: vi.fn(),
+      save: vi.fn(async () => {}),
+    };
+    const port = createDshSettingsPort(scope, actions);
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port }));
+    expect(html).toContain('<option value="easytier">');
+
+    await port.save({
+      connectionMethod: "easytier",
+      easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
+      gatewayHost: "0.0.0.0",
+      gatewayPort: 4310,
+      exposeMode: "network",
+      advertisedEndpoint: "",
+    });
+    expect(persisted).toMatchObject({
+      connectionMethod: "easytier",
+      easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
+      gateway: { gatewayHost: "0.0.0.0", exposeMode: "network" },
+    });
   });
 
   it("migrates the former default queue depth to five", () => {

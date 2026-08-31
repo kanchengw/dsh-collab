@@ -255,7 +255,7 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
                     openDshCollabRoom({ kind: "joined", roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) }, panelHost.host, target);
                   }}>{t("joined.openRoom")}</Action>
                   {active
-                    ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { port?.disconnectJoinedRoom?.(); }}>{t("joined.disconnect")}</Action>
+                    ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { void perform(`disconnect:${room.roomId}`, async () => { await port?.disconnectJoinedRoom?.(); }); }}>{t("joined.disconnect")}</Action>
                     : <Action primary disabled={!connectJoinedRoom || participantConnected || busy !== undefined} onClick={() => { void perform(`joined:${room.roomId}`, async () => { await connectJoinedRoom?.(ref); }); }}>{t("joined.connect")}</Action>}
                   <Action disabled={!forgetJoinedRoom || busy !== undefined} onClick={() => { void perform(`forget:${room.roomId}`, async () => { await forgetJoinedRoom?.(ref); }, t("joined.forgottenNotice")); }}>{t("joined.forget")}</Action>
                 </div>

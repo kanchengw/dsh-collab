@@ -1,11 +1,11 @@
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
 import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
-import { createDshBrowserCollabClient, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
+import { createDshBrowserCollabClient, EasyTierConnectionError, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type CollabConnectionMethod, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
@@ -20,6 +20,8 @@ import { projectCollabActivity } from "./collab-activity.js";
 import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelRenderScope } from "./collab-panel-host.js";
 import type { CollabChangesPort } from "./collab-changes.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
+import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
+import type { CollabInvitationNetwork } from "./invitation.js";
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -31,7 +33,7 @@ export interface DshCollabClientSnapshot {
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
   canSteer: boolean;
-  unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited";
+  unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
   members?: readonly { memberId: string; displayName: string }[];
   timeline?: readonly TimelineItem[];
   agentQueue?: readonly AgentQueueItem[];
@@ -69,6 +71,8 @@ export interface DshCollabOwnedRoom {
 export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
   appliedGateway?: DshCollabGatewaySnapshot;
   writable?: boolean;
+  connectionMethod?: CollabConnectionMethod;
+  easyTierSharedNode?: string;
 };
 
 export interface DshCollabSettingsPort {
@@ -76,16 +80,16 @@ export interface DshCollabSettingsPort {
   getRoomSnapshot?(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   subscribeRoom?(listener: () => void): () => void;
   subscribe?(listener: () => void): () => void;
-  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
+  save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string; connectionMethod?: CollabConnectionMethod; easyTierSharedNode?: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
   shareHostRoom?(input: { sessionId: string; title: string }): Promise<void>;
   stopSharing?(roomId: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
-  createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string }, roomId?: string): Promise<{ invitation: string }>;
+  createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string; network?: CollabInvitationNetwork }, roomId?: string): Promise<{ invitation: string }>;
   listJoinedRooms?(): readonly ParticipantResumeState[];
   subscribeJoinedRooms?(listener: () => void): () => void;
   connectJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
-  disconnectJoinedRoom?(): void;
+  disconnectJoinedRoom?(): Promise<void>;
   forgetJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
   getGatewaySnapshot?(): DshCollabGatewayRuntimeSnapshot;
@@ -162,6 +166,8 @@ interface PersistedCollabSettings {
   gateway: DshCollabGatewaySnapshot;
   appliedGateway?: DshCollabGatewaySnapshot;
   security?: DshCollabSecuritySettings;
+  connectionMethod?: CollabConnectionMethod;
+  easyTierSharedNode?: string;
 }
 
 function decodeGateway(value: unknown): PersistedCollabSettings["gateway"] | undefined {
@@ -179,6 +185,16 @@ function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
   const candidate = value as Record<string, unknown>;
   if ([candidate.gatewayEndpoint, candidate.roomId, candidate.memberId, candidate.credential].some((field) => typeof field !== "string" || field.trim() === "")) return undefined;
   try { normalizeGatewayEndpoint(candidate.gatewayEndpoint as string); } catch { return undefined; }
+  let easyTier: ParticipantResumeState["easyTier"];
+  if (candidate.easyTier && typeof candidate.easyTier === "object" && !Array.isArray(candidate.easyTier)) {
+    const input = candidate.easyTier as Record<string, unknown>;
+    try {
+      const network = decodeEasyTierInvitationNetwork(input.network);
+      if (typeof input.localVirtualAddress !== "string") return undefined;
+      assertEasyTierPrivateIpv4("localVirtualAddress", input.localVirtualAddress);
+      easyTier = { network, localVirtualAddress: input.localVirtualAddress };
+    } catch { return undefined; }
+  }
   return {
     gatewayEndpoint: candidate.gatewayEndpoint as string,
     roomId: candidate.roomId as string,
@@ -186,6 +202,7 @@ function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
     credential: candidate.credential as string,
     ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
     ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
+    ...(easyTier ? { easyTier } : {}),
   };
 }
 
@@ -205,7 +222,15 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
     maxQueue: migrateLegacyMaxQueue(security.maxQueue) ?? defaultCollabSettings.maxQueue,
   };
-  return { gateway, ...(appliedGateway ? { appliedGateway } : {}), security: normalized };
+  const configuredMethod = (value as { connectionMethod?: unknown }).connectionMethod;
+  const fallbackMethod: CollabConnectionMethod = gateway.exposeMode === "network" ? "private-network" : gateway.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
+  const connectionMethod: CollabConnectionMethod = configuredMethod === "private-network" || configuredMethod === "easytier" || configuredMethod === "custom-wss"
+    ? configuredMethod
+    : fallbackMethod;
+  const easyTierSharedNode = typeof (value as { easyTierSharedNode?: unknown }).easyTierSharedNode === "string"
+    ? (value as { easyTierSharedNode: string }).easyTierSharedNode
+    : defaultCollabSettings.easyTierSharedNode;
+  return { gateway, ...(appliedGateway ? { appliedGateway } : {}), security: normalized, connectionMethod, easyTierSharedNode };
 }
 
 export function decodeDshParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
@@ -365,11 +390,47 @@ function decodeLocalSideTaskResult(
   return value as LocalSideTaskSnapshot;
 }
 
+function controlValue(result: unknown, message: string): Record<string, unknown> {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error(message);
+  const envelope = result as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
+  if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : message);
+  if (!envelope.value || typeof envelope.value !== "object" || Array.isArray(envelope.value)) throw new Error(message);
+  return envelope.value as Record<string, unknown>;
+}
+
+export function createDshBrowserEasyTierTransport(rpc: DshClientConnectionRpc): DshBrowserEasyTierTransport {
+  return {
+    async startParticipant(input) {
+      let value: Record<string, unknown>;
+      try {
+        value = controlValue(await rpc.call("/dsh-collab", "easytier/participant/start", input), "Invalid EasyTier Participant response");
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        throw new EasyTierConnectionError(message.includes("network is offline") ? "network-offline" : "transport-failed", message, cause);
+      }
+      if (value.role !== "participant" || value.roomId !== input.roomId || typeof value.gatewayEndpoint !== "string" || typeof value.localVirtualAddress !== "string") {
+        throw new Error("Invalid EasyTier Participant response");
+      }
+      const endpoint = new URL(value.gatewayEndpoint);
+      if (endpoint.protocol !== "ws:" || endpoint.hostname !== "127.0.0.1" || endpoint.pathname !== "/collab") throw new Error("Invalid EasyTier Participant bridge");
+      assertEasyTierPrivateIpv4("localVirtualAddress", value.localVirtualAddress);
+      return { gatewayEndpoint: value.gatewayEndpoint, localVirtualAddress: value.localVirtualAddress };
+    },
+    async stop() {
+      const result = await rpc.call("/dsh-collab", "easytier/stop", {});
+      if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) throw new Error("Unable to stop EasyTier");
+    },
+  };
+}
+
 export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
   let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
   let ownedRooms: DshCollabOwnedRoom[] = [];
   const listeners = new Set<() => void>();
   const roomListeners = new Set<() => void>();
+  const createInvite = base.createInvite?.bind(base);
+  const stopSharing = base.stopSharing?.bind(base);
+  const shareHostRoom = base.shareHostRoom?.bind(base);
   const publish = (next: DshCollabGatewayRuntimeSnapshot): DshCollabGatewayRuntimeSnapshot => {
     gateway = next;
     for (const listener of listeners) listener();
@@ -389,6 +450,14 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     if (!base.getLocalSnapshotAccess) throw new Error("Participant snapshot access is unavailable");
     return base.getLocalSnapshotAccess(roomId);
   };
+  const startEasyTierOwner = async (roomId: string): Promise<{ gatewayEndpoint: string; network: ReturnType<typeof decodeEasyTierInvitationNetwork> }> => {
+    if (gateway.status !== "running") throw new Error("Start the Host Gateway before sharing through EasyTier");
+    const settings = base.getSnapshot();
+    if ((settings.appliedGateway ?? settings).gatewayHost !== "0.0.0.0") throw new Error("Restart the Host Gateway before sharing through EasyTier");
+    const value = controlValue(await rpc.call("/dsh-collab", "easytier/owner/start", { roomId, gatewayPort: gateway.port }), "Invalid EasyTier Owner response");
+    if (value.role !== "owner" || value.roomId !== roomId || typeof value.gatewayEndpoint !== "string") throw new Error("Invalid EasyTier Owner response");
+    return { gatewayEndpoint: value.gatewayEndpoint, network: decodeEasyTierInvitationNetwork(value.network) };
+  };
   return Object.assign(base, {
     getGatewaySnapshot: () => gateway,
     subscribeGateway: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -398,6 +467,30 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     getOwnedRooms: () => ownedRooms,
     subscribeOwnedRooms: (listener: () => void) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
     refreshOwnedRooms,
+    createInvite: createInvite ? async (input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string; network?: CollabInvitationNetwork }, roomId?: string) => {
+      const settings = base.getSnapshot();
+      if (settings.connectionMethod !== "easytier") return createInvite(input, roomId);
+      if (!roomId || gateway.status !== "running") throw new Error("Start sharing this room before creating an EasyTier invitation");
+      const active = await startEasyTierOwner(roomId);
+      return createInvite({ ...input, gatewayEndpoint: active.gatewayEndpoint, network: active.network }, roomId);
+    } : undefined,
+    shareHostRoom: shareHostRoom ? async (input: { sessionId: string; title: string }) => {
+      if (base.getSnapshot().connectionMethod === "easytier") {
+        try {
+          await startEasyTierOwner(input.sessionId);
+          await shareHostRoom(input);
+        } catch (error) {
+          await rpc.call("/dsh-collab", "easytier/stop", {}).catch(() => undefined);
+          throw error;
+        }
+        return;
+      }
+      await shareHostRoom(input);
+    } : undefined,
+    stopSharing: stopSharing ? async (roomId: string) => {
+      await stopSharing(roomId);
+      if (base.getSnapshot().connectionMethod === "easytier") await rpc.call("/dsh-collab", "easytier/stop", {});
+    } : undefined,
     inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
     inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),
     startLocalExplain: async (input: StartExplainTaskInput) => {
@@ -482,6 +575,8 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         maxMembers: persisted.security?.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: persisted.security?.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
         maxQueue: migrateLegacyMaxQueue(persisted.security?.maxQueue) ?? defaultCollabSettings.maxQueue,
+        connectionMethod: persisted.connectionMethod ?? defaultCollabSettings.connectionMethod,
+        easyTierSharedNode: persisted.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode,
       };
       const fallback = actions.getSnapshot();
       return {
@@ -502,6 +597,8 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       if (input.exposeMode === "loopback" && input.gatewayHost !== "127.0.0.1") throw new Error("loopback mode requires 127.0.0.1");
       if (input.exposeMode === "network" && input.gatewayHost !== "0.0.0.0") throw new Error("network mode requires 0.0.0.0");
       const advertisedEndpoint = input.exposeMode === "network" ? "" : input.advertisedEndpoint === "" ? "" : normalizeAdvertisedGatewayEndpoint(input.advertisedEndpoint, input.exposeMode);
+      const connectionMethod = input.connectionMethod ?? (input.exposeMode === "network" ? "private-network" : advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured");
+      const easyTierSharedNode = input.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode;
       const security = {
         tokenTtlMs: input.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : input.tokenTtlMs,
         approvalPolicy: input.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
@@ -515,12 +612,16 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
       if (!Number.isSafeInteger(security.maxQueue) || security.maxQueue < 0) throw new Error("maxQueue must be non-negative");
       await scope.set("gateway", { gatewayHost: input.gatewayHost, gatewayPort: input.gatewayPort, exposeMode: input.exposeMode, advertisedEndpoint });
       await scope.set("security", security);
+      if (input.connectionMethod !== undefined) await scope.set("connectionMethod", connectionMethod);
+      if (input.easyTierSharedNode !== undefined) await scope.set("easyTierSharedNode", easyTierSharedNode);
       const committed = scope.getSnapshot().value;
       if (!committed
         || committed.gateway.gatewayHost !== input.gatewayHost
         || committed.gateway.gatewayPort !== input.gatewayPort
         || committed.gateway.exposeMode !== input.exposeMode
         || committed.gateway.advertisedEndpoint !== advertisedEndpoint
+        || (input.connectionMethod !== undefined && committed.connectionMethod !== connectionMethod)
+        || (input.easyTierSharedNode !== undefined && committed.easyTierSharedNode !== easyTierSharedNode)
         || committed.security?.tokenTtlMs !== security.tokenTtlMs
         || committed.security.approvalPolicy !== security.approvalPolicy
         || committed.security.maxMembers !== security.maxMembers
@@ -630,6 +731,7 @@ function actionErrorText(cause: unknown, t: CollabTranslate): string {
     if (cause.code === "RESOURCE_LIMIT") return t("room.resourceLimited");
   }
   if (cause instanceof GatewayConnectionError) return t("room.hostUnreachable");
+  if (cause instanceof EasyTierConnectionError) return t(cause.code === "network-offline" ? "room.networkOffline" : "room.transportFailed");
   return cause instanceof Error ? cause.message : t("rooms.actionError");
 }
 
@@ -997,6 +1099,10 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
       ? "room.hostUnreachable"
       : view.unavailableReason === "resource-limited"
         ? "room.resourceLimited"
+        : view.unavailableReason === "network-offline"
+          ? "room.networkOffline"
+          : view.unavailableReason === "transport-failed"
+            ? "room.transportFailed"
         : "room.participantInactive";
 
   return createElement("main", { className: roomCss.surface, "data-collab-room-ui": true, "data-collab-surface": "room", "data-collab-mode": role, "aria-label": t("room.aria") },
@@ -1012,7 +1118,7 @@ export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settin
         active ? createElement("button", { type: "button", className: roomCss.toolbarButton, "aria-expanded": inspector.open, onClick: inspector.show }, t("inspector.title")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.createInvite || gatewayEndpoint === "", onClick: () => { void createInvitation(); } }, t(busy === "invite" ? "share.creating" : "share.createInvitation")) : null,
         active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.stopSharing, onClick: () => { void perform("stop", async () => { await props.settingsPort?.stopSharing?.(selection.roomId); }, t("share.stoppedNotice")); } }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")) : null,
-        active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { props.settingsPort?.disconnectJoinedRoom?.(); } }, t("joined.disconnect")) : null,
+        active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { void perform("disconnect", async () => { await props.settingsPort?.disconnectJoinedRoom?.(); }); } }, t("joined.disconnect")) : null,
         createElement("button", { type: "button", className: roomCss.closeSurface, "aria-label": t("rooms.backToDsh"), onClick: closeDshCollabRoom }, "×"),
       ),
     ),
@@ -1133,10 +1239,14 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const existing = optionalService<DshCollabClientPort>(context, "collabClient");
   const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
   const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings });
-  const browserClient = existing ? undefined : createDshBrowserCollabClient({ ...browserConfig(), ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}) });
+  const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
+  const browserClient = existing ? undefined : createDshBrowserCollabClient({
+    ...browserConfig(),
+    ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}),
+    ...(connection ? { easyTierTransport: createDshBrowserEasyTierTransport(connection.rpc) } : {}),
+  });
   const client = existing ?? browserClient;
   const rawBrowserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
-  const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
   const browserSettings = rawBrowserSettings && connection ? createDshGatewayControlPort(rawBrowserSettings, connection.rpc) : rawBrowserSettings;
   const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);

@@ -1,4 +1,5 @@
 export const EASYTIER_INVITATION_VERSION = 1 as const;
+export const DEFAULT_EASYTIER_SHARED_NODE = "tcp://public.kkrainbow.top:11010";
 
 export interface EasyTierInvitationNetwork {
   mode: "easytier";
@@ -45,6 +46,7 @@ export function assertEasyTierPeer(field: string, value: string): void {
 export function decodeEasyTierInvitationNetwork(value: unknown): EasyTierInvitationNetwork {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invitation network must be an object");
   const input = value as Record<string, unknown>;
+  if (input.mode !== "easytier") throw new Error("invitation network.mode is not supported");
   if (input.version !== EASYTIER_INVITATION_VERSION) throw new Error("invitation network.version is not supported");
   const networkName = requiredText(input.networkName, "networkName");
   const networkSecret = requiredText(input.networkSecret, "networkSecret");

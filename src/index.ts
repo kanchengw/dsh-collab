@@ -61,6 +61,9 @@ import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskIn
 import { LocalSideTaskFile } from "./local-sidecar-store.js";
 import { DshLocalSidecarWorkspace } from "./local-sidecar-workspace.js";
 import { detectPrivateNetworkAddress } from "./network-address.js";
+import { EasyTierRuntimeManager, createDshEasyTierProcessPort } from "./easytier-runtime.js";
+import { DEFAULT_EASYTIER_OWNER_ADDRESS, EasyTierTransportCoordinator, type ActiveEasyTierTransport } from "./easytier-transport.js";
+import { decodeEasyTierInvitationNetwork, type EasyTierInvitationNetwork } from "./easytier-invitation.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -86,6 +89,7 @@ export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agen
   connection?: { rpc: DshConnectionRpc };
   effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
+  easyTierTransport?: EasyTierTransportCoordinator;
 }
 
 export function registerDshCollabSettings(
@@ -116,6 +120,9 @@ export function registerDshCollabSettings(
           maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
           maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
         },
+        connectionMethod: "unconfigured",
+        easyTierSharedNode: defaultCollabSettings.easyTierSharedNode,
+        easyTierRooms: [],
       },
       applies: "restart",
       validate: validateDshCollabPersistedSettings,
@@ -150,6 +157,9 @@ function registerGatewayControl(
   if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
   let starting: Promise<{ status: "running"; port: number }> | undefined;
+  const easyTier = context.easyTierTransport ?? (context.subprocess
+    ? new EasyTierTransportCoordinator({ runtime: new EasyTierRuntimeManager({ processes: createDshEasyTierProcessPort(context.subprocess) }) })
+    : undefined);
   const createLocalAgent = context.agents.create;
   const sideTaskPersistence = config.sideTaskFile === false || (config.sideTaskFile === undefined && config.stateFile === false)
     ? undefined
@@ -188,7 +198,7 @@ function registerGatewayControl(
     await starting?.catch(() => undefined);
     const current = mounted;
     mounted = undefined;
-    if (current) await current.dispose();
+    await Promise.all([current?.dispose(), easyTier?.stop()]);
     return { status: "stopped" };
   };
   const start = async (): Promise<{ status: "running"; port: number }> => {
@@ -201,7 +211,9 @@ function registerGatewayControl(
       mounted = next;
       try {
         const gatewayPort = await next.ready;
-        const advertisedEndpoint = settings.gateway.exposeMode === "network"
+        const advertisedEndpoint = settings.connectionMethod === "easytier"
+          ? privateGatewayEndpoint(DEFAULT_EASYTIER_OWNER_ADDRESS, gatewayPort)
+          : settings.gateway.exposeMode === "network"
           ? privateGatewayEndpoint(detectPrivateNetworkAddress() || (() => { throw new Error("No private network address is available") })(), gatewayPort)
           : settings.gateway.advertisedEndpoint;
         // Keep an empty advertisedEndpoint empty so the next start can detect
@@ -234,6 +246,24 @@ function registerGatewayControl(
       sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
     }));
   };
+  const ownerEasyTierNetwork = async (roomId: string, gatewayPort: number, signal: AbortSignal): Promise<ActiveEasyTierTransport> => {
+    if (!easyTier) throw new Error("EasyTier is unavailable on this DSH runtime");
+    const settings = scope.get();
+    if (settings.connectionMethod !== "easytier") throw new Error("Select EasyTier virtual network before sharing this room");
+    const saved = settings.easyTierRooms?.find((room) => room.roomId === roomId)?.network;
+    const network = saved ? decodeEasyTierInvitationNetwork(saved) : undefined;
+    const active = await easyTier.startOwner({
+      roomId,
+      gatewayPort,
+      ...(network ? { network } : { sharedNode: settings.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode }),
+      signal,
+    });
+    if (!saved) {
+      const easyTierRooms = [...(settings.easyTierRooms ?? []).filter((room) => room.roomId !== roomId), { roomId, network: active.network }];
+      await scope.update({ easyTierRooms });
+    }
+    return active;
+  };
   const activeRepository = (payload: unknown): { inspector: RepositoryInspector; input: Record<string, unknown> } => {
     if (!mounted || !context.subprocess) throw new Error("Host Gateway repository inspection is unavailable");
     if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { roomId?: unknown }).roomId !== "string") {
@@ -257,6 +287,28 @@ function registerGatewayControl(
       }
       if (endpoint === "gateway/start") return { ok: true, value: await start() };
       if (endpoint === "gateway/stop") return { ok: true, value: await stop() };
+      if (endpoint === "easytier/status") return { ok: true, value: easyTier?.snapshot() ?? { active: false, runtime: { kind: "idle" } } };
+      if (endpoint === "easytier/owner/start") {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("EasyTier Owner request is invalid");
+        const input = payload as { roomId?: unknown; gatewayPort?: unknown };
+        if (typeof input.roomId !== "string" || !Number.isSafeInteger(input.gatewayPort)) throw new Error("EasyTier Owner request is invalid");
+        return { ok: true, value: await ownerEasyTierNetwork(input.roomId, input.gatewayPort as number, signal) };
+      }
+      if (endpoint === "easytier/participant/start") {
+        if (!easyTier || !payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("EasyTier Participant request is invalid");
+        const input = payload as { roomId?: unknown; gatewayPort?: unknown; network?: unknown; localVirtualAddress?: unknown };
+        if (typeof input.roomId !== "string" || !Number.isSafeInteger(input.gatewayPort)) throw new Error("EasyTier Participant request is invalid");
+        const network: EasyTierInvitationNetwork = decodeEasyTierInvitationNetwork(input.network);
+        const value = await easyTier.startParticipant({
+          roomId: input.roomId,
+          gatewayPort: input.gatewayPort as number,
+          network,
+          ...(typeof input.localVirtualAddress === "string" ? { localVirtualAddress: input.localVirtualAddress } : {}),
+          signal,
+        });
+        return { ok: true, value };
+      }
+      if (endpoint === "easytier/stop") return { ok: true, value: await easyTier?.stop() ?? { kind: "idle" } };
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
       if (endpoint === "sidecar/start") {
         if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
@@ -330,3 +382,4 @@ export default apply;
 export * from "./easytier-artifacts.js";
 export * from "./easytier-invitation.js";
 export * from "./easytier-runtime.js";
+export * from "./easytier-transport.js";
