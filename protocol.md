@@ -42,6 +42,39 @@ be placed in a URL, browser history, access log, or analytics event. The
 external `wss://` endpoint is declarative: v1 does not provision a tunnel,
 reverse proxy, public Relay, TLS certificate, or NAT traversal.
 
+EasyTier invitations use `dsh-collab.invitation.v2` so a v1 client rejects the
+invitation at the protocol boundary instead of ignoring an unknown network
+mode. The versioned envelope adds one `network` discriminator. LAN and custom
+WSS descriptions repeat the canonical endpoint and must match
+`gatewayEndpoint`; an EasyTier description carries only the overlay identity,
+credential, Owner virtual IPv4 and bootstrap peer:
+
+```json
+{
+  "protocol": "dsh-collab.invitation.v2",
+  "type": "invite",
+  "gatewayEndpoint": "ws://10.231.0.1:4310/collab",
+  "roomId": "room-1",
+  "inviteId": "invite-1",
+  "token": "opaque-collab-invite-token",
+  "expiresAt": 1720000000000,
+  "network": {
+    "mode": "easytier",
+    "version": 1,
+    "networkName": "dsh-collab-room-1",
+    "networkSecret": "opaque-overlay-secret",
+    "ownerVirtualAddress": "10.231.0.1",
+    "sharedNode": "tcp://shared.example.com:11010"
+  }
+}
+```
+
+`networkSecret` admits a peer to the EasyTier overlay but grants no Collab
+room permission. After the overlay is established, the Participant must still
+submit the separate top-level `token` to the normal `/join` route. Unknown
+invitation protocols, network versions and modes fail closed. Invitation
+validation errors never include either secret.
+
 ## Additive capability negotiation
 
 Post-v1 collaboration mechanisms are gated by additive capability tokens. The

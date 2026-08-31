@@ -11,6 +11,7 @@ import {
 import type { GatewayResponse, RoomEvent, StreamFrame } from "./types.js";
 
 export const COLLAB_PROTOCOL = "dsh-collab.v1" as const;
+export const COLLAB_INVITATION_PROTOCOL = "dsh-collab.invitation.v2" as const;
 export const COLLAB_CAPABILITY_HEADER = "x-dsh-collab-capabilities" as const;
 export { SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, CHANGE_SET_CAPABILITY };
 

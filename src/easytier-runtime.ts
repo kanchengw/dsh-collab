@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { isIPv4 } from "node:net";
 import { dirname, join } from "node:path";
 import { EasyTierArtifactStore, type PreparedEasyTierArtifact } from "./easytier-artifacts.js";
+import { assertEasyTierName, assertEasyTierNetworkSecret, assertEasyTierPeer, assertEasyTierPrivateIpv4 } from "./easytier-invitation.js";
 import { resolveDefaultCollabEasyTierRunDir } from "./persistence.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 
@@ -280,43 +280,18 @@ function validPort(name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) throw new Error(`${name} is invalid`);
 }
 
-function validName(name: string, value: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) throw new Error(`${name} is invalid`);
-}
-
-function validPrivateIpv4(name: string, value: string): void {
-  if (!isIPv4(value)) throw new Error(`${name} is invalid`);
-  const [a, b] = value.split(".").map(Number);
-  if (!(a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168))) throw new Error(`${name} must be private IPv4`);
-}
-
-function validPeer(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("EasyTier peer is invalid");
-  }
-  if (!new Set(["tcp:", "udp:", "wg:", "quic:", "ws:", "wss:"]).has(url.protocol)
-    || !url.hostname || !url.port || url.username || url.password || (url.pathname && url.pathname !== "/") || url.search || url.hash) {
-    throw new Error("EasyTier peer is invalid");
-  }
-}
-
 export function buildEasyTierRuntimeConfig(input: EasyTierRuntimeStartInput): EasyTierRuntimeConfig {
-  validName("instanceName", input.instanceName);
-  validName("networkName", input.networkName);
-  if (input.networkSecret.length < 8 || input.networkSecret.length > 256 || /["\\\0-\x1f\x7f]/.test(input.networkSecret)) {
-    throw new Error("networkSecret is invalid");
-  }
-  validPrivateIpv4("virtualIpv4", input.virtualIpv4);
+  assertEasyTierName("instanceName", input.instanceName);
+  assertEasyTierName("networkName", input.networkName);
+  assertEasyTierNetworkSecret(input.networkSecret);
+  assertEasyTierPrivateIpv4("virtualIpv4", input.virtualIpv4);
   validPort("listenerPort", input.listenerPort);
   validPort("rpcPort", input.rpcPort);
   if (input.peers.length > 16) throw new Error("EasyTier peers exceed the limit");
-  for (const peer of input.peers) validPeer(peer);
+  for (const peer of input.peers) assertEasyTierPeer("EasyTier peer", peer);
   if (input.portForward) {
     validPort("portForward.listenPort", input.portForward.listenPort);
-    validPrivateIpv4("portForward.targetIpv4", input.portForward.targetIpv4);
+    assertEasyTierPrivateIpv4("portForward.targetIpv4", input.portForward.targetIpv4);
     validPort("portForward.targetPort", input.portForward.targetPort);
   }
 
@@ -359,7 +334,7 @@ export type EasyTierRuntimeStatus =
   | { kind: "process-error"; code: "port-conflict" | "process-exit" | "start-failed" | "stop-failed"; message: string; exitCode: number | null; failedAt: number };
 
 export function parseEasyTierPeerDiagnostics(text: string, targetIpv4: string, checkedAt: number): EasyTierRuntimeStatus {
-  validPrivateIpv4("targetIpv4", targetIpv4);
+  assertEasyTierPrivateIpv4("targetIpv4", targetIpv4);
   let rows: unknown;
   try {
     rows = JSON.parse(text);
