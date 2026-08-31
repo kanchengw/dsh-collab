@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectTimeline, renderTimeline, type TimelineItem } from "../../src/ui.js";
+import { projectTimeline, type TimelineItem } from "../../src/ui.js";
 import type { RoomEvent } from "../../src/types.js";
 
 function event(partial: Partial<RoomEvent> & Pick<RoomEvent, "eventId" | "seq" | "type" | "payload">): RoomEvent {
@@ -27,7 +27,6 @@ describe("collab timeline projection", () => {
     expect(items[0]).toMatchObject({ contextEventId: "h-1" });
     expect(items[1]).toMatchObject({ kind: "agent-request", authorMemberId: "member-1", requestId: "req-1", status: "completed", text: "@agent summarize", contextEventId: "r-1" });
     expect(items[2]).toMatchObject({ kind: "agent", authorMemberId: "member-host", requestId: "req-1", state: "output", text: "Summary", contextEventId: "out-1" });
-    expect(renderTimeline(items)).toContain('data-status="completed"');
   });
 
   it("does not duplicate event IDs and exposes Agent output state", () => {

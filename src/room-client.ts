@@ -54,5 +54,3 @@ export class RoomClient {
     this.connection = undefined;
   }
 }
-
-export { renderCollabSession, type CollabSessionViewState } from "./session-ui.js";

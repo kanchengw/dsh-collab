@@ -1,39 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabRoomSurface, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
-import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
 
 describe("real DSH client slot adapter", () => {
-  it("lets the Owner dismiss a generated invitation without stopping the room", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
-
-    expect(source).toMatch(/setInvitation\(""\);[^\n]*share\.hideInvitation/);
-  });
-
-  it("expires transient room notices while keeping Participant availability visible", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
-
-    expect(source).toContain('notice.tone === "success" ? 3_000 : 6_000');
-    expect(source).toContain('view.unavailableReason === "host-stopped-sharing"');
-    expect(source).toContain('view.unavailableReason === "host-unreachable"');
-    expect(source).toContain('view.unavailableReason === "resource-limited"');
-  });
-
-  it("keeps room status and actions available at narrow viewports", () => {
-    const css = readFileSync(resolve(process.cwd(), "src/collab-room.module.css"), "utf8");
-    const narrow = css.slice(css.indexOf("@media (max-width: 720px)"), css.indexOf("@media (max-width: 440px)"));
-
-    expect(narrow).not.toMatch(/\.surfaceHeader > \.connection\s*{[^}]*display:\s*none/);
-    expect(narrow).not.toMatch(/\.surfaceActions \.toolbarButton\s*{[^}]*display:\s*none/);
-    expect(narrow).toMatch(/\.surfaceActions\s*{[^}]*flex-wrap:\s*wrap/);
-  });
-
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
     expect(inject).toEqual(["slots", "settingsScope", "connection", "locale"]);
@@ -302,45 +275,6 @@ describe("real DSH client slot adapter", () => {
     expect(html).toContain("Open Collab room");
     expect(html).not.toContain("textarea");
     expect(html).not.toContain('data-collab-room-ui="true"');
-  });
-
-  it("renders the same full room surface for Owner and Participant", () => {
-    const participant: DshCollabClientSnapshot = {
-      ...snapshot,
-      role: "participant",
-      canSteer: false,
-      members: [
-        { memberId: "member-host", displayName: "Host" },
-        { memberId: "member-bob", displayName: "Bob" },
-      ],
-      timeline: [
-        { eventId: "human-1", seq: 1, kind: "human", authorMemberId: "member-bob", text: "**hello**" },
-        { eventId: "agent-1", seq: 2, kind: "agent", authorMemberId: "member-host", requestId: "request-1", state: "output", text: "**done**" },
-        { eventId: "stream:request-2", seq: 3, kind: "agent", authorMemberId: "member-host", requestId: "request-2", state: "output", text: "**working", streaming: true },
-      ],
-    };
-    openDshCollabRoom({ kind: "joined", roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", gatewayEndpoint: "wss://host.example/collab" });
-    const html = renderToStaticMarkup(createElement(DshCollabRoomSurface, { fallback: participant }));
-    closeDshCollabRoom();
-
-    expect(html).toContain('data-collab-surface="room"');
-    expect(html).toContain('data-collab-mode="participant"');
-    expect(html).toContain('data-collab-room-ui="true"');
-    expect(html).toContain("**hello**");
-    expect(html).not.toContain("<strong>hello</strong>");
-    expect(html).toContain("<strong>done</strong>");
-    expect(html).toContain('data-streaming="true"');
-    expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).toContain("streaming: item.streaming === true");
-    expect(html).toContain(">Bob<");
-    expect(html).not.toContain(">member-bob<");
-    expect(html).not.toContain(">Output</span>");
-    expect(html).toContain('name="collab-text"');
-    expect(html.match(/<textarea/g)).toHaveLength(1);
-    expect(html).not.toContain("<select");
-    expect(html).not.toContain('name="collab-target"');
-    expect(html).toContain("@agent");
-    expect(html).not.toContain('style="');
-    expect(renderToStaticMarkup(createElement(DshCollabRoomSurface, { fallback: snapshot }))).toBe("");
   });
 
   it("opens a draft Owner room from the native session header without adding another composer", () => {

@@ -1,16 +1,15 @@
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
 import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
-import { createDshBrowserCollabClient, EasyTierConnectionError, GatewayConnectionError, GatewayRequestError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
+import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
+import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type CollabConnectionMethod, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
 import roomCss from "./collab-room.module.css";
-import { DshCollabInspector, useCollabInspector } from "./collab-inspector.js";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
 import type { AgentQueueItem, RoomEvent } from "./types.js";
 import { MAX_CONTEXT_REFS } from "./messages.js";
@@ -725,16 +724,6 @@ function connectionLabel(connection: DshCollabClientSnapshot["connection"], t: C
   return t(key[connection]);
 }
 
-function actionErrorText(cause: unknown, t: CollabTranslate): string {
-  if (cause instanceof GatewayRequestError) {
-    if (cause.code === "ROOM_INACTIVE") return t("room.hostStoppedSharing");
-    if (cause.code === "RESOURCE_LIMIT") return t("room.resourceLimited");
-  }
-  if (cause instanceof GatewayConnectionError) return t("room.hostUnreachable");
-  if (cause instanceof EasyTierConnectionError) return t(cause.code === "network-offline" ? "room.networkOffline" : "room.transportFailed");
-  return cause instanceof Error ? cause.message : t("rooms.actionError");
-}
-
 function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   if (item.text) return item.text;
   if (item.kind === "agent-request") return t("room.agentRequest", { status: agentStatusLabel(item.status ?? "updated", t) });
@@ -953,25 +942,6 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
   );
 }
 
-function useSettingsSnapshot(port: DshCollabSettingsPort | undefined): DshCollabSettingsSnapshot | undefined {
-  const [snapshot, setSnapshot] = useState(() => port?.getSnapshot());
-  useEffect(() => {
-    setSnapshot(port?.getSnapshot());
-    return port?.subscribe?.(() => { setSnapshot(port.getSnapshot()); });
-  }, [port]);
-  return snapshot;
-}
-
-function useGatewaySnapshot(port: DshCollabSettingsPort | undefined): DshCollabGatewayRuntimeSnapshot {
-  const [snapshot, setSnapshot] = useState<DshCollabGatewayRuntimeSnapshot>(() => port?.getGatewaySnapshot?.() ?? { status: "stopped" });
-  useEffect(() => {
-    const update = (): void => { setSnapshot(port?.getGatewaySnapshot?.() ?? { status: "stopped" }); };
-    update();
-    return port?.subscribeGateway?.(update);
-  }, [port]);
-  return snapshot;
-}
-
 /** Small session-header action; the native conversation keeps its own single composer. */
 export function DshCollabSessionAction(props: {
   sessionId: string;
@@ -1012,166 +982,6 @@ export function DshCollabSessionAction(props: {
     ...(error ? { title: error } : {}),
     onClick: () => { void activate(); },
   }, t(hosted ? "share.openRoom" : busy ? "share.sharing" : "share.asRoom"));
-}
-
-/** Full frame-wide room surface shared by Owner and Participant roles. */
-export function DshCollabRoomSurface(props: { port?: DshCollabClientPort; settingsPort?: DshCollabSettingsPort; fallback?: DshCollabClientSnapshot; t?: CollabTranslate }): ReactNode {
-  const t = props.t ?? defaultCollabTranslate;
-  const selection = useDshCollabRoomSelection();
-  const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
-  const gateway = useGatewaySnapshot(props.settingsPort);
-  const settings = useSettingsSnapshot(props.settingsPort);
-  const [roomName, setRoomName] = useState(() => selection?.roomTitle ?? "");
-  const [invitation, setInvitation] = useState("");
-  const [busy, setBusy] = useState<string>();
-  const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string }>();
-  const selectedRole = selection?.kind === "owned" ? "host" : "participant";
-  const inspector = useCollabInspector({
-    roomId: selection?.roomId ?? "",
-    role: selectedRole,
-    sharing: snapshot.workspaceSharing,
-    port: props.settingsPort,
-    memberId: snapshot.memberId,
-    members: snapshot.members ?? [],
-    timeline: snapshot.timeline ?? [],
-  });
-  useEffect(() => {
-    setRoomName(selection?.roomTitle ?? "");
-    setInvitation("");
-    setNotice(undefined);
-  }, [selection?.kind, selection?.roomId]);
-  useEffect(() => {
-    if (!notice) return;
-    const timeout = setTimeout(() => { setNotice(undefined); }, notice.tone === "success" ? 3_000 : 6_000);
-    return () => { clearTimeout(timeout); };
-  }, [notice]);
-  if (!selection) return null;
-
-  const role = selectedRole;
-  const selected = snapshot.roomId === selection.roomId && snapshot.role === role
-    && (selection.kind === "owned" || snapshot.gatewayEndpoint === undefined || snapshot.gatewayEndpoint === selection.gatewayEndpoint);
-  const active = selected && snapshot.connection !== "offline";
-  const view: DshCollabClientSnapshot = selected ? snapshot : {
-    ...fallbackSnapshot,
-    roomId: selection.roomId,
-    roomTitle: selection.roomTitle,
-    hostDisplayName: selection.kind === "joined" ? selection.hostDisplayName ?? "" : "",
-    role,
-  };
-  const appliedGateway = settings?.appliedGateway ?? settings;
-  const gatewayEndpoint = appliedGateway?.advertisedEndpoint ?? "";
-  const perform = async (key: string, action: () => Promise<void>, success?: string): Promise<void> => {
-    setBusy(key);
-    setNotice(undefined);
-    try {
-      await action();
-      if (success) setNotice({ tone: "success", text: success });
-    } catch (cause) {
-      setNotice({ tone: "error", text: actionErrorText(cause, t) });
-    } finally {
-      setBusy(undefined);
-    }
-  };
-  const startSharing = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (selection.kind !== "owned" || !props.settingsPort?.shareHostRoom || roomName.trim() === "") return;
-    await perform("share", async () => {
-      if (gateway.status !== "running") await props.settingsPort?.startGateway?.();
-      await props.settingsPort!.shareHostRoom!({ sessionId: selection.hostSessionId, title: roomName.trim() });
-    }, t("share.startedNotice"));
-  };
-  const connect = async (): Promise<void> => {
-    if (selection.kind !== "joined" || !props.settingsPort?.connectJoinedRoom) return;
-    await perform("connect", () => props.settingsPort!.connectJoinedRoom!({ gatewayEndpoint: selection.gatewayEndpoint, roomId: selection.roomId }));
-  };
-  const createInvitation = async (): Promise<void> => {
-    if (selection.kind !== "owned" || !props.settingsPort?.createInvite || gatewayEndpoint === "") return;
-    await perform("invite", async () => {
-      setInvitation(await createDshCollabInvitation(props.settingsPort!, selection.roomId));
-    }, t("share.invitationCreatedNotice"));
-  };
-  const copyInvitation = async (): Promise<void> => {
-    await perform("copy", async () => { await navigator.clipboard.writeText(invitation); }, t("share.copiedNotice"));
-  };
-  const participantInactiveKey: CollabLocaleKey = view.unavailableReason === "host-stopped-sharing"
-    ? "room.hostStoppedSharing"
-    : view.unavailableReason === "host-unreachable"
-      ? "room.hostUnreachable"
-      : view.unavailableReason === "resource-limited"
-        ? "room.resourceLimited"
-        : view.unavailableReason === "network-offline"
-          ? "room.networkOffline"
-          : view.unavailableReason === "transport-failed"
-            ? "room.transportFailed"
-        : "room.participantInactive";
-
-  return createElement("main", { className: roomCss.surface, "data-collab-room-ui": true, "data-collab-surface": "room", "data-collab-mode": role, "aria-label": t("room.aria") },
-    createElement("header", { className: roomCss.surfaceHeader },
-      createElement("button", { type: "button", className: roomCss.backButton, onClick: closeDshCollabRoom }, t("rooms.backToDsh")),
-      createElement("div", { className: roomCss.surfaceIdentity },
-        createElement("strong", null, view.roomTitle),
-        createElement("span", { className: roomCss.badge }, t(role === "host" ? "role.owner" : "role.participant")),
-        view.hostDisplayName ? createElement("span", { className: roomCss.host }, t("room.hostedBy", { name: view.hostDisplayName })) : null,
-      ),
-      createElement("span", { className: roomCss.connection, role: "status" }, t("connection.summary", { connection: connectionLabel(view.connection, t), count: view.onlineCount })),
-      createElement("div", { className: roomCss.surfaceActions },
-        active ? createElement("button", { type: "button", className: roomCss.toolbarButton, "aria-expanded": inspector.open, onClick: inspector.show }, t("inspector.title")) : null,
-        active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.createInvite || gatewayEndpoint === "", onClick: () => { void createInvitation(); } }, t(busy === "invite" ? "share.creating" : "share.createInvitation")) : null,
-        active && role === "host" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.stopSharing, onClick: () => { void perform("stop", async () => { await props.settingsPort?.stopSharing?.(selection.roomId); }, t("share.stoppedNotice")); } }, t(busy === "stop" ? "share.stopping" : "share.stopSharing")) : null,
-        active && role === "participant" ? createElement("button", { type: "button", className: roomCss.toolbarButton, disabled: busy !== undefined || !props.settingsPort?.disconnectJoinedRoom, onClick: () => { void perform("disconnect", async () => { await props.settingsPort?.disconnectJoinedRoom?.(); }); } }, t("joined.disconnect")) : null,
-        createElement("button", { type: "button", className: roomCss.closeSurface, "aria-label": t("rooms.backToDsh"), onClick: closeDshCollabRoom }, "×"),
-      ),
-    ),
-    createElement("div", { className: roomCss.content },
-      active ? createElement(DshCollabDock, { port: props.port, fallback: view, showHeader: false, t }) : createElement("section", { className: roomCss.inactiveRoom },
-        createElement("div", { className: roomCss.inactiveMark, "aria-hidden": true }, "@"),
-        createElement("h2", null, view.roomTitle),
-        createElement("p", null, t(role === "host" ? "room.ownerInactive" : participantInactiveKey)),
-        role === "host" ? createElement("form", { className: roomCss.roomSetup, onSubmit: (event: FormEvent<HTMLFormElement>) => { void startSharing(event); } },
-          createElement("label", { className: roomCss.shareField }, t("share.roomName"), createElement("input", { name: "roomName", className: roomCss.roomName, value: roomName, maxLength: 80, onChange: (event: ChangeEvent<HTMLInputElement>) => setRoomName(event.target.value) })),
-          createElement("button", { type: "submit", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.shareHostRoom || roomName.trim() === "" }, t(busy === "share" ? "share.sharing" : "share.startAndShare")),
-        ) : createElement("button", { type: "button", className: roomCss.shareButton, disabled: busy !== undefined || !props.settingsPort?.connectJoinedRoom, onClick: () => { void connect(); } }, t(busy === "connect" ? "joined.connecting" : "joined.connect")),
-      ),
-      createElement(DshCollabInspector, {
-        open: inspector.open,
-        roomId: selection.roomId,
-        role,
-        state: inspector.state,
-        onClose: inspector.close,
-        onRefresh: () => { void inspector.refresh(); },
-        onSetSharing: (enabled: boolean) => { void inspector.setSharing(enabled); },
-        onLoadSnapshot: () => { void inspector.loadSnapshot(); },
-        onLoadDiff: (path: string, layer: "staged" | "unstaged") => { void inspector.loadDiff(path, layer); },
-        activeTab: inspector.activeTab,
-        onSelectTab: inspector.selectTab,
-        onCreateReviewPoint: inspector.createReviewPoint,
-        onReloadReviewPoints: () => { void inspector.reloadReviewPoints(); },
-        onLoadMoreReviewPoints: () => { void inspector.loadMoreReviewPoints(); },
-        onRefreshReviewPoints: () => { void inspector.refreshReviewPoints(); },
-        members: view.members ?? [],
-        onSelectReviewPoint: (reviewPointId: string) => { void inspector.selectReviewPoint(reviewPointId); },
-        onCreateReviewFinding: inspector.createReviewFinding,
-        onLoadMoreReviewFindings: (reviewPointId: string) => { void inspector.loadMoreReviewFindings(reviewPointId); },
-        onSetReviewers: (reviewPointId: string, reviewerIds: string[]) => { void inspector.setReviewers(reviewPointId, reviewerIds); },
-        onSetReviewLifecycle: (reviewPointId: string, lifecycle: ReviewLifecycle) => { void inspector.setReviewLifecycle(reviewPointId, lifecycle); },
-        onSetReviewFindingState: (reviewPointId: string, findingId: string, state: "accepted" | "dismissed") => { void inspector.setReviewFindingState(reviewPointId, findingId, state); },
-        onLoadReviewPointDiff: (reviewPointId: string, fileIndex: number) => { void inspector.loadReviewPointDiff(reviewPointId, fileIndex); },
-        timeline: view.timeline ?? [],
-        onStartLocalExplain: inspector.startLocalExplain,
-        onStartLocalReview: inspector.startLocalReview,
-        onPublishLocalReview: inspector.publishLocalReview,
-        onAcceptReviewPublication: (reviewPointId: string, publicationId: string) => { void inspector.acceptReviewPublication(reviewPointId, publicationId); },
-        onCancelLocalSideTask: () => { void inspector.cancelLocalSideTask(); },
-        t,
-      }),
-    ),
-    invitation ? createElement("section", { className: roomCss.invitationBar },
-      createElement("input", { name: "hostInvitationOutput", type: "text", value: invitation, readOnly: true, "aria-label": t("share.invitationAria"), className: roomCss.invitationText }),
-      createElement("button", { className: roomCss.toolbarButton, type: "button", onClick: () => { void copyInvitation(); }, disabled: busy !== undefined }, t(busy === "copy" ? "share.copying" : "share.copyInvitation")),
-      createElement("button", { className: roomCss.toolbarButton, type: "button", onClick: () => { setInvitation(""); } }, t("share.hideInvitation")),
-    ) : null,
-    notice ? createElement("p", { className: notice.tone === "error" ? roomCss.surfaceError : roomCss.surfaceNotice, role: notice.tone === "error" ? "alert" : "status" }, notice.text) : null,
-  );
 }
 
 function optionalService<T>(context: DshCollabClientContext, name: string): T | undefined {

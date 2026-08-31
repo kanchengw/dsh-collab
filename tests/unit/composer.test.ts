@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerKeyAction, composerTargetForGesture, composerTargetForText, createComposerSubmission, insertAgentMention, renderComposer, shouldSuggestAgentMention } from "../../src/ui.js";
+import { composerKeyAction, composerTargetForGesture, composerTargetForText, createComposerSubmission, insertAgentMention, shouldSuggestAgentMention } from "../../src/ui.js";
 
 describe("collab composer mentions", () => {
   it("routes only the canonical lowercase @agent mention to the Host Agent", () => {
@@ -16,14 +16,6 @@ describe("collab composer mentions", () => {
     expect(shouldSuggestAgentMention("请问@")).toBe(true);
     expect(shouldSuggestAgentMention("owner@")).toBe(false);
     expect(insertAgentMention("Please ask @")).toBe("Please ask @agent ");
-  });
-
-  it("renders one mention-driven composer without a target selector", () => {
-    const html = renderComposer({ draft: "@" });
-    expect(html).not.toContain("<select");
-    expect(html).not.toContain("dsh-steer");
-    expect(html).toContain("@agent");
-    expect(html.match(/<textarea/g)).toHaveLength(1);
   });
 
   it("keeps resolved room and Agent submissions distinct on the wire", () => {

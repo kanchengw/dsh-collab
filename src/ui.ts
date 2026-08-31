@@ -1,22 +1,6 @@
-import type { AgentOutputFrame, AgentQueueItem, MemberRole, MemberStatus, MessageInput, MessageTarget, RoomEvent, RoomState } from "./types.js";
+import type { AgentOutputFrame, AgentQueueItem, MessageInput, MessageTarget, RoomEvent } from "./types.js";
 
-export type ParticipantConnection = "connecting" | "online" | "offline";
 export type ComposerTarget = MessageTarget;
-
-export interface ParticipantShellState {
-  roomId: string;
-  roomTitle: string;
-  hostDisplayName: string;
-  connection: ParticipantConnection;
-  memberCount: number;
-  error?: string;
-}
-
-export interface ComposerState {
-  target?: ComposerTarget;
-  canSteer?: boolean;
-  draft: string;
-}
 
 export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed" | "failed" | "cancelled" | "withdrawn";
 
@@ -31,52 +15,6 @@ export interface TimelineItem {
   status?: TimelineAgentStatus;
   state?: string;
   streaming?: boolean;
-}
-
-export interface HostRoomMemberView {
-  memberId: string;
-  displayName: string;
-  role: MemberRole;
-  status: MemberStatus;
-}
-
-export interface HostRoomManagementState {
-  roomId: string;
-  roomTitle: string;
-  roomState: RoomState;
-  hostSessionId: string;
-  canManage: boolean;
-  members: HostRoomMemberView[];
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character]!);
-}
-
-export function renderParticipantShell(state: ParticipantShellState): string {
-  const title = escapeHtml(state.roomTitle);
-  const host = escapeHtml(state.hostDisplayName);
-  const roomId = escapeHtml(state.roomId);
-  const memberLabel = state.memberCount === 0 ? "No collaborators yet" : `${String(state.memberCount)} members`;
-  const error = state.error ? `<p class="collab-error" role="alert">${escapeHtml(state.error)}</p>` : "";
-  return [
-    `<section class="collab-shell" data-collab-mode="participant" data-room-id="${roomId}" data-connection="${state.connection}">`,
-    `<header class="collab-shell__header"><h1>${title}</h1><p>Hosted by ${host}</p><span>${state.connection}</span></header>`,
-    `<div class="collab-shell__members" aria-label="Collaborators">${memberLabel}</div>`,
-    `<div class="collab-shell__timeline" data-empty="${state.memberCount === 0 ? "true" : "false"}"></div>`,
-    error,
-    "</section>",
-  ].join("");
-}
-
-export function getComposerTargets(canSteer: boolean): ComposerTarget[] {
-  return canSteer ? ["room", "dsh", "dsh-steer"] : ["room", "dsh"];
 }
 
 export const AGENT_MENTION = "@agent";
@@ -133,11 +71,6 @@ export function createComposerSubmission(input: {
 export function composerTargetForGesture(text: string, agentBusy: boolean, shiftKey: boolean): ComposerTarget {
   if (shiftKey && agentBusy && composerTargetForText(text) === "dsh") return "dsh-steer";
   return composerTargetForText(text);
-}
-
-export function renderComposer(state: ComposerState): string {
-  const suggestion = shouldSuggestAgentMention(state.draft) ? `<button type="button" data-mention="${AGENT_MENTION}">${AGENT_MENTION}</button>` : "";
-  return `<form class="collab-composer" data-target="${composerTargetForText(state.draft)}"><textarea name="text" placeholder="Message the room or mention @agent to ask the Host Agent">${escapeHtml(state.draft)}</textarea>${suggestion}</form>`;
 }
 
 function objectPayload(value: unknown): Record<string, unknown> {
@@ -317,24 +250,4 @@ export function projectAgentQueue(events: RoomEvent[]): AgentQueueItem[] {
   return [...queue.values()]
     .sort((left, right) => ((right.priority === "host" ? 1 : 0) - (left.priority === "host" ? 1 : 0)) || left.queueSeq - right.queueSeq)
     .map((item, index) => ({ ...item, position: index + 1 }));
-}
-
-export function renderTimeline(items: TimelineItem[]): string {
-  return `<div class="collab-timeline">${items.map((item) => {
-    const status = item.status ? ` data-status="${item.status}"` : "";
-    const state = item.state ? ` data-state="${escapeHtml(item.state)}"` : "";
-    const text = item.text ? escapeHtml(item.text) : "";
-    return `<article class="collab-timeline__item" data-kind="${item.kind}" data-seq="${String(item.seq)}"${status}${state}>${text}</article>`;
-  }).join("")}</div>`;
-}
-
-export function renderHostRoomManagement(state: HostRoomManagementState): string {
-  const members = state.members.map((member) => {
-    const controls = state.canManage && member.role !== "host"
-      ? `<button data-action="suspend" data-member-id="${escapeHtml(member.memberId)}">Suspend</button><button data-action="remove" data-member-id="${escapeHtml(member.memberId)}">Remove</button>`
-      : "";
-    return `<li data-member-id="${escapeHtml(member.memberId)}" data-status="${member.status}"><span>${escapeHtml(member.displayName)}</span><small>${member.role} · ${member.status}</small>${controls}</li>`;
-  }).join("");
-  const invite = state.canManage ? `<button data-action="invite">Invite</button>` : "";
-  return `<section class="collab-host-management" data-room-id="${escapeHtml(state.roomId)}" data-room-state="${state.roomState}"><header><h2>${escapeHtml(state.roomTitle)}</h2><p>Host Agent session: <code>${escapeHtml(state.hostSessionId)}</code></p>${invite}</header><ul>${members}</ul></section>`;
 }

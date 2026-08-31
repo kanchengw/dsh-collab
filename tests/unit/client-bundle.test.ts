@@ -11,12 +11,13 @@ describe("browser client bundle", () => {
     expect(bundle).toContain('"collab-settings-card"');
     expect(bundle).toContain('"collab-room"');
     expect(bundle).toContain('"collab-rooms"');
-    expect(bundle).toContain('"collab-inspector"');
+    expect(bundle).not.toContain('"collab-inspector"');
+    expect(bundle).not.toContain("data-collab-surface");
     expect(bundle).toContain('"collab-activity"');
     expect(bundle).toContain('"collab-changes"');
     expect(bundle).toContain('"collab-bar"');
     expect(
       bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId(?:\$\d+)?\)/g),
-    ).toHaveLength(7);
+    ).toHaveLength(6);
   });
 });
