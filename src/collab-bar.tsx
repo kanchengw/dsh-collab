@@ -1,5 +1,4 @@
 import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
-import { CollabActivity, type CollabActivityItem } from "./collab-activity.js";
 import { CollabChanges, type CollabChangesPort } from "./collab-changes.js";
 import type { DshCollabRoomSelection } from "./collab-rooms.js";
 import { CollabReviews, type CollabReviewsPort } from "./collab-reviews.js";
@@ -16,6 +15,7 @@ export interface CollabBarRoomSnapshot {
   roomTitle: string;
   role: "host" | "participant";
   connection: "connecting" | "online" | "offline";
+  onlineCount: number;
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
 }
 
@@ -34,8 +34,11 @@ export function collabRoomMatchesScope(selection: DshCollabRoomSelection, scope:
     : selection.localSessionId === scope.sessionId;
 }
 
-function EmptyState(props: { children: ReactNode }): ReactNode {
-  return <div className={css.empty} role="status"><span aria-hidden="true">@</span><p>{props.children}</p></div>;
+function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnapshot["connection"] }): ReactNode {
+  return <div className={css.empty} role="status" data-connection={props.connection ?? "offline"}>
+    <span className={css.emptyMark} aria-hidden="true"><span /></span>
+    <p>{props.children}</p>
+  </div>;
 }
 
 export function CollabBarView(props: {
@@ -43,8 +46,6 @@ export function CollabBarView(props: {
   selection?: DshCollabRoomSelection;
   roomSnapshot?: CollabBarRoomSnapshot;
   discussion?: ReactNode;
-  activityItems?: readonly CollabActivityItem[];
-  memberNames?: ReadonlyMap<string, string>;
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
   initialTab?: CollabBarTab;
@@ -55,7 +56,7 @@ export function CollabBarView(props: {
   const id = useId();
   const selection = props.selection;
   if (!selection || !collabRoomMatchesScope(selection, props.scope)) {
-    return <aside className={css.bar} data-collab-bar="true"><EmptyState>{t("bar.noRoom")}</EmptyState></aside>;
+    return <aside className={css.bar} data-collab-bar="true" data-connection="offline"><EmptyState>{t("bar.noRoom")}</EmptyState></aside>;
   }
   const snapshot = props.roomSnapshot;
   const selectedRole = selection.kind === "owned" ? "host" : "participant";
@@ -67,9 +68,12 @@ export function CollabBarView(props: {
           : snapshot?.unavailableReason === "network-offline" ? "room.networkOffline"
             : snapshot?.unavailableReason === "transport-failed" ? "room.transportFailed"
               : "bar.offline";
-    return <aside className={css.bar} data-collab-bar="true">
-      <header className={css.header}><strong>{selection.roomTitle}</strong><span>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span></header>
-      <EmptyState>{t(key)}</EmptyState>
+    return <aside className={css.bar} data-collab-bar="true" data-connection={snapshot?.connection ?? "offline"}>
+      <header className={css.header}>
+        <span className={css.roomMark} aria-hidden="true"><span /></span>
+        <div className={css.roomIdentity}><strong>{selection.roomTitle}</strong><span>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span></div>
+      </header>
+      <EmptyState connection={snapshot?.connection}>{t(key)}</EmptyState>
     </aside>;
   }
   const chooseTab = (tab: CollabBarTab): void => { setActiveTab(tab); };
@@ -80,14 +84,20 @@ export function CollabBarView(props: {
     chooseTab(next);
     document.getElementById(`${id}-${next}-tab`)?.focus();
   };
-  const workUpdates = props.activityItems?.filter((item) => item.kind === "work-update") ?? [];
-  return <aside className={css.bar} data-collab-bar="true" data-session-id={props.scope.sessionId} data-room-id={selection.roomId}>
-    <header className={css.header}><div><strong>{selection.roomTitle}</strong><span>{t("bar.title")}</span></div><span>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span></header>
+  return <aside className={css.bar} data-collab-bar="true" data-session-id={props.scope.sessionId} data-room-id={selection.roomId} data-connection={snapshot.connection}>
+    <header className={css.header}>
+      <span className={css.roomMark} aria-hidden="true"><span /></span>
+      <div className={css.roomIdentity}>
+        <strong>{selection.roomTitle}</strong>
+        <span><span className={css.statusDot} />{t("connection.summary", { connection: t("connection.online"), count: snapshot.onlineCount })}</span>
+      </div>
+      <span className={css.role}>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span>
+    </header>
     <nav className={css.tabs} role="tablist" aria-label={t("bar.navigation")}>
       {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
     </nav>
-    <section className={css.panel} id={`${id}-${activeTab}-panel`} role="tabpanel" aria-labelledby={`${id}-${activeTab}-tab`}>
-      {activeTab === "activity" ? <div className={css.activity}>{props.discussion}{workUpdates.length > 0 ? <CollabActivity items={workUpdates} memberNames={props.memberNames} t={t} /> : null}</div> : null}
+    <section className={css.panel} id={`${id}-${activeTab}-panel`} role="tabpanel" aria-labelledby={`${id}-${activeTab}-tab`} data-active-tab={activeTab}>
+      {activeTab === "activity" ? <div className={css.activity}>{props.discussion}</div> : null}
       {activeTab === "changes" ? props.changesPort ? <CollabChanges port={props.changesPort} t={t} /> : <EmptyState>{t("bar.changesUnavailable")}</EmptyState> : null}
       {activeTab === "reviews" ? props.reviewsPort ? <CollabReviews port={props.reviewsPort} t={t} /> : <EmptyState>{t("bar.reviewsUnavailable")}</EmptyState> : null}
     </section>

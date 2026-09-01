@@ -61,6 +61,8 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Forget");
     expect(html).toContain('name="participantInvitation"');
     expect(html).toContain('name="displayName"');
+    expect(html).toContain('data-collab-join-disclosure="true"');
+    expect(html).toContain("Join a room");
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain("Participating rooms");
   });

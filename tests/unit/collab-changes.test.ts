@@ -1,5 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   CollabChanges,
@@ -94,6 +96,13 @@ function port(snapshot: CollabChangesSnapshot): CollabChangesPort {
 }
 
 describe("Collab Changes", () => {
+  it("uses compact grouped surfaces for Changes and Reviews inside the Collab Bar", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/collab-changes.module.css"), "utf8");
+    expect(css).toMatch(/\.changes\s*\{[^}]*display:\s*flex[^}]*gap:/s);
+    expect(css).toMatch(/\.card\s*\{[^}]*border:\s*1px solid[^}]*border-radius:/s);
+    expect(css).not.toMatch(/\.card\s*\{[^}]*border-bottom:/s);
+  });
+
   it("fails closed instead of projecting draft or staged state from another room", () => {
     expect(() => validateCollabChangesSnapshot(participantSnapshot({
       draft: { draft: draft({ roomId: "room-2" }), patch: "diff --git a/a b/a\n" },

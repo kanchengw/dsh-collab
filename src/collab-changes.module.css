@@ -1,5 +1,9 @@
 .changes {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
   color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family);
 }
@@ -19,8 +23,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 4px 4px 8px;
 }
 
 .headerActions {
@@ -74,8 +77,10 @@
 }
 
 .card {
-  padding: 15px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-2);
 }
 
 .cardHeader {
@@ -107,8 +112,9 @@
 
 .versions div {
   min-width: 0;
-  padding: 8px 10px;
-  background: var(--dsw-alias-bg-layer-2);
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .versions dt {
@@ -212,15 +218,19 @@
 }
 
 .offline {
-  padding: 9px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 7px;
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .error {
   justify-content: space-between;
   gap: 10px;
-  padding: 9px 0;
-  border-bottom: 1px solid var(--dsw-alias-state-error-primary);
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+  border-radius: 7px;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
   color: var(--dsw-alias-state-error-primary);
   font-size: 12px;
 }
@@ -232,6 +242,9 @@
 .form {
   display: grid;
   gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
 }
 
 .form label {
@@ -330,7 +343,7 @@
   margin-top: 10px;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--dsw-alias-bg-layer-1);
 }
 
 .diff summary {
@@ -365,13 +378,17 @@
   justify-content: space-between;
   width: 100%;
   gap: 10px;
-  padding: 6px 9px;
+  padding: 7px 9px;
   text-align: left;
 }
 
 .changeSets button:hover:not(:disabled),
 .changeSets button[aria-pressed="true"] {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.changeSets button[aria-pressed="true"] {
+  border-color: var(--dsw-alias-state-business-primary);
 }
 
 .changeSets button span {
@@ -385,6 +402,8 @@
 }
 
 @media (max-width: 480px) {
+  .changes { padding: 6px; }
+
   .header {
     display: block;
   }

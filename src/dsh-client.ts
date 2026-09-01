@@ -15,7 +15,7 @@ import type { AgentQueueItem, RoomEvent } from "./types.js";
 import { MAX_CONTEXT_REFS } from "./messages.js";
 import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
 import { CollabBarView } from "./collab-bar.js";
-import { projectCollabActivity } from "./collab-activity.js";
+import { projectCollabActivity, type CollabActivityItem } from "./collab-activity.js";
 import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelRenderScope } from "./collab-panel-host.js";
 import type { CollabChangesPort } from "./collab-changes.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
@@ -875,22 +875,48 @@ function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
 
 function DshCollabTimeline(props: {
   items: readonly TimelineItem[];
+  workUpdates?: readonly CollabActivityItem[];
   members: readonly { memberId: string; displayName: string }[];
+  currentMemberId?: string;
   referencedEventIds: ReadonlySet<string>;
   onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => void;
   t: CollabTranslate;
 }): ReactNode {
-  if (props.items.length === 0) return createElement("p", { className: roomCss.empty }, props.t("room.noMessages"));
-  return createElement("div", { className: roomCss.timeline, "data-collab-timeline": true, "aria-live": "polite" },
-    props.items.map((item) => {
+  const rows = [
+    ...props.items.map((item) => ({ kind: "timeline" as const, eventId: item.eventId, seq: item.seq, item })),
+    ...(props.workUpdates ?? []).filter((item) => item.kind === "work-update").map((item) => ({ kind: "work-update" as const, eventId: item.eventId, seq: item.seq, item })),
+  ].sort((left, right) => left.seq - right.seq || left.eventId.localeCompare(right.eventId));
+  const authorName = (memberId: string): string => props.members.find((member) => member.memberId === memberId)?.displayName ?? memberId;
+  const initials = (name: string): string => {
+    const words = name.trim().split(/\s+/).filter(Boolean);
+    return (words.length > 1 ? words.slice(0, 2).map((word) => Array.from(word)[0]).join("") : Array.from(words[0] ?? "?").slice(0, 2).join("")).toUpperCase();
+  };
+  if (rows.length === 0) return createElement("div", { className: roomCss.timeline, "data-collab-feed": true }, createElement("p", { className: roomCss.empty }, props.t("room.noMessages")));
+  return createElement("div", { className: roomCss.timeline, "data-collab-timeline": true, "data-collab-feed": true, "aria-live": "polite" },
+    rows.map((row) => {
+      if (row.kind === "work-update") {
+        const item = row.item;
+        const author = authorName(item.authorId);
+        return createElement("article", { key: item.eventId, className: roomCss.message, "data-kind": "work-update", "data-own": item.authorId === props.currentMemberId ? "true" : undefined },
+          createElement("span", { className: roomCss.avatar, "aria-hidden": "true" }, initials(author)),
+          createElement("div", { className: roomCss.messageContent },
+            createElement("div", { className: roomCss.messageMeta }, createElement("strong", null, author), createElement("span", null, props.t("activity.workUpdate"))),
+            createElement("p", { className: roomCss.updateSummary }, item.summary),
+            item.filePaths.length === 0 ? null : createElement("ul", { className: roomCss.updateFiles, "aria-label": props.t("activity.files") }, item.filePaths.map((path) => createElement("li", { key: path }, createElement("code", null, path)))),
+          ),
+        );
+      }
+      const item = row.item;
       const status = item.status ?? (item.kind === "agent" && item.state === "failed" ? item.state : undefined);
       const author = item.kind === "agent"
         ? props.t("room.hostAgent")
-        : props.members.find((member) => member.memberId === item.authorMemberId)?.displayName ?? item.authorMemberId;
+        : authorName(item.authorMemberId);
+      const own = item.kind !== "agent" && item.authorMemberId === props.currentMemberId;
       return createElement("article", {
         key: item.eventId,
         className: roomCss.message,
         "data-kind": item.kind,
+        "data-own": own ? "true" : undefined,
         "data-status": item.status,
         "data-state": item.state,
         "data-streaming": item.streaming ? "true" : undefined,
@@ -898,11 +924,13 @@ function DshCollabTimeline(props: {
         "data-referenced": item.contextEventId && props.referencedEventIds.has(item.contextEventId) ? "true" : undefined,
         onContextMenu: item.contextEventId && item.text ? (event: ReactMouseEvent<HTMLElement>) => { props.onContextMenu(item, event); } : undefined,
       },
-      createElement("small", { className: roomCss.author }, author),
-      createElement("div", { className: roomCss.text }, item.kind === "agent"
-        ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true })
-        : createElement(MessageText, { text: timelineLabel(item, props.t) })),
-      status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null);
+      createElement("span", { className: roomCss.avatar, "aria-hidden": "true" }, item.kind === "agent" ? "AI" : initials(author)),
+      createElement("div", { className: roomCss.messageContent },
+        createElement("div", { className: roomCss.messageMeta }, createElement("strong", null, author), status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null),
+        createElement("div", { className: roomCss.text }, item.kind === "agent"
+          ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true })
+          : createElement(MessageText, { text: timelineLabel(item, props.t) })),
+      ));
     }),
   );
 }
@@ -987,7 +1015,7 @@ function DshAgentQueueTable(props: {
 }
 
 /** Shared timeline and composer rendered inside the Collab room surface. */
-export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; showQueue?: boolean; t?: CollabTranslate }): ReactNode {
+export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; showQueue?: boolean; workUpdates?: readonly CollabActivityItem[]; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const fallback = props.fallback ?? fallbackSnapshot;
   const snapshot = usePortSnapshot(props.port, fallback);
@@ -1046,7 +1074,9 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
     ),
     createElement(DshCollabTimeline, {
       items: timeline,
+      workUpdates: props.workUpdates,
       members: snapshot.members ?? [],
+      currentMemberId: snapshot.memberId,
       referencedEventIds: new Set(contextRefs),
       onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => {
         event.preventDefault();
@@ -1078,7 +1108,10 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
           ),
         ) : null,
       ),
-      createElement("button", { className: roomCss.send, type: "submit", disabled: !props.port || draft.trim() === "" }, t("composer.send")),
+      createElement("div", { className: roomCss.composerFooter },
+        createElement("span", { className: roomCss.composerHint }, t("composer.routeHint")),
+        createElement("button", { className: roomCss.send, type: "submit", "aria-label": t("composer.send"), title: t("composer.send"), disabled: !props.port || draft.trim() === "" }, createElement("span", { "aria-hidden": "true" }, "↑")),
+      ),
     ),
     error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,
   );
@@ -1146,15 +1179,12 @@ function DshCollabBarPanel(props: {
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
-  const memberNames = new Map((snapshot.members ?? []).map((member) => [member.memberId, member.displayName]));
   return createElement(CollabBarView, {
     key: roomKey,
     scope: props.scope,
     selection,
     roomSnapshot: snapshot,
-    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, showQueue: false, t: props.t }),
-    activityItems,
-    memberNames,
+    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, showQueue: false, workUpdates: activityItems, t: props.t }),
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
     t: props.t,

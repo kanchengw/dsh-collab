@@ -193,7 +193,8 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   const forgetJoinedRoom = port?.forgetJoinedRoom;
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>): void => {
     if (event.key !== "Tab") return;
-    const focusable = [...(panelRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? [])];
+    const focusable = [...(panelRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex='-1'])") ?? [])]
+      .filter((element) => element.tagName === "SUMMARY" || !element.closest("details:not([open])"));
     const first = focusable[0];
     const last = focusable.at(-1);
     if (!first || !last) return;
@@ -260,13 +261,15 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
             })}</ul>}
           </section>
 
-          <form className={css.joinSection} onSubmit={(event) => { void join(event); }}>
-            <div className={css.sectionHeading}><div><h3>{t("join.title")}</h3><p>{t("join.description")}</p></div></div>
-            <label className={css.field}>{t("join.displayName")}<input name="displayName" value={displayName} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
-            <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
-            {participantConnected ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
-            <button type="submit" className={css.joinButton} disabled={!port?.join || participantConnected || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
-          </form>
+          <details className={css.joinDisclosure} data-collab-join-disclosure="true">
+            <summary><span><strong>{t("join.title")}</strong><small>{t("join.description")}</small></span><span className={css.disclosureIcon} aria-hidden="true" /></summary>
+            <form className={css.joinSection} onSubmit={(event) => { void join(event); }}>
+              <label className={css.field}>{t("join.displayName")}<input name="displayName" value={displayName} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
+              <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
+              {participantConnected ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
+              <button type="submit" className={css.joinButton} disabled={!port?.join || participantConnected || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
+            </form>
+          </details>
           {notice ? <p className={notice.tone === "error" ? css.error : css.success} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}
         </div>
       </section>
