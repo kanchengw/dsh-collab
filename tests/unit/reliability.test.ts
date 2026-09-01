@@ -42,7 +42,7 @@ async function joinBob(gateway: CollabGateway) {
     method: "POST",
     path: "/v1/rooms/room-1/join",
     auth: { principalId: "bob" },
-    body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" },
+    body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
   });
 }
 
@@ -129,7 +129,7 @@ describe("P1 idempotency and cursor compensation", () => {
     expect(cursor.apply(event(2))).toBe("duplicate");
   });
 
-  it("reconnects a RoomClient from its last confirmed cursor without replaying duplicates", () => {
+  it("reconnects a RoomClient from its last confirmed cursor without replaying duplicates", async () => {
     const rooms = new RoomStore();
     rooms.createRoom({
       roomId: "room-1",
@@ -149,10 +149,12 @@ describe("P1 idempotency and cursor compensation", () => {
     const client = new RoomClient({ connectionId: "client-1", roomId: "room-1", token, hub });
 
     ledger.append(event(1));
+    await ledger.commit();
     client.connect();
     expect(client.lastEventSeq).toBe(1);
     client.close();
     ledger.append(event(2));
+    await ledger.commit();
     client.connect();
 
     expect(client.lastEventSeq).toBe(2);

@@ -1,6 +1,6 @@
 import { normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { decodeEasyTierInvitationNetwork, type EasyTierInvitationNetwork } from "./easytier-invitation.js";
-import { COLLAB_INVITATION_PROTOCOL, COLLAB_PROTOCOL } from "./protocol.js";
+import { COLLAB_INVITATION_PROTOCOL } from "./protocol.js";
 
 export { COLLAB_INVITATION_PROTOCOL } from "./protocol.js";
 
@@ -18,16 +18,10 @@ interface CollabInvitationBase {
   expiresAt: number;
 }
 
-export interface LegacyCollabInvitation extends CollabInvitationBase {
-  protocol: typeof COLLAB_PROTOCOL;
-}
-
-export interface VersionedCollabInvitation extends CollabInvitationBase {
+export interface CollabInvitation extends CollabInvitationBase {
   protocol: typeof COLLAB_INVITATION_PROTOCOL;
   network: CollabInvitationNetwork;
 }
-
-export type CollabInvitation = LegacyCollabInvitation | VersionedCollabInvitation;
 
 function text(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`invitation ${field} must not be blank`);
@@ -58,7 +52,7 @@ function versionedNetwork(value: unknown, gatewayEndpoint: string): CollabInvita
 function invitation(value: unknown): CollabInvitation {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invitation must be an object");
   const input = value as Record<string, unknown>;
-  if (input.protocol !== COLLAB_PROTOCOL && input.protocol !== COLLAB_INVITATION_PROTOCOL) throw new Error("invitation protocol is not supported");
+  if (input.protocol !== COLLAB_INVITATION_PROTOCOL) throw new Error("invitation protocol is not supported");
   if (input.type !== "invite") throw new Error("invitation type is not supported");
   if (typeof input.expiresAt !== "number" || !Number.isSafeInteger(input.expiresAt) || input.expiresAt < 0) {
     throw new Error("invitation expiresAt must be a non-negative integer");
@@ -71,10 +65,6 @@ function invitation(value: unknown): CollabInvitation {
     token: text(input.token, "token"),
     expiresAt: input.expiresAt,
   } as const;
-  if (input.protocol === COLLAB_PROTOCOL) {
-    if (input.network !== undefined) throw new Error("invitation network requires the versioned invitation protocol");
-    return { protocol: COLLAB_PROTOCOL, ...common };
-  }
   return {
     protocol: COLLAB_INVITATION_PROTOCOL,
     ...common,

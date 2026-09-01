@@ -6,6 +6,7 @@ import { EventLedger } from "../../src/events.js";
 import { RoomStreamHub } from "../../src/stream.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
+import { StreamTicketStore } from "../../src/stream-tickets.js";
 import { CollabStreamUpgrade, COLLAB_STREAM_PATH } from "../../src/upgrade.js";
 import { SIDECAR_REVIEW_CAPABILITY } from "../../src/collaboration-types.js";
 
@@ -33,8 +34,9 @@ function setup() {
   const tokens = new RoomTokenStore(rooms, { tokenFactory: () => "room-token", ttlMs: 1000 });
   const member = rooms.authorize("room-1", "host", "read");
   const issued = tokens.issue({ roomId: "room-1", member, now: 10 });
+  const tickets = new StreamTicketStore(tokens, { ticketFactory: () => "stream-ticket", ttlMs: 30 });
   const hub = new RoomStreamHub({ rooms, tokens, ledger, now: () => 10 });
-  return { rooms, ledger, tokens, hub, token: issued.token };
+  return { rooms, ledger, tokens, tickets, hub, token: issued.token };
 }
 
 async function listen(server: Server): Promise<number> {
@@ -58,14 +60,13 @@ function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
 
 describe("WebSocket upgrade adapter", () => {
   it("authenticates, upgrades, replays and streams versioned room frames", async () => {
-    const { ledger, hub, tokens, token } = setup();
-    upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10, connectionIdFactory: () => "conn-1" });
+    const { ledger, hub, tickets, token } = setup();
+    const streamTicket = tickets.issue({ roomId: "room-1", roomToken: token, now: 10 }).ticket;
+    upgrade = new CollabStreamUpgrade({ hub, tickets, now: () => 10, connectionIdFactory: () => "conn-1" });
     httpServer = createServer();
     httpServer.on("upgrade", (request, socket, head) => upgrade!.handleUpgrade(request, socket, head));
     const port = await listen(httpServer);
-    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&after=0&feature=agent-output&feature=${SIDECAR_REVIEW_CAPABILITY}&feature=future.v9`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
+    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&ticket=${streamTicket}&after=0&feature=${SIDECAR_REVIEW_CAPABILITY}&feature=future.v9`);
     const connected = nextMessage(socket);
     await once(socket, "open");
 
@@ -86,6 +87,7 @@ describe("WebSocket upgrade adapter", () => {
       createdAt: 10,
       payload: { text: "hello" },
     });
+    await ledger.commit();
     await expect(event).resolves.toMatchObject({ protocol: "dsh-collab.v1", type: "event", event: { seq: 1 } });
 
     const agentOutput = nextMessage(socket);
@@ -93,16 +95,22 @@ describe("WebSocket upgrade adapter", () => {
     await expect(agentOutput).resolves.toMatchObject({ protocol: "dsh-collab.v1", type: "agent-output", requestId: "request-1", text: "partial" });
 
     const collaborationEvent = nextMessage(socket);
-    hub.publishCollaborationEvent({
+    ledger.append({
+      eventId: "workspace-sharing:room-1:1",
+      roomId: "room-1",
       type: "workspace-sharing.changed",
-      state: { roomId: "room-1", enabled: false, revision: 1 },
+      actor: { memberId: "host", principalId: "host" },
+      createdAt: 11,
+      payload: { roomId: "room-1", enabled: false, revision: 1 },
     });
-    await expect(collaborationEvent).resolves.toEqual({
+    await ledger.commit();
+    await expect(collaborationEvent).resolves.toMatchObject({
       protocol: "dsh-collab.v1",
-      type: "collaboration-event",
+      type: "event",
       event: {
         type: "workspace-sharing.changed",
-        state: { roomId: "room-1", enabled: false, revision: 1 },
+        seq: 2,
+        payload: { roomId: "room-1", enabled: false, revision: 1 },
       },
     });
 
@@ -114,15 +122,16 @@ describe("WebSocket upgrade adapter", () => {
     await once(socket, "close");
   });
 
-  it("accepts a browser-compatible token query when no Authorization header is available", async () => {
-    const { hub, tokens, token } = setup();
+  it("accepts a browser-compatible one-time stream ticket", async () => {
+    const { hub, tickets, token } = setup();
     const server = createServer();
-    const upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10, connectionIdFactory: () => "query-connection" });
+    const upgrade = new CollabStreamUpgrade({ hub, tickets, now: () => 10, connectionIdFactory: () => "query-connection" });
     server.on("upgrade", upgrade.handleUpgrade);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test address");
-    const socket = new WebSocket(`ws://127.0.0.1:${String(address.port)}/collab/v1/stream?roomId=room-1&token=${encodeURIComponent(token)}`);
+    const streamTicket = tickets.issue({ roomId: "room-1", roomToken: token, now: 10 }).ticket;
+    const socket = new WebSocket(`ws://127.0.0.1:${String(address.port)}/collab/v1/stream?roomId=room-1&ticket=${encodeURIComponent(streamTicket)}`);
     const frame = await new Promise<string>((resolve, reject) => {
       socket.once("message", (data) => resolve(data.toString()));
       socket.once("error", reject);
@@ -133,16 +142,33 @@ describe("WebSocket upgrade adapter", () => {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   });
 
-  it("rejects an invalid room token before websocket upgrade", async () => {
-    const { hub, tokens } = setup();
-    upgrade = new CollabStreamUpgrade({ hub, tokens, now: () => 10 });
+  it("rejects an invalid stream ticket and the legacy room-token query", async () => {
+    const { hub, tickets, token } = setup();
+    upgrade = new CollabStreamUpgrade({ hub, tickets, now: () => 10 });
     httpServer = createServer();
     httpServer.on("upgrade", (request, socket, head) => upgrade!.handleUpgrade(request, socket, head));
     const port = await listen(httpServer);
-    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1`, {
-      headers: { authorization: "Bearer invalid" },
-    });
+    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&ticket=invalid`);
     const [, response] = await once(socket, "unexpected-response") as [import("node:http").ClientRequest, import("node:http").IncomingMessage];
     expect(response.statusCode).toBe(401);
+
+    const legacy = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&token=${encodeURIComponent(token)}`);
+    const [, legacyResponse] = await once(legacy, "unexpected-response") as [import("node:http").ClientRequest, import("node:http").IncomingMessage];
+    expect(legacyResponse.statusCode).toBe(401);
+  });
+
+  it("closes an oversized client frame before JSON decoding", async () => {
+    const { hub, tickets, token } = setup();
+    upgrade = new CollabStreamUpgrade({ hub, tickets, now: () => 10 });
+    httpServer = createServer();
+    httpServer.on("upgrade", (request, socket, head) => upgrade!.handleUpgrade(request, socket, head));
+    const port = await listen(httpServer);
+    const streamTicket = tickets.issue({ roomId: "room-1", roomToken: token, now: 10 }).ticket;
+    const socket = new WebSocket(`ws://127.0.0.1:${String(port)}${COLLAB_STREAM_PATH}?roomId=room-1&ticket=${streamTicket}`);
+    await once(socket, "open");
+
+    socket.send(JSON.stringify({ protocol: "dsh-collab.v1", type: "heartbeat", padding: "x".repeat(20 * 1024) }));
+    const [code] = await once(socket, "close") as [number, Buffer];
+    expect(code).toBe(1009);
   });
 });

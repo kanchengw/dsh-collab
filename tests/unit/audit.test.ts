@@ -26,7 +26,7 @@ describe("audit export", () => {
     expect(input.nested.env.API_KEY).toBe("secret");
   });
 
-  it("exports a sanitized ledger only for the Host", () => {
+  it("exports a sanitized ledger only for the Host", async () => {
     const rooms = room();
     const ledger = new EventLedger();
     ledger.append({
@@ -37,6 +37,7 @@ describe("audit export", () => {
       createdAt: 3,
       payload: { tool: "bash", path: "/private/release.sh", authorization: "Bearer secret" },
     });
+    await ledger.commit();
     const exported = exportAudit({ rooms, ledger, roomId: "room-1", principalId: "host" });
     expect(exported.events[0]?.payload).toEqual({ tool: "bash", path: "[REDACTED]", authorization: "[REDACTED]" });
     expect(() => exportAudit({ rooms, ledger, roomId: "room-1", principalId: "alice" })).toThrow("not allowed");

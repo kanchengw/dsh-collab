@@ -145,11 +145,11 @@ describe("Human Review API", () => {
     persistenceFails = false;
     expect(await runtime.gateway.handle(refresh)).toMatchObject({ status: 200, body: { snapshotId: expect.any(String) } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(8);
+    expect(commitCriticalState).toHaveBeenCalledTimes(12);
     expect(captureCalls).toBe(2);
-    expect(statesAtCommit.map((state) => state.count)).toEqual(Array(8).fill(1));
-    expect(statesAtCommit.slice(2).map((state) => state.reviewers)).toEqual(Array(6).fill(["member-bob"]));
-    expect(statesAtCommit.slice(4).map((state) => state.lifecycle)).toEqual(Array(4).fill("changes-requested"));
+    expect(statesAtCommit.map((state) => state.count)).toEqual(Array(12).fill(1));
+    expect(statesAtCommit.slice(3).map((state) => state.reviewers)).toEqual(Array(9).fill(["member-bob"]));
+    expect(statesAtCommit.slice(6).map((state) => state.lifecycle)).toEqual(Array(6).fill("changes-requested"));
     await runtime.dispose();
   });
 
@@ -220,9 +220,9 @@ describe("Human Review API", () => {
     persistenceFails = false;
     expect(await runtime.gateway.handle(publish)).toMatchObject({ status: 201, body: { publication: { state: "published" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(6);
-    expect(stateAtCommit.map((state) => state.findingCount)).toEqual([1, 1, 1, 1, 2, 2]);
-    expect(stateAtCommit.map((state) => state.publicationCount)).toEqual([0, 0, 0, 0, 1, 1]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(9);
+    expect(stateAtCommit.map((state) => state.findingCount)).toEqual([1, 1, 1, 1, 1, 1, 2, 2, 2]);
+    expect(stateAtCommit.map((state) => state.publicationCount)).toEqual([0, 0, 0, 0, 0, 0, 1, 1, 1]);
     await runtime.dispose();
   });
 });

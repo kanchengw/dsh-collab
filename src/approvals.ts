@@ -106,19 +106,30 @@ export class ApprovalStore {
     return copy(view);
   }
 
-  get(approvalId: string, now = Date.now()): ApprovalView | undefined {
+  get(approvalId: string): ApprovalView | undefined {
     const entry = this.records.get(text(approvalId, "approvalId"));
     if (!entry) return undefined;
-    this.expire(entry.view, time(now, "now"));
     return copy(entry.view);
   }
 
-  list(roomId: string, now = Date.now()): ApprovalView[] {
+  list(roomId: string): ApprovalView[] {
     const normalizedRoomId = text(roomId, "roomId");
     return [...this.records.values()]
       .filter(({ view }) => view.roomId === normalizedRoomId)
-      .map(({ view }) => this.get(view.approvalId, now)!)
+      .map(({ view }) => this.get(view.approvalId)!)
       .map(copy);
+  }
+
+  expireDue(roomId: string, now = Date.now()): ApprovalView[] {
+    const normalizedRoomId = text(roomId, "roomId");
+    const normalizedNow = time(now, "now");
+    const expired: ApprovalView[] = [];
+    for (const { view } of this.records.values()) {
+      if (view.roomId !== normalizedRoomId || view.state !== "pending" || normalizedNow < view.expiresAt) continue;
+      this.finish(view, "unavailable", normalizedNow, undefined, undefined, "expired");
+      expired.push(copy(view));
+    }
+    return expired;
   }
 
   decide(input: ApprovalDecisionInput): ApprovalView {
@@ -129,8 +140,9 @@ export class ApprovalStore {
     if (entry.view.roomId !== roomId) throw new CollabError("TOKEN_SCOPE", "approval is scoped to another room", { roomId });
     const member = this.options.rooms.authorize(roomId, text(input.principalId, "principalId"), "approval");
     const now = time(input.now, "now");
-    this.expire(entry.view, now);
-    if (entry.view.state === "expired") throw new CollabError("REQUEST_STATE", "approval has expired", { approvalId });
+    if (entry.view.state === "expired" || entry.view.state === "pending" && now >= entry.view.expiresAt) {
+      throw new CollabError("REQUEST_STATE", "approval has expired", { approvalId });
+    }
     if (entry.view.state === "decided") {
       if (entry.view.outcome === input.outcome) return copy(entry.view);
       throw new CollabError("REQUEST_CONFLICT", "approval was already decided", { approvalId });
@@ -158,10 +170,6 @@ export class ApprovalStore {
       store.records.set(view.approvalId, { view: copy(view), fingerprint });
     }
     return store;
-  }
-
-  private expire(view: ApprovalView, now: number): void {
-    if (view.state === "pending" && now >= view.expiresAt) this.finish(view, "unavailable", now, undefined, undefined, "expired");
   }
 
   private finish(view: ApprovalView, result: ApprovalOutcome, now: number, memberId?: string, principalId?: string, state: ApprovalState = "decided"): void {

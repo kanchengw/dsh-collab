@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
@@ -27,7 +27,7 @@ describe("P1 two-participant collaboration flow", () => {
     const roomTokens = ["room-alice", "room-bob"];
     let gateway!: CollabGateway;
     const agent: HostAgentPort = {
-      followup(input) {
+      async followup(input) {
         ledger.append({
           eventId: input.requestId + ":output",
           roomId: input.roomId,
@@ -36,6 +36,7 @@ describe("P1 two-participant collaboration flow", () => {
           createdAt: 20,
           payload: { state: "output", text: "Host Agent completed the request", hostSessionId: input.hostSessionId },
         });
+        await ledger.commit();
       },
       steer() {},
       cancel() {},
@@ -67,13 +68,13 @@ describe("P1 two-participant collaboration flow", () => {
       method: "POST",
       path: "/v1/rooms/room-1/join",
       auth: { principalId: "alice" },
-      body: { inviteId: "invite-alice", token: body<{ token: string }>(inviteAlice).token, memberId: "member-alice", displayName: "Alice" },
+      body: { inviteId: "invite-alice", token: body<{ token: string }>(inviteAlice).token, memberId: "member-alice", displayName: "Alice", resumeCredential: "alice-resume" },
     });
     const joinedBob = await gateway.handle({
       method: "POST",
       path: "/v1/rooms/room-1/join",
       auth: { principalId: "bob" },
-      body: { inviteId: "invite-bob", token: body<{ token: string }>(inviteBob).token, memberId: "member-bob", displayName: "Bob" },
+      body: { inviteId: "invite-bob", token: body<{ token: string }>(inviteBob).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
     });
     const alice = new RoomClient({ connectionId: "connection-alice", roomId: "room-1", token: body<{ roomToken: string }>(joinedAlice).roomToken, hub });
     const bob = new RoomClient({ connectionId: "connection-bob", roomId: "room-1", token: body<{ roomToken: string }>(joinedBob).roomToken, hub });
@@ -98,11 +99,13 @@ describe("P1 two-participant collaboration flow", () => {
     });
     expect(agentRequest.status).toBe(202);
 
-    expect(alice.events).toEqual(bob.events);
-    expect(alice.events).toContainEqual(expect.objectContaining({
-      type: "agent.state.changed",
-      payload: expect.objectContaining({ state: "output", hostSessionId: "session-host" }),
-    }));
+    await vi.waitFor(() => {
+      expect(alice.events).toEqual(bob.events);
+      expect(alice.events).toContainEqual(expect.objectContaining({
+        type: "agent.state.changed",
+        payload: expect.objectContaining({ state: "output", hostSessionId: "session-host" }),
+      }));
+    });
 
     const beforeDisconnect = alice.lastEventSeq;
     alice.close();

@@ -36,7 +36,7 @@ describe("CollabRuntime snapshot", () => {
     expect(restored.rooms.getRoom("room-1")).toMatchObject({ hostSessionId: "session-host" });
     expect(restored.dispatcher.get("request-1")).toMatchObject({ status: "completed" });
     expect(restored.dispatcher.get("request-2")).toMatchObject({ status: "running" });
-    expect(restored.approvals?.get("approval-1", 20)).toMatchObject({ state: "pending" });
+    expect(restored.approvals?.get("approval-1")).toMatchObject({ state: "pending" });
     expect(restored.ledger.readAfter("room-1", 0).at(-1)).toMatchObject({ eventId: "output-1", seq: snapshot.ledger.rooms[0]?.events.length });
     const cursor = snapshot.ledger.rooms[0]!.events.length - 1;
     expect(restored.ledger.readAfter("room-1", cursor).map((event) => event.eventId)).toEqual(["output-1"]);

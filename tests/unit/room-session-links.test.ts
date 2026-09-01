@@ -75,6 +75,46 @@ describe("RoomSessionLinkStore", () => {
     })).toThrow("another room or member");
   });
 
+  it("replaces a stale member identity only for the same room Session and workspace", async () => {
+    const workspacePath = await workspace("rejoin");
+    const otherWorkspace = await workspace("other");
+    const store = new RoomSessionLinkStore();
+    store.bind({ roomId: "room-1", memberId: "member-old", sessionId: "session-1", workspacePath, sessionCwd: workspacePath });
+    store.advanceCursor("session-1", 12);
+
+    const rebound = store.rebindMember({
+      roomId: "room-1",
+      memberId: "member-current",
+      sessionId: "session-1",
+      workspacePath,
+      sessionCwd: workspacePath,
+    });
+
+    expect(rebound).toEqual({
+      roomId: "room-1",
+      memberId: "member-current",
+      sessionId: "session-1",
+      workspacePath,
+      lastInjectedRoomSeq: 0,
+      active: true,
+    });
+    expect(store.getActive("room-1", "member-old")).toBeUndefined();
+    expect(() => store.rebindMember({
+      roomId: "room-2",
+      memberId: "member-next",
+      sessionId: "session-1",
+      workspacePath,
+      sessionCwd: workspacePath,
+    })).toThrow("another room");
+    expect(() => store.rebindMember({
+      roomId: "room-1",
+      memberId: "member-next",
+      sessionId: "session-1",
+      workspacePath: otherWorkspace,
+      sessionCwd: otherWorkspace,
+    })).toThrow("another workspace");
+  });
+
   it("keeps only the newest explicitly bound Session active per room member", async () => {
     const workspacePath = await workspace("workspace");
     const store = new RoomSessionLinkStore();

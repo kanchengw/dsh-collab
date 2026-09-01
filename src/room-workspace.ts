@@ -16,6 +16,21 @@ interface StoredBaseManifest {
   record: WorkspaceVersionRecord;
 }
 
+export interface RoomWorkspaceSyncJournalRecord {
+  version: 1;
+  roomId: string;
+  ownerPid: number;
+  previousVersionId: string;
+  targetVersionId: string;
+  backupName: string;
+  stagingName: string;
+  manifestTempName: string;
+}
+
+const WORKSPACE_SYNC_JOURNAL = "workspace-sync.json";
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const SYNC_STAGING_NAME = /^\.s-[0-9a-f]{12}$/;
+
 export interface RoomWorkspace {
   roomId: string;
   root: string;
@@ -96,6 +111,107 @@ async function assertFile(path: string, label: string): Promise<void> {
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${label} is not a safe file`);
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function syncJournal(value: unknown, roomId: string): RoomWorkspaceSyncJournalRecord {
+  const journal = value as RoomWorkspaceSyncJournalRecord;
+  if (!journal || typeof journal !== "object" || Array.isArray(journal)) throw new Error("Room Workspace sync journal is malformed");
+  exactFields(journal as unknown as Record<string, unknown>, [
+    "version", "roomId", "ownerPid", "previousVersionId", "targetVersionId", "backupName", "stagingName", "manifestTempName",
+  ], "Room Workspace sync journal");
+  if (journal.version !== 1 || journal.roomId !== roomId || !Number.isSafeInteger(journal.ownerPid) || journal.ownerPid < 1
+    || typeof journal.previousVersionId !== "string" || journal.previousVersionId.trim() === ""
+    || typeof journal.targetVersionId !== "string" || journal.targetVersionId.trim() === ""
+    || !(new RegExp(`^\\.workspace-sync-backup-${UUID}$`)).test(journal.backupName)
+    || !SYNC_STAGING_NAME.test(journal.stagingName)
+    || !(new RegExp(`^current\\.json\\.sync-${UUID}\\.tmp$`)).test(journal.manifestTempName)) {
+    throw new Error("Room Workspace sync journal is invalid");
+  }
+  return journal;
+}
+
+async function recoverInterruptedSync(root: string, roomId: string): Promise<void> {
+  const journalPath = join(root, WORKSPACE_SYNC_JOURNAL);
+  if (!await exists(journalPath)) return;
+  await assertFile(journalPath, "Room Workspace sync journal");
+  const journal = syncJournal(parseObject(await readFile(journalPath, "utf8"), "Room Workspace sync journal"), roomId);
+  if (processIsAlive(journal.ownerPid)) throw new Error("Room Workspace sync is still running in another process");
+
+  const workspacePath = join(root, "workspace");
+  const backupPath = join(root, journal.backupName);
+  const stagingPath = join(dirname(dirname(root)), journal.stagingName);
+  const manifestTempPath = join(root, "base-manifest", journal.manifestTempName);
+  const manifestPath = join(root, "base-manifest", "current.json");
+  const base = parseObject(await readFile(manifestPath, "utf8"), "Room Workspace base manifest");
+  const record = validateWorkspaceVersionRecord(base.record);
+  const currentVersionId = record.version.workspaceVersionId;
+
+  if (currentVersionId === journal.targetVersionId) {
+    if (!await exists(workspacePath)) throw new Error("Committed Room Workspace sync is missing its workspace");
+  } else if (currentVersionId === journal.previousVersionId) {
+    if (await exists(backupPath)) {
+      if (await exists(workspacePath)) {
+        await assertFile(manifestTempPath, "Room Workspace target manifest");
+        const targetBase = parseObject(await readFile(manifestTempPath, "utf8"), "Room Workspace target manifest");
+        exactFields(targetBase, ["version", "roomId", "record"], "Room Workspace target manifest");
+        if (targetBase.version !== 1 || targetBase.roomId !== roomId) throw new Error("Room Workspace target manifest does not match room");
+        const targetRecord = validateWorkspaceVersionRecord(targetBase.record);
+        if (targetRecord.version.workspaceVersionId !== journal.targetVersionId) throw new Error("Room Workspace target manifest does not match its sync journal");
+        const changed = await findRoomWorkspaceChangedPaths({
+          roomId,
+          root,
+          workspacePath,
+          draftsPath: join(root, "drafts"),
+          baseManifestPath: manifestTempPath,
+          record: targetRecord,
+        });
+        if (changed.length > 0) throw new Error("Room Workspace changed after the interrupted sync; manual recovery is required");
+      }
+      const failedPath = join(root, `.workspace-sync-recovery-${randomUUID()}`);
+      if (await exists(workspacePath)) await rename(workspacePath, failedPath);
+      await rename(backupPath, workspacePath);
+      await rm(failedPath, { recursive: true, force: true });
+    } else if (!await exists(workspacePath)) {
+      throw new Error("Interrupted Room Workspace sync cannot restore its previous workspace");
+    }
+  } else {
+    throw new Error("Room Workspace sync journal does not match its base manifest");
+  }
+
+  await Promise.all([
+    rm(backupPath, { recursive: true, force: true }),
+    rm(stagingPath, { recursive: true, force: true }),
+    rm(manifestTempPath, { force: true }),
+  ]);
+  await rm(journalPath, { force: true });
+}
+
+export async function writeRoomWorkspaceSyncJournal(workspace: RoomWorkspace, journal: RoomWorkspaceSyncJournalRecord): Promise<void> {
+  const validated = syncJournal(journal, workspace.roomId);
+  await writeFile(join(workspace.root, WORKSPACE_SYNC_JOURNAL), JSON.stringify(validated, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+}
+
+export async function removeRoomWorkspaceSyncJournal(workspace: RoomWorkspace): Promise<void> {
+  await rm(join(workspace.root, WORKSPACE_SYNC_JOURNAL), { force: true });
+}
+
 export class RoomWorkspaceMaterializer {
   private readonly root: string;
 
@@ -171,11 +287,12 @@ export class RoomWorkspaceMaterializer {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+    await assertDirectory(root, "Room Workspace");
+    await recoverInterruptedSync(root, roomId);
     const workspacePath = join(root, "workspace");
     const draftsPath = join(root, "drafts");
     const baseManifestPath = join(root, "base-manifest", "current.json");
     await Promise.all([
-      assertDirectory(root, "Room Workspace"),
       assertDirectory(workspacePath, "Room Workspace files"),
       assertDirectory(draftsPath, "Room Workspace drafts"),
       assertDirectory(join(root, "base-manifest"), "Room Workspace base manifest"),

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { cp, lstat, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createDshRepositoryCommandPort, RepositoryInspector, type DshRepositorySubprocess, type RepositoryCommandPort, type RepositoryCommandResult } from "./repository-inspector.js";
-import { findRoomWorkspaceChangedPaths, RoomWorkspaceMaterializer, type RoomWorkspace } from "./room-workspace.js";
+import { findRoomWorkspaceChangedPaths, removeRoomWorkspaceSyncJournal, RoomWorkspaceMaterializer, writeRoomWorkspaceSyncJournal, type RoomWorkspace } from "./room-workspace.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionArtifactStore, type WorkspaceVersionRecord } from "./workspace-versions.js";
 
 export type RoomWorkspaceSyncResult =
@@ -128,10 +128,14 @@ export class RoomWorkspaceSyncService {
       };
     }
 
-    const stagingRoot = join(dirname(current.root), `.room-sync-${randomUUID()}`);
-    const backupWorkspace = join(current.root, `.workspace-sync-backup-${randomUUID()}`);
+    const transactionId = randomUUID();
+    const stagingName = `.s-${transactionId.replaceAll("-", "").slice(0, 12)}`;
+    const backupName = `.workspace-sync-backup-${transactionId}`;
+    const manifestTempName = `current.json.sync-${transactionId}.tmp`;
+    const stagingRoot = join(dirname(dirname(current.root)), stagingName);
+    const backupWorkspace = join(current.root, backupName);
     const failedWorkspace = join(current.root, `.workspace-sync-failed-${randomUUID()}`);
-    const manifestTemp = `${current.baseManifestPath}.sync-${randomUUID()}.tmp`;
+    const manifestTemp = join(dirname(current.baseManifestPath), manifestTempName);
     let backupCreated = false;
     let replacementVisible = false;
     let committed = false;
@@ -145,6 +149,16 @@ export class RoomWorkspaceSyncService {
       await cp(join(current.workspacePath, ".git"), join(staged.workspacePath, ".git"), { recursive: true, errorOnExist: true });
       await amendBaseline(createDshRepositoryCommandPort({ subprocess: this.options.subprocess, cwd: staged.workspacePath }), target);
       await writeFile(manifestTemp, JSON.stringify({ version: 1, roomId: input.roomId, record: target }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+      await writeRoomWorkspaceSyncJournal(current, {
+        version: 1,
+        roomId: input.roomId,
+        ownerPid: process.pid,
+        previousVersionId: currentVersionId,
+        targetVersionId,
+        backupName,
+        stagingName,
+        manifestTempName,
+      });
 
       await rename(current.workspacePath, backupWorkspace);
       backupCreated = true;
@@ -157,6 +171,7 @@ export class RoomWorkspaceSyncService {
             rm(manifestTemp, { force: true }),
             rm(stagingRoot, { recursive: true, force: true }),
           ]);
+          await removeRoomWorkspaceSyncJournal(current);
           return { status: "blocked", reason: "dirty", currentVersionId, targetVersionId, paths: lateDirtyPaths };
         }
       }
@@ -169,6 +184,7 @@ export class RoomWorkspaceSyncService {
         rm(backupWorkspace, { recursive: true, force: true }),
         rm(stagingRoot, { recursive: true, force: true }),
       ]).catch(() => undefined);
+      await removeRoomWorkspaceSyncJournal(current);
     } catch (error) {
       await rm(manifestTemp, { force: true }).catch(() => undefined);
       if (!committed && backupCreated) {
@@ -177,6 +193,9 @@ export class RoomWorkspaceSyncService {
         await rm(failedWorkspace, { recursive: true, force: true }).catch(() => undefined);
       }
       await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+      if (!committed && (!backupCreated || await exists(current.workspacePath))) {
+        await removeRoomWorkspaceSyncJournal(current).catch(() => undefined);
+      }
       throw error;
     }
 

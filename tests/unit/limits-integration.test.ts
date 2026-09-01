@@ -19,7 +19,7 @@ function setup(limits: ResourceLimiter, tokenFactory: () => string = () => "room
 
 async function joinParticipant(gateway: CollabGateway, inviteId: string, principalId: string, memberId: string, roomId = "room-1"): Promise<string> {
   const invite = await gateway.handle({ method: "POST", path: `/v1/rooms/${roomId}/invites`, auth: { principalId: "host" }, body: { inviteId, expiresAt: 100 } });
-  const accepted = await gateway.handle({ method: "POST", path: `/v1/rooms/${roomId}/join`, auth: { principalId }, body: { inviteId, token: (invite.body as { token: string }).token, memberId, displayName: principalId } });
+  const accepted = await gateway.handle({ method: "POST", path: `/v1/rooms/${roomId}/join`, auth: { principalId }, body: { inviteId, token: (invite.body as { token: string }).token, memberId, displayName: principalId, resumeCredential: `${memberId}-resume` } });
   return (accepted.body as { roomToken: string }).roomToken;
 }
 

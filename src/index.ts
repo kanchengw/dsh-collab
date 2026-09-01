@@ -49,9 +49,11 @@ export * from "./workspace-versions.js";
 export * from "./workspace-version-transport.js";
 export * from "./snapshot-workspace.js";
 export * from "./work-updates.js";
+export * from "./dsh-workspace-control.js";
+export * from "./dsh-credentials.js";
 
 import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, migrateLegacyMaxQueue, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
@@ -64,6 +66,9 @@ import { detectPrivateNetworkAddress } from "./network-address.js";
 import { EasyTierRuntimeManager, createDshEasyTierProcessPort } from "./easytier-runtime.js";
 import { DEFAULT_EASYTIER_OWNER_ADDRESS, EasyTierTransportCoordinator, type ActiveEasyTierTransport } from "./easytier-transport.js";
 import { decodeEasyTierInvitationNetwork, type EasyTierInvitationNetwork } from "./easytier-invitation.js";
+import { DshWorkspaceControl } from "./dsh-workspace-control.js";
+import { DshCollabCredentialStore, type DshCredentialProvider } from "./dsh-credentials.js";
+import type { ParticipantResumeState } from "./dsh-browser-client.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -83,6 +88,7 @@ interface DshConnectionRpc {
 }
 
 export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agents"> {
+  get?: (service: string) => unknown;
   agents: DshCordisHostContext["agents"] & Partial<DshLocalAgentContext["agents"]>;
   agentDefaultModel?: DshLocalAgentContext["agentDefaultModel"];
   agentPresets?: DshLocalAgentContext["agentPresets"];
@@ -90,12 +96,21 @@ export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agen
   effect?: (factory: () => (() => void | Promise<void>) | void, name?: string) => () => void | Promise<void>;
   inject?: (services: string[], callback: (context: DshSettingsRegistrationContext) => void) => unknown;
   easyTierTransport?: EasyTierTransportCoordinator;
+  credentials?: DshCredentialProvider;
+  workspaceRegistry?: {
+    create(path: string): Promise<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
+    list(): Array<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
+  };
 }
 
 export function registerDshCollabSettings(
   context: DshCollabCordisContext,
   config: Partial<DshCordisHostConfig>,
-  onResolved?: (settings: DshCollabPersistedSettings, scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>) => void,
+  onResolved?: (
+    settings: DshCollabPersistedSettings,
+    scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>,
+    settingsContext: DshSettingsRegistrationContext,
+  ) => void,
 ): void {
   const gatewayHost = config.host ?? "127.0.0.1";
   context.inject?.(["settings"], (settingsContext) => {
@@ -130,7 +145,7 @@ export function registerDshCollabSettings(
     settingsContext.settings.register(DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
       validate: validateDshCollabParticipantSettings,
     });
-    onResolved?.(scope.get(), scope);
+    onResolved?.(scope.get(), scope, settingsContext);
   });
 }
 
@@ -145,7 +160,7 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
     approvalPolicy: "host-only",
     maxMembers: security.maxMembers,
     maxMessageBytes: security.maxMessageBytes,
-    maxQueue: migrateLegacyMaxQueue(security.maxQueue),
+    maxQueue: security.maxQueue,
   };
 }
 
@@ -157,9 +172,13 @@ function registerGatewayControl(
   if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
   let starting: Promise<{ status: "running"; port: number }> | undefined;
-  const easyTier = context.easyTierTransport ?? (context.subprocess
+  const injectedEasyTier = (context.get
+    ? context.get("easyTierTransport")
+    : context.easyTierTransport) as EasyTierTransportCoordinator | undefined;
+  const easyTier = injectedEasyTier ?? (context.subprocess
     ? new EasyTierTransportCoordinator({ runtime: new EasyTierRuntimeManager({ processes: createDshEasyTierProcessPort(context.subprocess) }) })
     : undefined);
+  const credentialStore = context.credentials ? new DshCollabCredentialStore(context.credentials) : undefined;
   const createLocalAgent = context.agents.create;
   const sideTaskPersistence = config.sideTaskFile === false || (config.sideTaskFile === undefined && config.stateFile === false)
     ? undefined
@@ -188,6 +207,16 @@ function registerGatewayControl(
         }),
       })
     : undefined;
+  const workspaceControl = context.subprocess ? new DshWorkspaceControl({
+    subprocess: context.subprocess,
+    agents: context.agents,
+    ...(context.on ? { onSessionEvent: (listener) => context.on!("session/event", listener) } : {}),
+    ...(context.workspaceRegistry ? { nativeWorkspaces: {
+      create: (path) => context.workspaceRegistry!.create(path),
+      resolveByPath: async (path) => context.workspaceRegistry!.list().find((workspace) => workspace.path === path),
+    } } : {}),
+    ...(config.stateFile === false ? { sessionLinkFile: false as const } : {}),
+  }) : undefined;
   const saveSideTasks = (): void => {
     if (sidecar && sideTaskPersistence) void sideTaskPersistence.save(sidecar.snapshot()).catch((error: unknown) => console.warn("dsh-collab local SideTask save failed", error));
   };
@@ -248,10 +277,11 @@ function registerGatewayControl(
   };
   const ownerEasyTierNetwork = async (roomId: string, gatewayPort: number, signal: AbortSignal): Promise<ActiveEasyTierTransport> => {
     if (!easyTier) throw new Error("EasyTier is unavailable on this DSH runtime");
+    if (!credentialStore) throw new Error("DSH credentials service is unavailable");
     const settings = scope.get();
     if (settings.connectionMethod !== "easytier") throw new Error("Select EasyTier virtual network before sharing this room");
-    const saved = settings.easyTierRooms?.find((room) => room.roomId === roomId)?.network;
-    const network = saved ? decodeEasyTierInvitationNetwork(saved) : undefined;
+    const saved = settings.easyTierRooms?.find((room) => room.roomId === roomId)?.credentialKey;
+    const network = saved ? await credentialStore.loadOwnerNetwork(saved) : undefined;
     const active = await easyTier.startOwner({
       roomId,
       gatewayPort,
@@ -259,8 +289,10 @@ function registerGatewayControl(
       signal,
     });
     if (!saved) {
-      const easyTierRooms = [...(settings.easyTierRooms ?? []).filter((room) => room.roomId !== roomId), { roomId, network: active.network }];
-      await scope.update({ easyTierRooms });
+      const credentialKey = await credentialStore.saveOwnerNetwork(active.network);
+      const easyTierRooms = [...(settings.easyTierRooms ?? []).filter((room) => room.roomId !== roomId), { roomId, credentialKey }];
+      try { await scope.update({ easyTierRooms }); }
+      catch (error) { await credentialStore.deleteOwnerNetwork(credentialKey).catch(() => undefined); throw error; }
     }
     return active;
   };
@@ -309,6 +341,21 @@ function registerGatewayControl(
         return { ok: true, value };
       }
       if (endpoint === "easytier/stop") return { ok: true, value: await easyTier?.stop() ?? { kind: "idle" } };
+      if (endpoint === "credentials/participant/save") {
+        if (!credentialStore || !payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Participant credential request is invalid");
+        const credentialKey = await credentialStore.saveParticipant((payload as { state?: unknown }).state as ParticipantResumeState);
+        return { ok: true, value: { credentialKey } };
+      }
+      if (endpoint === "credentials/participant/load") {
+        if (!credentialStore || !payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { credentialKey?: unknown }).credentialKey !== "string") throw new Error("Participant credential request is invalid");
+        const state = await credentialStore.loadParticipant((payload as { credentialKey: string }).credentialKey);
+        return { ok: true, value: { state } };
+      }
+      if (endpoint === "credentials/participant/delete") {
+        if (!credentialStore || !payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { credentialKey?: unknown }).credentialKey !== "string") throw new Error("Participant credential request is invalid");
+        await credentialStore.deleteParticipant((payload as { credentialKey: string }).credentialKey);
+        return { ok: true, value: { deleted: true } };
+      }
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
       if (endpoint === "sidecar/start") {
         if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
@@ -349,6 +396,10 @@ function registerGatewayControl(
         const diff = await inspector.diff({ path: input.path, layer: input.layer }, signal);
         return { ok: true, value: { diff } };
       }
+      if (endpoint.startsWith("workspace/")) {
+        if (!workspaceControl) throw new Error("Collab Workspace is unavailable");
+        return { ok: true, value: await workspaceControl.handle(endpoint, payload, signal) };
+      }
       return { ok: false, error: { code: "bad-request", message: `Unknown dsh-collab control endpoint: ${endpoint}`, details: { issues: [] } } };
     } catch (error) {
       return { ok: false, error: { code: "internal", message: error instanceof Error ? error.message : String(error), details: {} } };
@@ -356,7 +407,7 @@ function registerGatewayControl(
   }, { authority: "loopback" });
   context.effect?.(() => async () => {
     await removeControl();
-    await Promise.all([stop(), sidecar?.dispose()]);
+    await Promise.all([stop(), sidecar?.dispose(), workspaceControl?.dispose()]);
     unsubscribeSideTasks?.();
     await sideTaskPersistence?.flush();
   }, "dsh-collab: Gateway control");
@@ -373,8 +424,9 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     registerDshCollabSettings(context, config);
     return;
   }
-  if (context.inject) registerDshCollabSettings(context, config, (_settings, scope) => {
-    registerGatewayControl(context, config, scope);
+  if (context.inject) registerDshCollabSettings(context, config, (_settings, scope, settingsContext) => {
+    const scopedContext = settingsContext as unknown as DshCollabCordisContext;
+    registerGatewayControl(scopedContext.connection ? scopedContext : context, config, scope);
   });
 }
 

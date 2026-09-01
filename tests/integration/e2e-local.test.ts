@@ -30,11 +30,18 @@ async function jsonRequest(base: string, input: { method: "GET" | "POST"; path: 
   });
 }
 
-function connect(base: string, roomId: string, token: string, connectionId: string): { socket: WebSocket; frames: DecodedServerStreamFrame[]; connected: Promise<void>; close: () => void } {
+function connect(base: string, roomId: string, ticket: string, connectionId: string): { socket: WebSocket; frames: DecodedServerStreamFrame[]; connected: Promise<void>; close: () => void } {
   const frames: DecodedServerStreamFrame[] = [];
   let resolveConnected!: () => void;
-  const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
-  const socket = new WebSocket(base.replace("http", "ws") + `/collab/v1/stream?roomId=${roomId}&connectionId=${connectionId}`, { headers: { authorization: `Bearer ${token}` } });
+  let rejectConnected!: (error: Error) => void;
+  const connected = new Promise<void>((resolve, reject) => { resolveConnected = resolve; rejectConnected = reject; });
+  const socket = new WebSocket(base.replace("http", "ws") + `/collab/v1/stream?roomId=${roomId}&ticket=${encodeURIComponent(ticket)}&connectionId=${connectionId}`);
+  socket.once("error", rejectConnected);
+  socket.once("unexpected-response", (_request, response) => {
+    const chunks: Buffer[] = [];
+    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+    response.on("end", () => rejectConnected(new Error(`${connectionId} stream upgrade failed (${String(response.statusCode)}): ${Buffer.concat(chunks).toString("utf8").trim()}`)));
+  });
   socket.on("message", (data) => {
     const frame = decodeServerStreamFrame(JSON.parse(data.toString()) as unknown);
     frames.push(frame);
@@ -78,12 +85,12 @@ describe("local end-to-end collaboration", () => {
       const invite2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/invites", body: { inviteId: "invite-b", expiresAt: Date.now() + 60_000 } });
       expect(invite1.status).toBe(201);
       expect(invite2.status).toBe(201);
-      const joined1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-a", token: "invite-1", memberId: "member-1", displayName: "One" } });
-      const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two" } });
+      const joined1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-a", token: "invite-1", memberId: "member-1", displayName: "One", resumeCredential: "resume-1" } });
+      const joined2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-b", token: "invite-2", memberId: "member-2", displayName: "Two", resumeCredential: "resume-2" } });
       expect(joined1.status).toBe(201);
       expect(joined2.status).toBe(201);
-      expect(joined1.data.member.principalId).toBe("invite:invite-a");
-      expect(joined2.data.member.principalId).toBe("invite:invite-b");
+      expect(joined1.data.member.principalId).toBe("invite:invite-a:member-1");
+      expect(joined2.data.member.principalId).toBe("invite:invite-b:member-2");
       const forbiddenAction = await jsonRequest(base, {
         method: "POST",
         path: "/v1/rooms/room-1/actions",
@@ -91,11 +98,17 @@ describe("local end-to-end collaboration", () => {
         body: { action: "setMemberStatus", memberId: "member-2", status: "suspended" },
       });
       expect(forbiddenAction.status).toBe(403);
-      const one = connect(base, "room-1", joined1.data.roomToken, "connection-1");
-      const two = connect(base, "room-1", joined2.data.roomToken, "connection-2");
+      const participantTicket1 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/stream-tickets", token: joined1.data.roomToken, body: {} });
+      const participantTicket2 = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/stream-tickets", token: joined2.data.roomToken, body: {} });
+      expect(participantTicket1.status).toBe(201);
+      expect(participantTicket2.status).toBe(201);
+      expect(participantTicket1.data.ticket).not.toBe(participantTicket2.data.ticket);
+      const one = connect(base, "room-1", participantTicket1.data.ticket, "connection-1");
+      const two = connect(base, "room-1", participantTicket2.data.ticket, "connection-2");
       const bootstrappedHost = await jsonRequest(base, { method: "GET", path: "/v1/rooms/room-1/bootstrap", headers: { origin: base } });
       expect(bootstrappedHost.status).toBe(200);
-      const host = connect(base, "room-1", bootstrappedHost.data.roomToken, "connection-host");
+      const hostTicket = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/stream-tickets", token: bootstrappedHost.data.roomToken, body: {} });
+      const host = connect(base, "room-1", hostTicket.data.ticket, "connection-host");
       sockets.push(host, one, two);
       await Promise.all([host.connected, one.connected, two.connected]);
 
@@ -116,7 +129,8 @@ describe("local end-to-end collaboration", () => {
 
       const cursor = two.frames.filter((frame): frame is Extract<DecodedServerStreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;
       two.close();
-      const twoReconnected = connect(base, "room-1", joined2.data.roomToken, "connection-2-reconnect");
+      const reconnectTicket = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/stream-tickets", token: joined2.data.roomToken, body: {} });
+      const twoReconnected = connect(base, "room-1", reconnectTicket.data.ticket, "connection-2-reconnect");
       sockets.push(twoReconnected);
       await twoReconnected.connected;
       const afterReconnect = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined1.data.roomToken, body: { clientMessageId: "m-reconnect", text: "Welcome back", target: "room" } });

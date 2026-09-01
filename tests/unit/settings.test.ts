@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_SCHEMA, renderCollabSettings, validateDshCollabParticipantSettings, validateCollabSettings, validateDshCollabPersistedSettings, type CollabSettings } from "../../src/settings.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_SCHEMA, renderCollabSettings, validateDshCollabParticipantSettings, validateCollabSettings, validateDshCollabPersistedSettings, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "../../src/settings.js";
 import { detectPrivateNetworkAddress } from "../../src/network-address.js";
 
 describe("collab settings", () => {
@@ -80,11 +80,16 @@ describe("collab settings", () => {
     })).toBe("192.168.1.3");
   });
 
-  it("validates hidden Participant resume state at the DSH persistence boundary", () => {
+  it("accepts only credential references at the DSH persistence boundary", () => {
     expect(DSH_COLLAB_PARTICIPANT_SCHEMA({})).toEqual({ joinedRooms: [] });
-    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).not.toThrow();
-    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "ws://public.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" } })).toThrow("gatewayEndpoint");
-    expect(() => validateDshCollabParticipantSettings({ resume: { gatewayEndpoint: "wss://collab.example/collab", roomId: "", memberId: "member-bob", credential: "resume-secret" } })).toThrow("roomId");
-    expect(JSON.stringify(DSH_COLLAB_PARTICIPANT_SCHEMA.toJSON())).toContain('"hidden":true');
+    expect(() => validateDshCollabParticipantSettings({ joinedRooms: [{ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credentialKey: "dsh-collab/participant-fixed" }] })).not.toThrow();
+    expect(() => validateDshCollabParticipantSettings({ joinedRooms: [{ gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" }] } as unknown as DshCollabParticipantSettings)).toThrow("credential reference");
+    expect(() => validateDshCollabPersistedSettings({
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+      easyTierRooms: [{ roomId: "room-2", network: { mode: "easytier", version: 1, networkName: "room", networkSecret: "secret", ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010" } }],
+    } as unknown as DshCollabPersistedSettings)).toThrow("credential reference");
+    const participantSchema = JSON.stringify(DSH_COLLAB_PARTICIPANT_SCHEMA.toJSON());
+    expect(participantSchema).toContain('"hidden":true');
+    expect(participantSchema).not.toContain("networkSecret");
   });
 });

@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { applyDshCollabClient, decodeDshParticipantSettings, type DshCollabClientContext } from "../../src/dsh-client.js";
 import { composerTargetForText } from "../../src/ui.js";
 
-describe("Collab Bar upgrade compatibility", () => {
-  it("migrates a legacy Participant resume while publishing only additive production slots", () => {
-    const legacy = {
+describe("Collab Bar production composition", () => {
+  it("rejects obsolete inline Participant secrets while publishing only the intended slots", () => {
+    const inline = {
       gatewayEndpoint: "wss://collab.example/collab",
       roomId: "room-1",
       memberId: "member-bob",
@@ -22,7 +22,7 @@ describe("Collab Bar upgrade compatibility", () => {
       get: vi.fn(() => undefined),
     };
 
-    expect(decodeDshParticipantSettings({ resume: legacy })).toEqual({ joinedRooms: [legacy] });
+    expect(decodeDshParticipantSettings({ resume: inline })).toEqual({});
     applyDshCollabClient(context as unknown as DshCollabClientContext);
 
     expect(registrations).toEqual([

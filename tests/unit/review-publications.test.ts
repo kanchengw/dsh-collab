@@ -138,8 +138,8 @@ describe("ReviewService SideTask publications", () => {
       ...legacy.publications![0]!,
       integrationRequestId: hash(`room-1\0${publication.publicationId}\0mainline-integration`),
     };
-    const restoredLegacy = ReviewService.fromSnapshot({ rooms, reviewPoints, now: () => 40 }, legacy);
-    expect(restoredLegacy.snapshot()).toEqual(legacy);
+    expect(() => ReviewService.fromSnapshot({ rooms, reviewPoints, now: () => 40 }, legacy))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
 
     const malformed = reviews.snapshot();
     malformed.publications![0] = { ...malformed.publications![0]!, acceptedAt: 41 };

@@ -4,9 +4,6 @@ import {
   CHANGE_SET_CAPABILITY,
   WORKSPACE_VERSION_CAPABILITY,
   type CollaborationCapability,
-  type CollaborationEvent,
-  type CollaborationStreamFrame,
-  type WorkspaceSharingState,
 } from "./collaboration-types.js";
 import type { GatewayResponse, RoomEvent, StreamFrame } from "./types.js";
 
@@ -37,13 +34,7 @@ export type ServerStreamFrame =
   | { protocol: typeof COLLAB_PROTOCOL; type: "heartbeat"; connectionId: string; serverTime: number }
   | { protocol: typeof COLLAB_PROTOCOL; type: "closed"; connectionId: string; reason: string };
 
-export type CollaborationServerStreamFrame = {
-  protocol: typeof COLLAB_PROTOCOL;
-  type: "collaboration-event";
-  event: CollaborationEvent;
-};
-
-export type DecodedServerStreamFrame = StreamFrame | CollaborationStreamFrame;
+export type DecodedServerStreamFrame = StreamFrame;
 
 const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "room.created",
@@ -52,7 +43,16 @@ const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "member.suspended",
   "member.removed",
   "human.message",
+  "work-update.published",
   "workspace-version.published",
+  "workspace-sharing.changed",
+  "changeset.submitted",
+  "changeset.review-assigned",
+  "changeset.finding-created",
+  "changeset.review-decided",
+  "changeset.revision-linked",
+  "changeset.applied",
+  "changeset.apply-conflicted",
   "agent.request.created",
   "agent.request.queued",
   "agent.request.claimed",
@@ -172,10 +172,6 @@ export function encodeServerStreamFrame(frame: StreamFrame, capabilities: readon
   }
 }
 
-export function encodeCollaborationServerStreamFrame(frame: CollaborationStreamFrame): CollaborationServerStreamFrame {
-  return { protocol: COLLAB_PROTOCOL, type: "collaboration-event", event: decodeCollaborationEvent(frame.event) };
-}
-
 export function decodeClientStreamFrame(value: unknown): ClientStreamFrame {
   const input = record(value, "stream frame");
   protocol(input.protocol);
@@ -196,9 +192,6 @@ export function decodeServerStreamFrame(value: unknown): DecodedServerStreamFram
       roomId: text(input.roomId, "roomId"),
       lastEventSeq: nonNegativeInteger(input.lastEventSeq, "lastEventSeq"),
     };
-  }
-  if (type === "collaboration-event") {
-    return { kind: "collaboration-event", event: decodeCollaborationEvent(input.event) };
   }
   if (type === "presence") {
     return {
@@ -232,119 +225,6 @@ export function decodeServerStreamFrame(value: unknown): DecodedServerStreamFram
     };
   }
   throw invalidInput("stream frame.type is not supported", { field: "type" });
-}
-
-function decodeCollaborationEvent(value: unknown): CollaborationEvent {
-  const input = record(value, "collaboration event");
-  const type = text(input.type, "collaboration event.type");
-  if (type === "workspace-sharing.changed") {
-    return { type, state: decodeWorkspaceSharingState(input.state) };
-  }
-  if (!["changeset.review-assigned", "changeset.finding-created", "changeset.review-decided", "changeset.revision-linked"].includes(type)) {
-    throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
-  }
-  const roomId = text(input.roomId, "collaboration event.roomId");
-  if (type === "changeset.review-assigned") {
-    const assignment = record(input.assignment, "collaboration event.assignment");
-    const previousReviewerId = assignment.previousReviewerId === undefined
-      ? undefined
-      : text(assignment.previousReviewerId, "collaboration event.assignment.previousReviewerId");
-    return {
-      type,
-      roomId,
-      assignment: {
-        assignmentId: text(assignment.assignmentId, "collaboration event.assignment.assignmentId"),
-        changeSetId: text(assignment.changeSetId, "collaboration event.assignment.changeSetId"),
-        assignedBy: text(assignment.assignedBy, "collaboration event.assignment.assignedBy"),
-        reviewerId: text(assignment.reviewerId, "collaboration event.assignment.reviewerId"),
-        ...(previousReviewerId ? { previousReviewerId } : {}),
-        createdAt: nonNegativeInteger(assignment.createdAt, "collaboration event.assignment.createdAt"),
-      },
-    };
-  }
-  if (type === "changeset.finding-created") {
-    const finding = record(input.finding, "collaboration event.finding");
-    const severity = text(finding.severity, "collaboration event.finding.severity");
-    if (!["critical", "high", "medium", "low", "note"].includes(severity)) {
-      throw invalidInput("collaboration event.finding.severity is invalid");
-    }
-    return {
-      type,
-      roomId,
-      finding: {
-        findingId: text(finding.findingId, "collaboration event.finding.findingId"),
-        changeSetId: text(finding.changeSetId, "collaboration event.finding.changeSetId"),
-        authorId: text(finding.authorId, "collaboration event.finding.authorId"),
-        severity: severity as Extract<CollaborationEvent, { type: "changeset.finding-created" }>["finding"]["severity"],
-        location: decodeReviewFindingLocation(finding.location),
-        body: text(finding.body, "collaboration event.finding.body"),
-        createdAt: nonNegativeInteger(finding.createdAt, "collaboration event.finding.createdAt"),
-      },
-    };
-  }
-  if (type === "changeset.review-decided") {
-    const decision = record(input.decision, "collaboration event.decision");
-    if (decision.outcome !== "approved" && decision.outcome !== "changes-requested") {
-      throw invalidInput("collaboration event.decision.outcome is invalid");
-    }
-    const note = decision.note === undefined ? undefined : text(decision.note, "collaboration event.decision.note");
-    return {
-      type,
-      roomId,
-      decision: {
-        decisionId: text(decision.decisionId, "collaboration event.decision.decisionId"),
-        changeSetId: text(decision.changeSetId, "collaboration event.decision.changeSetId"),
-        reviewerId: text(decision.reviewerId, "collaboration event.decision.reviewerId"),
-        outcome: decision.outcome,
-        ...(note ? { note } : {}),
-        createdAt: nonNegativeInteger(decision.createdAt, "collaboration event.decision.createdAt"),
-      },
-    };
-  }
-  if (type === "changeset.revision-linked") {
-    const revision = record(input.revision, "collaboration event.revision");
-    return {
-      type,
-      roomId,
-      revision: {
-        revisionLinkId: text(revision.revisionLinkId, "collaboration event.revision.revisionLinkId"),
-        changeSetId: text(revision.changeSetId, "collaboration event.revision.changeSetId"),
-        supersedesChangeSetId: text(revision.supersedesChangeSetId, "collaboration event.revision.supersedesChangeSetId"),
-        linkedBy: text(revision.linkedBy, "collaboration event.revision.linkedBy"),
-        createdAt: nonNegativeInteger(revision.createdAt, "collaboration event.revision.createdAt"),
-      },
-    };
-  }
-  throw invalidInput("collaboration event.type is not supported", { field: "collaboration event.type" });
-}
-
-function decodeReviewFindingLocation(value: unknown): Extract<CollaborationEvent, { type: "changeset.finding-created" }>["finding"]["location"] {
-  const input = record(value, "collaboration event.finding.location");
-  const kind = text(input.kind, "collaboration event.finding.location.kind");
-  if (kind === "general") return { kind };
-  const path = text(input.path, "collaboration event.finding.location.path");
-  if (kind === "file") return { kind, path };
-  if (kind === "line") {
-    const line = nonNegativeInteger(input.line, "collaboration event.finding.location.line");
-    if (line === 0) throw invalidInput("collaboration event.finding.location.line must be positive");
-    return { kind, path, line };
-  }
-  throw invalidInput("collaboration event.finding.location.kind is invalid");
-}
-
-function decodeWorkspaceSharingState(value: unknown): WorkspaceSharingState {
-  const input = record(value, "collaboration event.state");
-  const roomId = text(input.roomId, "collaboration event.state.roomId");
-  const revision = nonNegativeInteger(input.revision, "collaboration event.state.revision");
-  const enabled = boolean(input.enabled, "collaboration event.state.enabled");
-  if (!enabled) return { roomId, enabled: false, revision };
-  return {
-    roomId,
-    enabled: true,
-    enabledBy: text(input.enabledBy, "collaboration event.state.enabledBy"),
-    enabledAt: nonNegativeInteger(input.enabledAt, "collaboration event.state.enabledAt"),
-    revision,
-  };
 }
 
 function decodeEvent(value: unknown): RoomEvent {

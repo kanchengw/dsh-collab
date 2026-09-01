@@ -72,6 +72,7 @@ function participantSnapshot(overrides: Partial<CollabChangesSnapshot> = {}): Co
       baseVersionId: "version-1",
       latestVersionId: "version-2",
       dirtyPaths: ["src/reconnect.ts", "tests/reconnect.test.ts"],
+      linked: false,
     },
     staged: [],
     ...overrides,
@@ -83,6 +84,7 @@ function port(snapshot: CollabChangesSnapshot): CollabChangesPort {
     getSnapshot: () => snapshot,
     subscribe: () => () => {},
     refresh: vi.fn(),
+    setWorkspaceSharing: vi.fn(),
     sync: vi.fn(),
     discardAndSync: vi.fn(),
     createDraft: vi.fn(),
@@ -135,6 +137,7 @@ describe("Collab Changes", () => {
         roomId: "room-1",
         role: "owner",
         connection: "online",
+        workspaceSharingEnabled: false,
         workspace: { kind: "owner", latestVersionId: "version-2" },
         staged: [{ changeSet: staged(), patch: "diff --git a/src/reconnect.ts b/src/reconnect.ts\n" }],
         selectedChangeSetId: "a".repeat(64),
@@ -142,6 +145,8 @@ describe("Collab Changes", () => {
     }));
 
     expect(html).toContain("Staged ChangeSets");
+    expect(html).toContain("Enable workspace sharing");
+    expect(html).not.toContain(">Publish current workspace version</button>");
     expect(html).toContain("Fix reconnect");
     expect(html).toContain("Immutable diff");
     expect(html).not.toContain("Create draft");
@@ -158,6 +163,7 @@ describe("Collab Changes", () => {
           baseVersionId: "version-1",
           latestVersionId: "version-2",
           dirtyPaths: [],
+          linked: false,
         },
       })),
     }));
@@ -169,6 +175,29 @@ describe("Collab Changes", () => {
     expect(clean).not.toContain("Discard local changes");
     expect(dirty).toContain("Create draft");
     expect(dirty).toContain("Discard local changes and sync");
+  });
+
+  it("offers explicit refresh and native DSH opening until the Room Workspace Session is linked", () => {
+    const unlinked = renderToStaticMarkup(createElement(CollabChanges, {
+      port: { ...port(participantSnapshot()), openWorkspace: vi.fn() },
+    }));
+    const linked = renderToStaticMarkup(createElement(CollabChanges, {
+      port: { ...port(participantSnapshot({
+        workspace: {
+          kind: "ready",
+          path: "C:/collab/room-1/workspace",
+          baseVersionId: "version-1",
+          latestVersionId: "version-1",
+          dirtyPaths: [],
+          linked: true,
+        },
+      })), openWorkspace: vi.fn() },
+    }));
+
+    expect(unlinked).toContain("Refresh");
+    expect(unlinked).toContain("Open Room Workspace in DSH");
+    expect(linked).toContain("Refresh");
+    expect(linked).not.toContain("Open Room Workspace in DSH");
   });
 
   it("renders the complete Changes slice in Simplified Chinese", () => {

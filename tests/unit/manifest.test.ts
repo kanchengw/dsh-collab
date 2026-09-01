@@ -18,7 +18,7 @@ describe("dsh package manifest", () => {
     expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).not.toContain("dsh-client-ui-primitives/src/");
     expect(manifest.dsh.bundle.patch).toBe("./cordis.patch.yml");
     const patch = readFileSync(resolve(process.cwd(), "cordis.patch.yml"), "utf8");
-    expect(patch).toContain("inject: [agentDefaultModel, agents, agentPresets, settings, connection, fs, subprocess, approval]");
+    expect(patch).toContain("inject: [agentDefaultModel, agents, agentPresets, settings, connection, credentials, fs, subprocess, workspaceRegistry, approval]");
     expect(() => validateDshCollabManifest(manifest)).not.toThrow();
   });
 });

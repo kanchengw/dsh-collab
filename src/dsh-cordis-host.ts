@@ -84,7 +84,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
       })
     : undefined;
   let runtime: DshCollabHostRuntime;
-  const commitCriticalState = persistence ? () => persistence.saveLatest(() => runtime.snapshot()) : undefined;
+  const commitCriticalState = persistence ? () => persistence.save(runtime.snapshot()) : undefined;
   runtime = createDshCollabHostRuntime({
     ...runtimeConfig,
     sessions,
@@ -100,33 +100,20 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
     } : {}),
     commitCriticalState,
   });
-  const save = (): void => {
-    void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
-  };
-  const unsubscribeLedger = persistence ? runtime.ledger.subscribe(save) : undefined;
-  const unsubscribeRooms = persistence ? runtime.rooms.subscribe(save) : undefined;
-  const unsubscribeReviewPoints = persistence ? runtime.reviewPoints.subscribe(save) : undefined;
-  const unsubscribeReviews = persistence ? runtime.reviews.subscribe(save) : undefined;
-  const unsubscribeChangeSetReviews = persistence ? runtime.changeSetReviews?.subscribe(save) : undefined;
   const ready = (async () => {
     await runtime.recoverPendingIntegrations();
+    await runtime.commitCriticalState();
     return await runtime.http.listen();
   })();
   void ready.catch((error: unknown) => console.warn("dsh-collab Gateway failed to listen", error));
-  void commitCriticalState?.().catch((error: unknown) => console.warn("dsh-collab state save failed", error));
   return {
     runtime,
     ...(workspaceSnapshots ? { workspaceSnapshots } : {}),
     ready,
     async dispose(): Promise<void> {
       await ready.catch(() => undefined);
-      unsubscribeLedger?.();
-      unsubscribeRooms?.();
-      unsubscribeReviewPoints?.();
-      unsubscribeReviews?.();
-      unsubscribeChangeSetReviews?.();
       try {
-        await commitCriticalState?.();
+        await runtime.commitCriticalState();
       } finally {
         try {
           await runtime.dispose();

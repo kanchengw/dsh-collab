@@ -1,6 +1,7 @@
 import { invalidInput } from "./errors.js";
 import type { RoomEvent } from "./types.js";
 import { validateWorkUpdate } from "./work-updates.js";
+import { validateWorkspaceVersionRecord } from "./workspace-versions.js";
 
 export type RoomContextEntry =
   | { kind: "message"; author: string; text: string }
@@ -35,6 +36,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function nonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw invalidInput(`${field} must be a non-negative integer`, { field });
+  }
+  return value;
+}
+
+function collaborationPayload(event: RoomEvent, roomId: string, authorField: string, createdAtField = "createdAt"): Record<string, unknown> {
+  if (!isRecord(event.payload)) throw invalidInput(`${event.type} payload is invalid`, { eventId: event.eventId });
+  const author = requiredText(event.payload[authorField], `payload.${authorField}`);
+  const createdAt = nonNegativeInteger(event.payload[createdAtField], `payload.${createdAtField}`);
+  if (author !== event.actor?.memberId || createdAt !== event.createdAt) {
+    throw invalidInput(`${event.type} authority does not match its durable event`, { eventId: event.eventId });
+  }
+  if (event.payload.roomId !== undefined && requiredText(event.payload.roomId, "payload.roomId") !== roomId) {
+    throw invalidInput(`${event.type} room does not match its durable event`, { eventId: event.eventId });
+  }
+  return event.payload;
+}
+
 function projectHumanMessage(event: RoomEvent, roomId: string): RoomContextEntry {
   if (!isRecord(event.payload)
     || event.payload.kind !== "human"
@@ -65,6 +86,118 @@ function projectWorkUpdate(event: RoomEvent, roomId: string): RoomContextEntry {
   };
 }
 
+function projectWorkspaceVersion(event: RoomEvent, roomId: string): string {
+  const record = validateWorkspaceVersionRecord(event.payload);
+  if (record.version.roomId !== roomId || record.version.createdBy !== event.actor?.memberId || record.version.createdAt !== event.createdAt) {
+    throw invalidInput("Workspace Version authority does not match its durable event", { eventId: event.eventId });
+  }
+  return record.version.workspaceVersionId;
+}
+
+function projectCollaborationRoomEvent(event: RoomEvent, roomId: string): RoomContextEntry | undefined {
+  if (event.type === "workspace-sharing.changed") {
+    if (!isRecord(event.payload)
+      || requiredText(event.payload.roomId, "payload.roomId") !== roomId
+      || typeof event.payload.enabled !== "boolean") {
+      throw invalidInput("workspace-sharing.changed payload is invalid", { eventId: event.eventId });
+    }
+    nonNegativeInteger(event.payload.revision, "payload.revision");
+    if (event.payload.enabled) {
+      const enabledBy = requiredText(event.payload.enabledBy, "payload.enabledBy");
+      if (enabledBy !== event.actor?.memberId
+        || nonNegativeInteger(event.payload.enabledAt, "payload.enabledAt") !== event.createdAt) {
+        throw invalidInput("workspace-sharing.changed authority does not match its durable event", { eventId: event.eventId });
+      }
+    }
+    return undefined;
+  }
+  if (event.type === "changeset.submitted") {
+    const payload = collaborationPayload(event, roomId, "authorId", "submittedAt");
+    const title = requiredText(payload.title, "payload.title");
+    const summary = requiredText(payload.summary, "payload.summary");
+    return {
+      kind: "changeset",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.authorId, "payload.authorId"),
+      status: "submitted",
+      summary: `${title}: ${summary}`,
+    };
+  }
+  if (event.type === "changeset.review-assigned") {
+    const payload = collaborationPayload(event, roomId, "assignedBy");
+    return {
+      kind: "review",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.assignedBy, "payload.assignedBy"),
+      decision: `Assigned reviewer ${requiredText(payload.reviewerId, "payload.reviewerId")}`,
+    };
+  }
+  if (event.type === "changeset.finding-created") {
+    const payload = collaborationPayload(event, roomId, "authorId");
+    const severity = requiredText(payload.severity, "payload.severity");
+    if (!["critical", "high", "medium", "low", "note"].includes(severity)) {
+      throw invalidInput("payload.severity is invalid", { eventId: event.eventId });
+    }
+    return {
+      kind: "review",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.authorId, "payload.authorId"),
+      decision: `[${severity}] ${requiredText(payload.body, "payload.body")}`,
+    };
+  }
+  if (event.type === "changeset.review-decided") {
+    const payload = collaborationPayload(event, roomId, "reviewerId");
+    if (payload.outcome !== "approved" && payload.outcome !== "changes-requested") {
+      throw invalidInput("payload.outcome is invalid", { eventId: event.eventId });
+    }
+    const note = payload.note === undefined ? undefined : requiredText(payload.note, "payload.note");
+    return {
+      kind: "review",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.reviewerId, "payload.reviewerId"),
+      decision: note ? `${payload.outcome}: ${note}` : payload.outcome,
+    };
+  }
+  if (event.type === "changeset.revision-linked") {
+    const payload = collaborationPayload(event, roomId, "linkedBy");
+    return {
+      kind: "changeset",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.linkedBy, "payload.linkedBy"),
+      status: "revision",
+      summary: `Supersedes ${requiredText(payload.supersedesChangeSetId, "payload.supersedesChangeSetId")}`,
+    };
+  }
+  if (event.type === "changeset.applied") {
+    const payload = collaborationPayload(event, roomId, "appliedBy");
+    return {
+      kind: "changeset",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.appliedBy, "payload.appliedBy"),
+      status: "applied",
+      summary: `Workspace ${requiredText(payload.workspaceVersionId, "payload.workspaceVersionId")}`,
+    };
+  }
+  if (event.type === "changeset.apply-conflicted") {
+    const payload = collaborationPayload(event, roomId, "detectedBy");
+    if (!Array.isArray(payload.conflicts) || payload.conflicts.length === 0) {
+      throw invalidInput("payload.conflicts is invalid", { eventId: event.eventId });
+    }
+    const paths = payload.conflicts.map((value) => {
+      if (!isRecord(value)) throw invalidInput("payload.conflicts is invalid", { eventId: event.eventId });
+      return requiredText(value.path, "payload.conflicts.path");
+    });
+    return {
+      kind: "changeset",
+      changeSetId: requiredText(payload.changeSetId, "payload.changeSetId"),
+      author: requiredText(payload.detectedBy, "payload.detectedBy"),
+      status: "conflicted",
+      summary: `Conflicts: ${paths.join(", ")}`,
+    };
+  }
+  return undefined;
+}
+
 export function projectRoomContext(input: ProjectRoomContextInput): RoomContextSnapshot | undefined {
   const roomId = requiredText(input.roomId, "roomId");
   if (!Number.isSafeInteger(input.afterSeq) || input.afterSeq < 0) {
@@ -77,6 +210,7 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
   if (input.events.length === 0) return undefined;
 
   const entries: RoomContextEntry[] = [];
+  let workspaceVersionId: string | undefined;
   let expectedSeq = input.afterSeq + 1;
   for (const event of input.events) {
     if (!event || event.roomId !== roomId) {
@@ -91,6 +225,11 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
     expectedSeq += 1;
     if (event.type === "human.message") entries.push(projectHumanMessage(event, roomId));
     else if (event.type === "work-update.published") entries.push(projectWorkUpdate(event, roomId));
+    else if (event.type === "workspace-version.published") workspaceVersionId = projectWorkspaceVersion(event, roomId);
+    else {
+      const collaboration = projectCollaborationRoomEvent(event, roomId);
+      if (collaboration) entries.push(collaboration);
+    }
   }
 
   const omittedCount = Math.max(0, entries.length - input.maxEntries);
@@ -98,6 +237,7 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
     roomId,
     fromSeq: input.afterSeq + 1,
     toSeq: input.events[input.events.length - 1]!.seq,
+    ...(workspaceVersionId ? { workspaceVersionId } : {}),
     entries: entries.slice(-input.maxEntries),
     omittedCount,
   };

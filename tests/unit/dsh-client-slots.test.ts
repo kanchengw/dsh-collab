@@ -1,10 +1,30 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
+import type { ParticipantResumeState } from "../../src/dsh-browser-client.js";
+import type { DshCollabJoinedRoom } from "../../src/settings-shared.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
+
+function memoryParticipantSecrets() {
+  const records = new Map<string, ParticipantResumeState>();
+  let sequence = 0;
+  return {
+    save: vi.fn(async (state: ParticipantResumeState) => {
+      const key = `dsh-collab/participant-test-${String(++sequence)}`;
+      records.set(key, structuredClone(state));
+      return key;
+    }),
+    load: vi.fn(async (key: string) => {
+      const state = records.get(key);
+      if (!state) throw new Error("missing credential");
+      return structuredClone(state);
+    }),
+    remove: vi.fn(async (key: string) => { records.delete(key); }),
+  };
+}
 
 describe("real DSH client slot adapter", () => {
   it("exports the DSH client runner apply entry", () => {
@@ -384,6 +404,27 @@ describe("real DSH client slot adapter", () => {
     expect(shareHostRoom).toHaveBeenCalledWith({ sessionId: "room-1", title: "Release" });
   });
 
+  it("stops the active EasyTier Owner transport even after settings switch to LAN", async () => {
+    let connectionMethod: "easytier" | "private-network" = "easytier";
+    const stopSharing = vi.fn(async () => { connectionMethod = "private-network"; });
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "", connectionMethod }),
+      save: vi.fn(async () => {}),
+      stopSharing,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
+      if (endpoint === "easytier/status") return { ok: true, value: { active: true, role: "owner", roomId: "room-1", runtime: { kind: "running" } } };
+      if (endpoint === "easytier/stop") return { ok: true, value: { kind: "idle" } };
+      throw new Error(endpoint);
+    }) };
+    const port = createDshGatewayControlPort(base, rpc);
+
+    await port.stopSharing?.("room-1");
+
+    expect(stopSharing).toHaveBeenCalledWith("room-1");
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/stop", {});
+  });
+
   it("maps Participant EasyTier control responses into a browser-local bridge", async () => {
     const rpc = { call: vi.fn(async () => ({ ok: true, value: { role: "participant", roomId: "room-1", gatewayEndpoint: "ws://127.0.0.1:45231/collab", localVirtualAddress: "10.231.2.3" } })) };
     const transport = createDshBrowserEasyTierTransport(rpc);
@@ -410,10 +451,15 @@ describe("real DSH client slot adapter", () => {
       openTab: vi.fn(),
       getSnapshot: () => ({ sessionId: "session-current" }),
     };
+    let workspacePorts: unknown;
+    const connection = { rpc: { call: vi.fn() } };
     const context = {
       slots: { inject: vi.fn((_name: string, register: () => unknown) => register()), register: vi.fn(() => () => {}) },
-      get: vi.fn((name: string) => name === "betterSidebar" ? betterSidebar : undefined),
-      provide: vi.fn((name: string, value: unknown) => { if (name === "collabPanelHost") panelHost = value as typeof panelHost; }),
+      get: vi.fn((name: string) => name === "betterSidebar" ? betterSidebar : name === "connection" ? connection : undefined),
+      provide: vi.fn((name: string, value: unknown) => {
+        if (name === "collabPanelHost") panelHost = value as typeof panelHost;
+        if (name === "collabWorkspacePorts") workspacePorts = value;
+      }),
       inject: vi.fn((_services: string[], callback: (scope: unknown) => void) => callback(context)),
     };
 
@@ -422,11 +468,38 @@ describe("real DSH client slot adapter", () => {
     expect(inject).not.toContain("betterSidebar");
     expect(context.inject).toHaveBeenCalledWith(["betterSidebar"], expect.any(Function));
     expect(panelHost).toBeDefined();
+    expect(workspacePorts).toBeDefined();
     expect(registerTab).toHaveBeenCalledOnce();
     expect(descriptor).toMatchObject({ id: "dsh-collab:room", single: true });
     const html = renderToStaticMarkup(descriptor?.component({ scope: { sessionId: "session-current" }, visible: true }) as React.ReactElement);
     expect(html).toContain('data-collab-bar="true"');
+    expect(html).not.toContain("Changes are not connected");
     expect(html).not.toContain('data-collab-surface="room"');
+  });
+
+  it("opens the native Room Workspace Session before targeting its Collab Bar", async () => {
+    const order: string[] = [];
+    const opener = createDshParticipantWorkspaceOpener({
+      workspaces: {
+        create: async () => { order.push("create-workspace"); return { workspaceId: "workspace-room" }; },
+        connectWorkspace: async () => { order.push("connect-workspace"); return "session-room"; },
+      },
+      sessions: { open: () => { order.push("open-session"); } },
+      panelHost: () => ({
+        register: () => () => {},
+        open: () => { order.push("open-collab-bar"); },
+      }),
+    });
+
+    await opener({
+      roomId: "room-1",
+      path: "C:\\rooms\\room-1\\workspace",
+      gatewayEndpoint: "ws://10.0.0.1:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+    });
+
+    expect(order).toEqual(["create-workspace", "connect-workspace", "open-session", "open-collab-bar"]);
   });
 
   it("uses the dedicated Gateway default instead of the DSH origin", () => {
@@ -514,7 +587,7 @@ describe("real DSH client slot adapter", () => {
     });
   });
 
-  it("migrates the former default queue depth to five", () => {
+  it("reads the configured queue depth without hidden migration", () => {
     const value = {
       gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" },
       security: { tokenTtlMs: 24 * 60 * 60 * 1000, approvalPolicy: "host-only" as const, maxMembers: 16, maxMessageBytes: 64 * 1024, maxQueue: 32 },
@@ -526,7 +599,7 @@ describe("real DSH client slot adapter", () => {
       unset: vi.fn(async () => {}),
     };
 
-    expect(createDshSettingsPort(scope, { getSnapshot: () => value.gateway, save: vi.fn() }).getSnapshot()).toMatchObject({ maxQueue: 5 });
+    expect(createDshSettingsPort(scope, { getSnapshot: () => value.gateway, save: vi.fn() }).getSnapshot()).toMatchObject({ maxQueue: 32 });
   });
 
   it("rejects a save when the DSH settings scope does not commit it", async () => {
@@ -548,14 +621,14 @@ describe("real DSH client slot adapter", () => {
   });
 
   it("stores multiple Joined rooms and forgets only the selected membership", async () => {
-    let joinedRooms: Array<{ gatewayEndpoint: string; roomId: string; memberId: string; credential: string; roomTitle?: string }> = [];
+    let joinedRooms: DshCollabJoinedRoom[] = [];
     const scope = {
       getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms }, writable: true }),
       subscribe: () => () => {},
       set: vi.fn(async (_field: string, value: unknown) => { joinedRooms = value as typeof joinedRooms; }),
       unset: vi.fn(async () => {}),
     };
-    const persistence = createDshParticipantPersistence(scope);
+    const persistence = createDshParticipantPersistence(scope, memoryParticipantSecrets());
     const first = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret", roomTitle: "Design review" };
     const second = { gatewayEndpoint: "wss://other.example/collab", roomId: "room-3", memberId: "member-bob", credential: "other-secret", roomTitle: "Release" };
     await persistence.save(first);
@@ -563,22 +636,64 @@ describe("real DSH client slot adapter", () => {
     expect(persistence.list?.()).toEqual([first, second]);
     await persistence.remove?.({ gatewayEndpoint: first.gatewayEndpoint, roomId: first.roomId });
     expect(persistence.list?.()).toEqual([second]);
-    expect(scope.set).toHaveBeenLastCalledWith("joinedRooms", [second]);
+    expect(scope.set).toHaveBeenLastCalledWith("joinedRooms", [expect.objectContaining({
+      gatewayEndpoint: second.gatewayEndpoint,
+      roomId: second.roomId,
+      memberId: second.memberId,
+      credentialKey: expect.stringMatching(/^dsh-collab\/participant-/),
+    })]);
 
     const html = renderToStaticMarkup(createElement(DshCollabSettingsCard, { port: { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() } }));
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain('name="participant"');
   });
 
+  it("moves Participant secrets only through the dedicated loopback credential RPC", async () => {
+    const state = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
+      if (endpoint === "credentials/participant/save") return { ok: true, value: { credentialKey: "dsh-collab/participant-fixed" } };
+      if (endpoint === "credentials/participant/load") return { ok: true, value: { state } };
+      return { ok: true, value: { deleted: true } };
+    }) };
+    const secrets = createDshParticipantSecretPort(rpc);
+
+    await expect(secrets.save(state)).resolves.toBe("dsh-collab/participant-fixed");
+    await expect(secrets.load("dsh-collab/participant-fixed")).resolves.toEqual(state);
+    await secrets.remove("dsh-collab/participant-fixed");
+
+    expect(rpc.call.mock.calls).toEqual([
+      ["/dsh-collab", "credentials/participant/save", { state }],
+      ["/dsh-collab", "credentials/participant/load", { credentialKey: "dsh-collab/participant-fixed" }],
+      ["/dsh-collab", "credentials/participant/delete", { credentialKey: "dsh-collab/participant-fixed" }],
+    ]);
+  });
+
+  it("rolls back a new Participant grant when settings do not commit its reference", async () => {
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms: [] }, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async () => {}),
+      unset: vi.fn(async () => {}),
+    };
+    const secrets = memoryParticipantSecrets();
+    const persistence = createDshParticipantPersistence(scope, secrets);
+    const state = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+
+    await expect(persistence.save(state)).rejects.toThrow(/not persisted/i);
+
+    expect(secrets.remove).toHaveBeenCalledWith(expect.stringMatching(/^dsh-collab\/participant-/));
+    expect(persistence.list?.()).toEqual([]);
+  });
+
   it("replaces a Joined room endpoint when the Host address changes", async () => {
-    let joinedRooms: Array<{ gatewayEndpoint: string; roomId: string; memberId: string; credential: string; roomTitle?: string }> = [];
+    let joinedRooms: DshCollabJoinedRoom[] = [];
     const scope = {
       getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms }, writable: true }),
       subscribe: () => () => {},
       set: vi.fn(async (_field: string, value: unknown) => { joinedRooms = value as typeof joinedRooms; }),
       unset: vi.fn(async () => {}),
     };
-    const persistence = createDshParticipantPersistence(scope);
+    const persistence = createDshParticipantPersistence(scope, memoryParticipantSecrets());
     const oldEndpoint = { gatewayEndpoint: "wss://10.131.241.65:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "old-secret", roomTitle: "test room" };
     const newEndpoint = { gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "new-secret", roomTitle: "test room" };
 
@@ -588,17 +703,12 @@ describe("real DSH client slot adapter", () => {
     expect(persistence.list?.()).toEqual([newEndpoint]);
   });
 
-  it("migrates the pre-release single resume field into Joined rooms", () => {
-    const legacy = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
-    expect(decodeDshParticipantSettings({ resume: legacy })).toEqual({ joinedRooms: [legacy] });
-    expect(decodeDshParticipantSettings({ joinedRooms: [legacy], resume: legacy })).toEqual({ joinedRooms: [legacy] });
-  });
-
-  it("collapses historical Joined room endpoint duplicates during settings decode", () => {
-    const oldEndpoint = { gatewayEndpoint: "wss://10.131.241.65:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "old-secret" };
-    const newEndpoint = { gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-2", memberId: "member-bob", credential: "new-secret", roomTitle: "test room" };
-
-    expect(decodeDshParticipantSettings({ joinedRooms: [oldEndpoint, newEndpoint] })).toEqual({ joinedRooms: [newEndpoint] });
+  it("decodes only credential-backed Joined room metadata", () => {
+    const inline = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+    const current = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credentialKey: "dsh-collab/participant-fixed" };
+    expect(decodeDshParticipantSettings({ resume: inline })).toEqual({});
+    expect(decodeDshParticipantSettings({ joinedRooms: [inline] })).toEqual({});
+    expect(decodeDshParticipantSettings({ joinedRooms: [current] })).toEqual({ joinedRooms: [current] });
   });
 
   it("does not connect a saved Joined room when local DSH settings become ready", async () => {

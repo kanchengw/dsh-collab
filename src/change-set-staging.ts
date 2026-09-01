@@ -2,7 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CollabError, invalidInput } from "./errors.js";
-import { MAX_CHANGE_SET_MANIFEST_BYTES, validateChangeSetDraft, verifyChangeSetDraftBundle, type ChangeSetDraft } from "./change-sets.js";
+import {
+  DEFAULT_MAX_CHANGE_SET_FILES,
+  DEFAULT_MAX_CHANGE_SET_FILE_BYTES,
+  DEFAULT_MAX_CHANGE_SET_PATCH_BYTES,
+  DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES,
+  MAX_CHANGE_SET_MANIFEST_BYTES,
+  validateChangeSetDraft,
+  verifyChangeSetDraftBundle,
+  type ChangeSetDraft,
+} from "./change-sets.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 import type { RoomStore } from "./room.js";
 import type { WorkspaceVersionArtifactStore, WorkspaceVersionService } from "./workspace-versions.js";
@@ -10,6 +19,8 @@ import type { WorkspaceVersionArtifactStore, WorkspaceVersionService } from "./w
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_MAX_UPLOAD_CHUNKS = 4_096;
+const DEFAULT_MAX_RETAINED_CHANGE_SETS_PER_MEMBER = 16;
+const DEFAULT_MAX_RETAINED_CHANGE_SETS_PER_ROOM = 64;
 
 export interface StagedChangeSet {
   version: 1;
@@ -104,9 +115,25 @@ export class ChangeSetStagingService {
     subprocess: DshRepositorySubprocess;
     now?: () => number;
     maxUploadChunks?: number;
+    maxActiveUploadsPerMember?: number;
+    maxRetainedChangeSetsPerMember?: number;
+    maxRetainedChangeSetsPerRoom?: number;
+    uploadTtlMs?: number;
   }) {
     if (options.maxUploadChunks !== undefined && (!Number.isSafeInteger(options.maxUploadChunks) || options.maxUploadChunks < 1)) {
       throw new Error("ChangeSet upload chunk count limit is invalid");
+    }
+    if (options.maxActiveUploadsPerMember !== undefined && (!Number.isSafeInteger(options.maxActiveUploadsPerMember) || options.maxActiveUploadsPerMember < 1)) {
+      throw new Error("ChangeSet active upload limit is invalid");
+    }
+    if (options.maxRetainedChangeSetsPerMember !== undefined && (!Number.isSafeInteger(options.maxRetainedChangeSetsPerMember) || options.maxRetainedChangeSetsPerMember < 1)) {
+      throw new Error("ChangeSet retained member limit is invalid");
+    }
+    if (options.maxRetainedChangeSetsPerRoom !== undefined && (!Number.isSafeInteger(options.maxRetainedChangeSetsPerRoom) || options.maxRetainedChangeSetsPerRoom < 1)) {
+      throw new Error("ChangeSet retained room limit is invalid");
+    }
+    if (options.uploadTtlMs !== undefined && (!Number.isSafeInteger(options.uploadTtlMs) || options.uploadTtlMs < 1)) {
+      throw new Error("ChangeSet upload TTL is invalid");
     }
   }
 
@@ -114,7 +141,7 @@ export class ChangeSetStagingService {
     const member = this.options.rooms.authorize(input.roomId, input.principalId, "changeSet");
     const clientRequestId = requiredId(input.clientRequestId, "clientRequestId");
     const uploadId = hash(JSON.stringify({ roomId: input.roomId, memberId: member.memberId, clientRequestId }));
-    return await this.serial(uploadId, async () => {
+    return await this.serial(`member:${input.roomId}:${member.memberId}`, async () => this.serial(uploadId, async () => {
       const existing = await this.loadSession(uploadId);
       if (existing) {
         let repeatedDraft: ChangeSetDraft;
@@ -144,8 +171,12 @@ export class ChangeSetStagingService {
       if (!this.options.workspaceVersions.get(input.roomId, draft.baseWorkspaceVersionId)) {
         throw new CollabError("SNAPSHOT_NOT_FOUND", "ChangeSet base Workspace Version does not exist");
       }
+      this.validateDeclaredLimits(draft);
       const now = this.options.now?.() ?? Date.now();
       if (!Number.isSafeInteger(now) || now < 0) throw new Error("ChangeSet upload timestamp is invalid");
+      if (await this.activeUploadCount(input.roomId, member.memberId, now) >= (this.options.maxActiveUploadsPerMember ?? 4)) {
+        throw new CollabError("RESOURCE_LIMIT", "ChangeSet member has too many active uploads");
+      }
       const session: UploadSession = {
         version: 1,
         uploadId,
@@ -159,7 +190,52 @@ export class ChangeSetStagingService {
       };
       await this.publishSession(session);
       return await this.uploadView(session);
-    });
+    }));
+  }
+
+  private validateDeclaredLimits(draft: ChangeSetDraft): void {
+    if (draft.files.length > DEFAULT_MAX_CHANGE_SET_FILES) throw invalidInput("ChangeSet exceeds the file count limit");
+    if (draft.artifact.patchBytes > DEFAULT_MAX_CHANGE_SET_PATCH_BYTES) throw invalidInput("ChangeSet patch exceeds the upload limit");
+    if (draft.artifact.resultBytes > DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES) throw invalidInput("ChangeSet result exceeds the upload limit");
+    let resultBytes = 0;
+    let totalTextBytes = 0;
+    for (const file of draft.files) {
+      if ((file.baseSize ?? 0) > DEFAULT_MAX_CHANGE_SET_FILE_BYTES || (file.resultSize ?? 0) > DEFAULT_MAX_CHANGE_SET_FILE_BYTES) {
+        throw invalidInput(`ChangeSet file size limit exceeded: ${file.path}`);
+      }
+      resultBytes += file.resultSize ?? 0;
+      totalTextBytes += (file.baseSize ?? 0) + (file.resultSize ?? 0);
+      if (!Number.isSafeInteger(totalTextBytes) || totalTextBytes > DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES) {
+        throw invalidInput("ChangeSet aggregate text limit exceeded");
+      }
+    }
+    if (!Number.isSafeInteger(resultBytes) || resultBytes !== draft.artifact.resultBytes) {
+      throw invalidInput("ChangeSet result size does not match manifest");
+    }
+  }
+
+  private async activeUploadCount(roomId: string, memberId: string, now: number): Promise<number> {
+    const root = join(this.options.root, "uploads");
+    let entries;
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    const expiresBefore = now - (this.options.uploadTtlMs ?? 24 * 60 * 60 * 1_000);
+    let count = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !HASH_PATTERN.test(entry.name)) continue;
+      const session = await this.loadSession(entry.name);
+      if (!session || session.state === "finalized") continue;
+      if (session.createdAt <= expiresBefore) {
+        await rm(this.uploadDirectory(session.uploadId), { recursive: true, force: true });
+        continue;
+      }
+      if (session.roomId === roomId && session.memberId === memberId) count += 1;
+    }
+    return count;
   }
 
   async writeChunk(input: {
@@ -221,53 +297,56 @@ export class ChangeSetStagingService {
     if (!HASH_PATTERN.test(input.uploadId)) throw invalidInput("uploadId is invalid");
     return await this.serial(input.uploadId, async () => {
       const session = await this.requireSession(input.uploadId, input.roomId, input.principalId);
-      const existing = await this.get(session.roomId, session.draft.draftId);
-      if (existing) {
-        if (existing.draft.draftId !== session.draft.draftId) throw new CollabError("REQUEST_CONFLICT", "ChangeSet identity conflicts with staged data");
-        if (session.state !== "finalized") await this.markFinalized(session, existing.submittedAt);
-        return existing;
-      }
-      if (session.state === "finalized") throw new Error("Finalized ChangeSet artifact is missing");
-
-      let patchBytes: Buffer;
-      const results = new Map<string, Uint8Array>();
-      try {
-        patchBytes = await this.assemble(input.uploadId, "patch", session.draft.artifact.patchBytes);
-        for (let fileIndex = 0; fileIndex < session.draft.files.length; fileIndex += 1) {
-          const file = session.draft.files[fileIndex]!;
-          if (file.resultContentHash === undefined) continue;
-          results.set(file.path, await this.assemble(input.uploadId, `result-${String(fileIndex)}`, file.resultSize!));
+      return await this.serial(`retained:${session.roomId}`, async () => {
+        const existing = await this.get(session.roomId, session.draft.draftId);
+        if (existing) {
+          if (existing.draft.draftId !== session.draft.draftId) throw new CollabError("REQUEST_CONFLICT", "ChangeSet identity conflicts with staged data");
+          if (session.state !== "finalized") await this.markFinalized(session, existing.submittedAt);
+          return existing;
         }
-      } catch (error) {
-        throw invalidInput(error instanceof Error ? error.message : "ChangeSet upload is incomplete");
-      }
-      let patch: string;
-      try {
-        patch = new TextDecoder("utf-8", { fatal: true }).decode(patchBytes);
-      } catch {
-        throw invalidInput("ChangeSet patch is not UTF-8 text");
-      }
-      const baseRecord = this.options.workspaceVersions.get(session.roomId, session.draft.baseWorkspaceVersionId);
-      if (!baseRecord) throw new CollabError("SNAPSHOT_NOT_FOUND", "ChangeSet base Workspace Version does not exist");
-      try {
-        await verifyChangeSetDraftBundle({
-          draft: session.draft,
-          patch,
-          results,
-          baseRecord,
-          artifacts: this.options.artifacts,
-          subprocess: this.options.subprocess,
-        });
-      } catch (error) {
-        throw invalidInput(error instanceof Error ? error.message : "ChangeSet artifact verification failed");
-      }
+        if (session.state === "finalized") throw new Error("Finalized ChangeSet artifact is missing");
+        await this.assertRetainedCapacity(session.roomId, session.memberId);
 
-      const submittedAt = this.options.now?.() ?? Date.now();
-      if (!Number.isSafeInteger(submittedAt) || submittedAt < 0) throw new Error("ChangeSet submission timestamp is invalid");
-      const changeSet: StagedChangeSet = { version: 1, changeSetId: session.draft.draftId, draft: session.draft, submittedAt };
-      await this.publishChangeSet(changeSet, patchBytes, results);
-      await this.markFinalized(session, submittedAt);
-      return changeSet;
+        let patchBytes: Buffer;
+        const results = new Map<string, Uint8Array>();
+        try {
+          patchBytes = await this.assemble(input.uploadId, "patch", session.draft.artifact.patchBytes);
+          for (let fileIndex = 0; fileIndex < session.draft.files.length; fileIndex += 1) {
+            const file = session.draft.files[fileIndex]!;
+            if (file.resultContentHash === undefined) continue;
+            results.set(file.path, await this.assemble(input.uploadId, `result-${String(fileIndex)}`, file.resultSize!));
+          }
+        } catch (error) {
+          throw invalidInput(error instanceof Error ? error.message : "ChangeSet upload is incomplete");
+        }
+        let patch: string;
+        try {
+          patch = new TextDecoder("utf-8", { fatal: true }).decode(patchBytes);
+        } catch {
+          throw invalidInput("ChangeSet patch is not UTF-8 text");
+        }
+        const baseRecord = this.options.workspaceVersions.get(session.roomId, session.draft.baseWorkspaceVersionId);
+        if (!baseRecord) throw new CollabError("SNAPSHOT_NOT_FOUND", "ChangeSet base Workspace Version does not exist");
+        try {
+          await verifyChangeSetDraftBundle({
+            draft: session.draft,
+            patch,
+            results,
+            baseRecord,
+            artifacts: this.options.artifacts,
+            subprocess: this.options.subprocess,
+          });
+        } catch (error) {
+          throw invalidInput(error instanceof Error ? error.message : "ChangeSet artifact verification failed");
+        }
+
+        const submittedAt = this.options.now?.() ?? Date.now();
+        if (!Number.isSafeInteger(submittedAt) || submittedAt < 0) throw new Error("ChangeSet submission timestamp is invalid");
+        const changeSet: StagedChangeSet = { version: 1, changeSetId: session.draft.draftId, draft: session.draft, submittedAt };
+        await this.publishChangeSet(changeSet, patchBytes, results);
+        await this.markFinalized(session, submittedAt);
+        return changeSet;
+      });
     });
   }
 
@@ -307,6 +386,16 @@ export class ChangeSetStagingService {
       await handle.close();
     }
     return { changeSet, bytes };
+  }
+
+  async readPatch(roomId: string, changeSetId: string): Promise<Uint8Array> {
+    const changeSet = await this.loadManifest(roomId, changeSetId);
+    if (!changeSet) throw new CollabError("CHANGE_SET_NOT_FOUND", "ChangeSet does not exist");
+    const patch = await readFile(join(this.stagedDirectory(roomId, changeSetId), "patch.diff"));
+    if (patch.byteLength !== changeSet.draft.artifact.patchBytes || hash(patch) !== changeSet.draft.artifact.patchHash) {
+      throw new Error("Staged ChangeSet patch is corrupted");
+    }
+    return patch;
   }
 
   async readResult(roomId: string, changeSetId: string, path: string): Promise<Uint8Array> {
@@ -452,6 +541,32 @@ export class ChangeSetStagingService {
       const raced = await this.get(changeSet.draft.roomId, changeSet.changeSetId).catch(() => undefined);
       if (raced?.draft.draftId === changeSet.draft.draftId) return;
       throw error;
+    }
+  }
+
+  private async assertRetainedCapacity(roomId: string, memberId: string): Promise<void> {
+    const roomRoot = join(this.options.root, "staged", hash(roomId));
+    let names: string[];
+    try {
+      names = await readdir(roomRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let roomCount = 0;
+    let memberCount = 0;
+    for (const name of names) {
+      if (!HASH_PATTERN.test(name)) continue;
+      const changeSet = await this.loadManifest(roomId, name);
+      if (!changeSet) continue;
+      roomCount += 1;
+      if (changeSet.draft.authorId === memberId) memberCount += 1;
+    }
+    if (memberCount >= (this.options.maxRetainedChangeSetsPerMember ?? DEFAULT_MAX_RETAINED_CHANGE_SETS_PER_MEMBER)) {
+      throw new CollabError("RESOURCE_LIMIT", "ChangeSet member retained storage limit reached");
+    }
+    if (roomCount >= (this.options.maxRetainedChangeSetsPerRoom ?? DEFAULT_MAX_RETAINED_CHANGE_SETS_PER_ROOM)) {
+      throw new CollabError("RESOURCE_LIMIT", "ChangeSet room retained storage limit reached");
     }
   }
 

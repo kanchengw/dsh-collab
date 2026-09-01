@@ -5,6 +5,15 @@ import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, 
 import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
 import type { CollabPanelHost } from "../../src/collab-panel-host.js";
 
+vi.mock("@deepseek-ai/dsh-client-ui-primitives", async () => {
+  const React = await import("react");
+  return {
+    Modal: ({ open, children, className }: { open: boolean; children: React.ReactNode; className?: string }) => open
+      ? React.createElement("div", { "data-dsh-modal": "true", className }, children)
+      : null,
+  };
+});
+
 function port(): DshCollabSettingsPort {
   return {
     getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.20:4310/collab" }),
@@ -54,6 +63,14 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain('name="displayName"');
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain("Participating rooms");
+  });
+
+  it("uses the DSH portal-backed Modal so the room drawer escapes shell stacking contexts", () => {
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: port() }));
+    setDshCollabRoomsOpen(false);
+
+    expect(html).toContain('data-dsh-modal="true"');
   });
 
   it("keeps invitation creation in the shared Owned room manager", () => {

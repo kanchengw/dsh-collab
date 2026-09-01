@@ -41,6 +41,7 @@ export interface DshCollabHostRuntimeOptions {
   maxMembers?: number;
   maxMessageBytes?: number;
   maxQueue?: number;
+  maxConnections?: number;
   port?: number;
   host?: "127.0.0.1" | "0.0.0.0";
   allowLoopbackPrincipal?: boolean;
@@ -85,6 +86,7 @@ export interface DshCollabHostRuntime {
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   snapshot(): DshCollabHostRuntimeSnapshot;
+  commitCriticalState(): Promise<void>;
   recoverPendingIntegrations(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -97,6 +99,10 @@ function rebindSnapshot(snapshot: DshCollabHostRuntimeSnapshot, roomId: string, 
     if (record.roomId === roomId) record.hostSessionId = hostSessionId;
   }
   return rebound;
+}
+
+function ledgerHasEventTypes(ledger: EventLedger, types: ReadonlySet<string>): boolean {
+  return ledger.snapshot().rooms.some((room) => room.events.some((event) => types.has(event.type)));
 }
 
 /** Build the Host runtime used by a DSH process or a local E2E harness. */
@@ -119,7 +125,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const activeRooms = new ActiveRoomRegistry();
   const workspaceSharing = new WorkspaceSharingRegistry();
-  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
+  const workspace = new WorkspaceService({ rooms, ledger, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
   const workspaceVersions = options.workspaceSnapshots?.readFile
     ? new WorkspaceVersionService({
         rooms,
@@ -143,30 +149,41 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
         now: options.now,
       })
     : undefined;
-  if (snapshot?.changeSetReviews && !changeSets) {
+  const reviewEventTypes = new Set([
+    "changeset.submitted",
+    "changeset.review-assigned",
+    "changeset.finding-created",
+    "changeset.review-decided",
+    "changeset.revision-linked",
+    "changeset.applied",
+  ]);
+  if (!changeSets && (snapshot?.changeSetReviews || ledgerHasEventTypes(ledger, reviewEventTypes))) {
     throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review state requires ChangeSet staging");
   }
   const changeSetReviews = changeSets
-    ? snapshot?.changeSetReviews
-      ? ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: options.now }, snapshot.changeSetReviews)
-      : new ChangeSetReviewService({ rooms, changeSets, now: options.now })
+    ? snapshot
+      ? ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger, now: options.now }, snapshot.changeSetReviews ?? { version: 1, reviews: [] })
+      : new ChangeSetReviewService({ rooms, changeSets, ledger, now: options.now })
     : undefined;
   const canonicalWorkspace = options.canonicalFiles
-    ? new DshCanonicalWorkspace({ rooms, sessions: options.sessions, fs: options.canonicalFiles })
+    && options.changeSetSubprocess
+    ? new DshCanonicalWorkspace({ rooms, sessions: options.sessions, fs: options.canonicalFiles, subprocess: options.changeSetSubprocess })
     : undefined;
   const integrationJournals = options.integrationJournalRoot ? new IntegrationJournalStore(options.integrationJournalRoot) : undefined;
-  if (snapshot?.changeSetApply && (!changeSets || !changeSetReviews || !canonicalWorkspace || !integrationJournals)) {
+  if ((!changeSets || !changeSetReviews || !canonicalWorkspace || !integrationJournals)
+    && (snapshot?.changeSetApply || ledgerHasEventTypes(ledger, new Set(["changeset.apply-conflicted"])))) {
     throw new CollabError("SNAPSHOT_INVALID", "ChangeSet apply state requires canonical integration services");
   }
   const changeSetApply = changeSets && changeSetReviews && canonicalWorkspace && integrationJournals
-    ? snapshot?.changeSetApply
-      ? ChangeSetApplyPreflightService.fromSnapshot({ rooms, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now }, snapshot.changeSetApply)
-      : new ChangeSetApplyPreflightService({ rooms, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now })
+    ? snapshot
+      ? ChangeSetApplyPreflightService.fromSnapshot({ rooms, ledger, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now }, snapshot.changeSetApply ?? { version: 1, conflicts: [] })
+      : new ChangeSetApplyPreflightService({ rooms, ledger, changeSets, reviews: changeSetReviews, workspace: canonicalWorkspace, now: options.now })
     : undefined;
   const changeSetIntegration = changeSetApply && changeSetReviews && canonicalWorkspace && integrationJournals && workspaceVersions && options.commitCriticalState
     ? new ChangeSetIntegrationService({
-        rooms,
-        preflight: changeSetApply,
+      rooms,
+      ledger,
+      preflight: changeSetApply,
         journals: integrationJournals,
         workspace: canonicalWorkspace,
         reviews: changeSetReviews,
@@ -180,7 +197,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
             roomEventSeq: ledger.latestSeq(input.roomId),
           }),
         },
-        commitCriticalState: options.commitCriticalState,
+        commitCriticalState: () => ledger.commit(options.commitCriticalState),
       })
     : undefined;
   if (changeSetReviews && workspaceVersions) {
@@ -207,6 +224,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const limits = new ResourceLimiter({
     maxMembersPerRoom: options.maxMembers,
     maxQueuedRequestsPerRoom: options.maxQueue,
+    maxConnectionsPerRoom: options.maxConnections ?? 64,
   });
   const gateway = new CollabGateway({
     rooms,
@@ -248,12 +266,10 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   }
   const collabRuntime = new CollabRuntime({ rooms, ledger, dispatcher: gateway.dispatcher, approvals });
   const hub = new RoomStreamHub({ rooms, tokens: gateway.tokens, ledger, now: options.now, limits, activeRooms });
-  const unsubscribeWorkspaceSharing = workspaceSharing.subscribe((event) => hub.publishCollaborationEvent(event));
-  const unsubscribeChangeSetReviews = changeSetReviews?.subscribe((event) => hub.publishCollaborationEvent(event));
   const unsubscribeAgentOutput = options.sessions.onAgentOutput?.((frame) => {
     hub.publishAgentOutput(frame);
   });
-  const upgrade = new CollabStreamUpgrade({ hub, tokens: gateway.tokens, now: options.now });
+  const upgrade = new CollabStreamUpgrade({ hub, tickets: gateway.streamTickets, now: options.now });
   const http = createCollabHttpServer({
     gateway,
     host: options.host,
@@ -279,6 +295,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       ...(changeSetReviews ? { changeSetReviews: changeSetReviews.snapshot() } : {}),
       ...(changeSetApply ? { changeSetApply: changeSetApply.snapshot() } : {}),
     }),
+    commitCriticalState: () => ledger.commit(options.commitCriticalState),
     recoverPendingIntegrations: async () => {
       if (changeSetIntegration) {
         await changeSetIntegration.recoverPending();
@@ -290,8 +307,6 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     },
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
-      unsubscribeChangeSetReviews?.();
-      unsubscribeWorkspaceSharing();
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);
       await http.close();

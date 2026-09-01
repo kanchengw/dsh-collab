@@ -129,6 +129,18 @@ describe("RoomContextDeliveryCoordinator", () => {
     expect(binding.injections).toHaveLength(1);
   });
 
+  it("notifies persistence only after the durable cursor advances", () => {
+    const { binding, links } = harness();
+    const advanced: number[] = [];
+    const delivery = new RoomContextDeliveryCoordinator({ links, binding, onCursorAdvanced: (link) => { advanced.push(link.lastInjectedRoomSeq); } });
+
+    const first = delivery.deliver(snapshot());
+    expect(advanced).toEqual([]);
+    binding.claim(first.deliveryId);
+
+    expect(advanced).toEqual([2]);
+  });
+
   it("deduplicates one pending range and blocks a different overlapping range", () => {
     const { binding, delivery, links } = harness();
     const first = delivery.deliver(snapshot(1, 2));

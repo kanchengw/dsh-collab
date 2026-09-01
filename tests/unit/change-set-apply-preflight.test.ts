@@ -6,6 +6,7 @@ import {
 } from "../../src/change-set-apply.js";
 import type { ChangeSetReview } from "../../src/change-set-reviews.js";
 import type { StagedChangeSet } from "../../src/change-set-staging.js";
+import { EventLedger } from "../../src/events.js";
 import { RoomStore } from "../../src/room.js";
 
 function hash(value: Uint8Array | string): string {
@@ -16,6 +17,7 @@ const oldBytes = Buffer.from("old\n");
 const changedBytes = Buffer.from("owner changed\n");
 const resultBytes = Buffer.from("new\n");
 const addedBytes = Buffer.from("added\n");
+const patchBytes = Buffer.from("diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1 @@\n-old\n+new\n");
 const changeSetId = "a".repeat(64);
 
 function stagedChangeSet(): StagedChangeSet {
@@ -52,8 +54,8 @@ function stagedChangeSet(): StagedChangeSet {
         kind: "changeset-draft.v1",
         artifactId: changeSetId,
         manifestHash: changeSetId,
-        patchHash: "b".repeat(64),
-        patchBytes: 80,
+        patchHash: hash(patchBytes),
+        patchBytes: patchBytes.byteLength,
         resultBytes: resultBytes.byteLength + addedBytes.byteLength,
       },
       createdAt: 10,
@@ -88,7 +90,9 @@ function setup(input: {
   review?: ChangeSetReview;
   current?: ReadonlyMap<string, Uint8Array>;
   results?: ReadonlyMap<string, Uint8Array>;
+  patch?: Uint8Array;
   snapshot?: ChangeSetApplyPreflightServiceSnapshot;
+  ledgerSnapshot?: ReturnType<EventLedger["snapshot"]>;
 } = {}) {
   const rooms = new RoomStore();
   rooms.createRoom({
@@ -110,10 +114,13 @@ function setup(input: {
     return bytes ? { contentHash: hash(bytes), size: bytes.byteLength } : undefined;
   });
   let now = 100;
+  const ledger = input.ledgerSnapshot ? EventLedger.fromSnapshot(input.ledgerSnapshot) : new EventLedger();
   const options = {
     rooms,
+    ledger,
     changeSets: {
       get: async (roomId: string, id: string) => roomId === changeSet.draft.roomId && id === changeSet.changeSetId ? structuredClone(changeSet) : undefined,
+      readPatch: async () => structuredClone(input.patch ?? patchBytes),
       readResult: async (_roomId: string, _id: string, path: string) => {
         const bytes = results.get(path);
         if (!bytes) throw new Error("missing result");
@@ -129,7 +136,7 @@ function setup(input: {
   const service = input.snapshot
     ? ChangeSetApplyPreflightService.fromSnapshot(options, input.snapshot)
     : new ChangeSetApplyPreflightService(options);
-  return { inspect, options, rooms, service };
+  return { inspect, ledger, options, rooms, service };
 }
 
 describe("ChangeSet apply preflight", () => {
@@ -141,6 +148,7 @@ describe("ChangeSet apply preflight", () => {
     expect(result.outcome).toBe("ready");
     if (result.outcome !== "ready") throw new Error("expected a ready plan");
     expect(result.plan).toMatchObject({ roomId: "room-1", changeSetId, baseWorkspaceVersionId: "version-1" });
+    expect(result.plan.patch).toEqual(new Uint8Array(patchBytes));
     expect(result.plan.operations.map((operation) => operation.operation)).toEqual(["modify", "add"]);
     expect(result.plan.operations[0]!.result?.bytes).toEqual(new Uint8Array(resultBytes));
     expect(result.plan.operations[1]!.result?.bytes).toEqual(new Uint8Array(addedBytes));
@@ -175,6 +183,45 @@ describe("ChangeSet apply preflight", () => {
         ],
       },
     });
+  });
+
+  it("rejects missing, extra, or tampered durable conflict events during restore", async () => {
+    const current = new Map<string, Uint8Array>([["src/value.ts", changedBytes]]);
+    const runtime = setup({ current });
+    const result = await runtime.service.preflight({ roomId: "room-1", principalId: "principal-host", changeSetId });
+    if (result.outcome !== "conflicted") throw new Error("expected a conflict");
+    const domain = runtime.service.snapshot();
+    const authority = runtime.ledger.snapshot();
+    const restore = (candidate: typeof authority) => ChangeSetApplyPreflightService.fromSnapshot({
+      ...runtime.options,
+      ledger: EventLedger.fromSnapshot(candidate),
+    }, domain);
+
+    const missing = structuredClone(authority);
+    missing.rooms[0]!.events = [];
+    expect(() => restore(missing)).toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    const extraLedger = EventLedger.fromSnapshot(authority);
+    extraLedger.append({
+      eventId: `changeset-apply-conflicted:${"9".repeat(64)}`,
+      roomId: "room-1",
+      type: "changeset.apply-conflicted",
+      actor: { memberId: "member-host", principalId: "principal-host" },
+      createdAt: 999,
+      payload: { ...result.conflict, conflictId: "9".repeat(64), createdAt: 999 },
+    });
+    expect(() => ChangeSetApplyPreflightService.fromSnapshot({ ...runtime.options, ledger: extraLedger }, domain))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    for (const mutate of [
+      (event: typeof authority.rooms[number]["events"][number]) => { event.actor.principalId = "principal-author"; },
+      (event: typeof authority.rooms[number]["events"][number]) => { event.createdAt += 1; },
+      (event: typeof authority.rooms[number]["events"][number]) => { event.payload = { forged: true }; },
+    ]) {
+      const tampered = structuredClone(authority);
+      mutate(tampered.rooms[0]!.events[0]!);
+      expect(() => restore(tampered)).toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+    }
   });
 
   it("plans delete and rename from their original paths while protecting the rename target", async () => {
@@ -240,20 +287,30 @@ describe("ChangeSet apply preflight", () => {
     await expect(corrupted.service.preflight({ roomId: "room-1", principalId: "principal-host", changeSetId }))
       .rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
     expect(corrupted.service.snapshot().conflicts).toEqual([]);
+
+    const corruptedPatch = setup({ patch: Buffer.from("tampered patch\n") });
+    await expect(corruptedPatch.service.preflight({ roomId: "room-1", principalId: "principal-host", changeSetId }))
+      .rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
   });
 
-  it("persists one deterministic conflict record and does not emit it twice on an exact retry", async () => {
+  it("persists one deterministic conflict record and appends one durable event on an exact retry", async () => {
     const state = setup({ current: new Map([["src/value.ts", changedBytes]]) });
-    const events: unknown[] = [];
-    state.service.subscribe((event) => events.push(event));
 
     const first = await state.service.preflight({ roomId: "room-1", principalId: "principal-host", changeSetId });
     const repeated = await state.service.preflight({ roomId: "room-1", principalId: "principal-host", changeSetId });
     expect(repeated).toEqual(first);
-    expect(events).toHaveLength(1);
+    expect(state.ledger.readAfter("room-1", 0)).toEqual([expect.objectContaining({
+      type: "changeset.apply-conflicted",
+      actor: { memberId: "member-host", principalId: "principal-host" },
+      payload: expect.objectContaining({ conflictId: state.service.snapshot().conflicts[0]!.conflictId }),
+    })]);
 
     const snapshot = state.service.snapshot();
-    const restored = setup({ current: new Map([["src/value.ts", changedBytes]]), snapshot }).service;
+    const restored = setup({
+      current: new Map([["src/value.ts", changedBytes]]),
+      snapshot,
+      ledgerSnapshot: state.ledger.snapshot(),
+    }).service;
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.listConflicts("room-1", changeSetId)).toEqual(snapshot.conflicts);
 

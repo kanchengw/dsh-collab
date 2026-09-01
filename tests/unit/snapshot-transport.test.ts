@@ -60,9 +60,9 @@ function gatewaySetup() {
     readChunk: async (_snapshotId, _path, offset, length) => content.subarray(offset, offset + length),
     captureReviewDiffs: async () => [{ path: "src/value.ts", kind: "text", oldText: "export const value = 0;\n", newText: content.toString("utf8") }],
   };
-  const registry = new WorkspaceSharingRegistry();
-  const workspace = new WorkspaceService({ rooms, registry, snapshots, now: () => 10 });
   const ledger = new EventLedger();
+  const registry = new WorkspaceSharingRegistry();
+  const workspace = new WorkspaceService({ rooms, ledger, registry, snapshots, now: () => 10 });
   const reviewPoints = new ReviewPointService({ rooms, ledger, snapshots, now: () => 20 });
   const gateway = new CollabGateway({
     rooms,
@@ -88,7 +88,7 @@ describe("Workspace Snapshot transport", () => {
     const { gateway, registry, ledger } = gatewaySetup();
     const host = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
     const hostHeaders = { authorization: `Bearer ${(host.body as { roomToken: string }).roomToken}`, "x-dsh-collab-capabilities": "sidecar-review.v1" };
-    registry.set("room-1", true, "member-host", 10);
+    registry.set("room-1", true, "member-host", 10, 1);
 
     await expect(gateway.handle({ method: "GET", path: "/v1/rooms/room-1/review-points", headers: { authorization: hostHeaders.authorization } }))
       .resolves.toMatchObject({ status: 404 });
@@ -118,9 +118,9 @@ describe("Workspace Snapshot transport", () => {
   });
 
   it("captures idempotently and serves authenticated content chunks only while Workspace Sharing is enabled", async () => {
-    const { gateway, registry, rooms, snapshots } = gatewaySetup();
+    const { gateway, ledger, registry, rooms, snapshots } = gatewaySetup();
     await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
-    registry.set("room-1", true, "member-host", 10);
+    registry.set("room-1", true, "member-host", 10, 1);
 
     const capture = await gateway.handle({
       method: "POST",
@@ -139,7 +139,7 @@ describe("Workspace Snapshot transport", () => {
     });
     expect(repeated.body).toEqual(capture.body);
     expect(snapshots.capture).toHaveBeenCalledTimes(1);
-    const restoredService = new WorkspaceService({ rooms, registry, snapshots });
+    const restoredService = new WorkspaceService({ rooms, ledger, registry, snapshots });
     await expect(restoredService.captureLatest({ roomId: "room-1", principalId: "alice", clientRequestId: "capture-1", purpose: "workspace-snapshot", roomEventSeq: 99 }))
       .resolves.toEqual(captured);
     expect(snapshots.capture).toHaveBeenCalledTimes(1);
@@ -171,7 +171,7 @@ describe("Workspace Snapshot transport", () => {
       headers: { authorization: "Bearer room-token" },
     })).resolves.toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
 
-    registry.set("room-1", true, "member-host", 11);
+    registry.set("room-1", true, "member-host", 11, 1);
     await expect(gateway.handle({
       method: "GET",
       path: "/v1/rooms/room-1/workspace-snapshots/not-a-snapshot",
@@ -183,7 +183,7 @@ describe("Workspace Snapshot transport", () => {
     const { gateway, registry, snapshots } = gatewaySetup();
     const host = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
     const headers = { authorization: `Bearer ${(host.body as { roomToken: string }).roomToken}`, "x-dsh-collab-capabilities": "sidecar-review.v1" };
-    registry.set("room-1", true, "member-host", 10);
+    registry.set("room-1", true, "member-host", 10, 1);
 
     const latest = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/workspace-snapshots", headers, body: { clientRequestId: "same-id" } });
     const review = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/review-points", headers, body: {
@@ -203,7 +203,7 @@ describe("Workspace Snapshot transport", () => {
   it("returns stable public errors instead of leaking Host capture failures", async () => {
     const { gateway, registry, snapshots } = gatewaySetup();
     await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
-    registry.set("room-1", true, "member-host", 10);
+    registry.set("room-1", true, "member-host", 10, 1);
     vi.mocked(snapshots.capture).mockRejectedValueOnce(new WorkspaceSnapshotError("WORKSPACE_NOT_GIT", "private Host path is not Git"));
 
     await expect(gateway.handle({
@@ -281,7 +281,7 @@ describe("Workspace Snapshot transport", () => {
     const content = Buffer.from("safe");
     const packageValue = snapshot(content);
     const transport = {
-      async request(input: { method: "GET" | "POST"; path: string }): Promise<GatewayResponse> {
+      async request(input: { method: "GET" | "POST" | "PUT"; path: string }): Promise<GatewayResponse> {
         if (input.method === "POST") return { status: 201, body: { snapshot: packageValue } };
         return { status: 200, body: { chunk: {
           snapshotId: packageValue.snapshotId,

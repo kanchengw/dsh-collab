@@ -6,6 +6,7 @@ import type {
   ChangeSetApplyWorkspaceReader,
 } from "./change-set-apply.js";
 import { CollabError, invalidInput } from "./errors.js";
+import type { EventLedger } from "./events.js";
 import type { IntegrationJournalStore, IntegrationJournalWorkspace } from "./integration-journal.js";
 import type { RoomStore } from "./room.js";
 import type { WorkspaceVersionRecord } from "./workspace-versions.js";
@@ -32,9 +33,7 @@ export interface ChangeSetIntegrationReviewPort {
   prepareApplication(input: { roomId: string; principalId: string; changeSetId: string }): Promise<PreparedChangeSetApplication>;
 }
 
-export interface ChangeSetIntegrationWorkspace extends ChangeSetApplyWorkspaceReader {
-  forRoom(roomId: string): IntegrationJournalWorkspace;
-}
+export interface ChangeSetIntegrationWorkspace extends ChangeSetApplyWorkspaceReader, IntegrationJournalWorkspace {}
 
 export interface ChangeSetIntegrationVersionPort {
   latest(roomId: string): WorkspaceVersionRecord | undefined;
@@ -63,6 +62,7 @@ export type ChangeSetIntegrationResult =
 
 export interface ChangeSetIntegrationServiceOptions {
   rooms: RoomStore;
+  ledger: EventLedger;
   preflight: { preflight(input: { roomId: string; principalId: string; changeSetId: string }): Promise<ChangeSetApplyPreflightResult> };
   journals: IntegrationJournalStore;
   workspace: ChangeSetIntegrationWorkspace;
@@ -81,14 +81,6 @@ function requiredRequestId(value: string): string {
 
 function applicationIdentity(roomId: string, changeSetId: string): string {
   return createHash("sha256").update(`${roomId}\0${changeSetId}\0application`).digest("hex");
-}
-
-function sameFileState(
-  actual: { contentHash: string; size: number } | undefined,
-  expected: { contentHash: string; size: number } | undefined,
-): boolean {
-  return actual === undefined ? expected === undefined
-    : expected !== undefined && actual.contentHash === expected.contentHash && actual.size === expected.size;
 }
 
 export function createChangeSetApplication(input: {
@@ -126,10 +118,10 @@ export class ChangeSetIntegrationService {
     if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can apply a ChangeSet");
     return await this.runWithRoomIntegrationLock(input.roomId, async () => {
       const existing = this.options.reviews.getApplication(input.roomId, input.changeSetId);
-      if (existing) return await this.finishDurableApplication(existing);
+      if (existing) return await this.finishDurableApplication(existing, input.principalId);
 
       const prepared = await this.options.reviews.prepareApplication(input);
-      if (prepared.existing) return await this.finishDurableApplication(prepared.existing);
+      if (prepared.existing) return await this.finishDurableApplication(prepared.existing, input.principalId);
       const preflight = await this.options.preflight.preflight(input);
       if (preflight.outcome === "conflicted") {
         await this.options.commitCriticalState();
@@ -162,7 +154,7 @@ export class ChangeSetIntegrationService {
         await this.options.journals.complete(integrationId);
         continue;
       }
-      await this.options.journals.recover(integrationId, this.options.workspace.forRoom(journal.roomId));
+      await this.options.journals.recover(integrationId, this.options.workspace);
     }
   }
 
@@ -175,11 +167,10 @@ export class ChangeSetIntegrationService {
     if (!latest || latest.version.workspaceVersionId !== plan.baseWorkspaceVersionId) {
       throw new CollabError("REQUEST_CONFLICT", "ChangeSet base is no longer the latest Workspace Version");
     }
-    const bound = this.options.workspace.forRoom(input.roomId);
-    const journal = await this.options.journals.prepare(plan, bound);
+    const journal = await this.options.journals.prepare(plan);
     let runtimeMutated = false;
     try {
-      await this.applyOperations(plan, bound, journal.integrationId);
+      await this.options.workspace.applyPatch(plan.roomId, plan.patch);
       const snapshot = await this.options.snapshots.capture({
         roomId: input.roomId,
         principalId: input.principalId,
@@ -206,13 +197,14 @@ export class ChangeSetIntegrationService {
       if (!application) {
         application = prepared.commit(published.record.version.workspaceVersionId, journal.integrationId);
       }
+      this.appendApplicationEvent(application, input.principalId);
       await this.options.commitCriticalState();
       await this.options.journals.complete(journal.integrationId);
       return { outcome: "applied", application: structuredClone(application), workspaceVersion: structuredClone(published.record) };
     } catch (error) {
       if (!runtimeMutated) {
         try {
-          await this.options.journals.recover(journal.integrationId, bound);
+          await this.options.journals.recover(journal.integrationId, this.options.workspace);
         } catch (recoveryError) {
           throw new AggregateError([error, recoveryError], "ChangeSet integration failed and rollback is incomplete");
         }
@@ -221,45 +213,25 @@ export class ChangeSetIntegrationService {
     }
   }
 
-  private async applyOperations(plan: ChangeSetApplyPlan, workspace: IntegrationJournalWorkspace, integrationId: string): Promise<void> {
-    let completedSteps = 0;
-    const checkpoint = async (): Promise<void> => {
-      completedSteps += 1;
-      await this.options.journals.markExecutorCheckpoint(integrationId, completedSteps);
-    };
-    for (const operation of plan.operations) {
-      const basePath = operation.previousPath ?? operation.path;
-      const currentBase = await this.options.workspace.inspect(plan.roomId, basePath);
-      const expectedBase = operation.base && { contentHash: operation.base.contentHash, size: operation.base.size };
-      if (!sameFileState(currentBase, expectedBase)) {
-        throw new CollabError("REQUEST_CONFLICT", `Owner workspace changed during ChangeSet integration: ${basePath}`);
-      }
-      if (operation.operation === "add" || operation.operation === "rename") {
-        if (await this.options.workspace.inspect(plan.roomId, operation.path)) {
-          throw new CollabError("REQUEST_CONFLICT", `Owner workspace target appeared during ChangeSet integration: ${operation.path}`);
-        }
-      }
-      if (operation.operation === "delete") {
-        await workspace.remove(operation.path);
-        await checkpoint();
-        continue;
-      }
-      if (operation.operation === "rename") {
-        await workspace.remove(operation.previousPath!);
-        await checkpoint();
-      }
-      await workspace.replace(operation.path, operation.result!.bytes);
-      await checkpoint();
-    }
-  }
-
-  private async finishDurableApplication(application: ChangeSetApplication): Promise<ChangeSetIntegrationResult> {
+  private async finishDurableApplication(application: ChangeSetApplication, principalId: string): Promise<ChangeSetIntegrationResult> {
     const record = this.options.versions.get(application.roomId, application.workspaceVersionId);
     if (!record) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application Workspace Version does not exist");
+    this.appendApplicationEvent(application, principalId);
     await this.options.commitCriticalState();
     if (await this.options.journals.load(application.integrationId)) {
       await this.options.journals.complete(application.integrationId);
     }
     return { outcome: "applied", application: structuredClone(application), workspaceVersion: structuredClone(record) };
+  }
+
+  private appendApplicationEvent(application: ChangeSetApplication, principalId: string): void {
+    this.options.ledger.append({
+      eventId: `changeset-applied:${application.applicationId}`,
+      roomId: application.roomId,
+      type: "changeset.applied",
+      actor: { memberId: application.appliedBy, principalId },
+      createdAt: application.createdAt,
+      payload: application,
+    });
   }
 }

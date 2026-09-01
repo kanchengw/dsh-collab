@@ -57,7 +57,7 @@ async function setup() {
   rooms.addMember("room-1", { memberId: "member-alice", principalId: "alice", displayName: "Alice", now: 2 });
   const ledger = new EventLedger();
   const sharing = new WorkspaceSharingRegistry();
-  const workspace = new WorkspaceService({ rooms, registry: sharing, snapshots: provider, now: () => 20 });
+  const workspace = new WorkspaceService({ rooms, ledger, registry: sharing, snapshots: provider, now: () => 20 });
   const workspaceVersions = new WorkspaceVersionService({ rooms, ledger, artifacts: provider });
   const activeRooms = new ActiveRoomRegistry();
   activeRooms.activate("room-1");
@@ -94,7 +94,7 @@ function headers(token: string, capability = true): Record<string, string> {
 }
 
 async function publish(state: Awaited<ReturnType<typeof setup>>): Promise<GatewayResponse> {
-  state.sharing.set("room-1", true, "member-host", 10);
+  state.sharing.set("room-1", true, "member-host", 10, 1);
   return await state.gateway.handle({
     method: "POST",
     path: "/v1/rooms/room-1/workspace-versions",
@@ -127,7 +127,7 @@ describe("WorkspaceVersion publish/download transport", () => {
     await expect(state.gateway.handle({
       method: "POST", path: "/v1/rooms/room-1/workspace-versions", headers: headers(state.hostToken), body: { clientRequestId: "publish-1" },
     })).resolves.toMatchObject({ status: 409, body: { error: { code: "WORKSPACE_SHARING_DISABLED" } } });
-    state.sharing.set("room-1", true, "member-host", 10);
+    state.sharing.set("room-1", true, "member-host", 10, 1);
     await expect(state.gateway.handle({
       method: "POST", path: "/v1/rooms/room-1/workspace-versions", headers: headers(state.hostToken, false), body: { clientRequestId: "publish-1" },
     })).resolves.toMatchObject({ status: 404 });
@@ -230,11 +230,11 @@ describe("WorkspaceVersion publish/download transport", () => {
     const state = await setup();
     const published = await publish(state);
     const workspaceVersionId = (published.body as { record: { version: { workspaceVersionId: string } } }).record.version.workspaceVersionId;
-    state.sharing.set("room-1", false, "member-host", 30);
+    state.sharing.set("room-1", false, "member-host", 30, 2);
     await expect(state.gateway.handle({
       method: "GET", path: `/v1/rooms/room-1/workspace-versions/${workspaceVersionId}`, headers: headers(state.participantToken),
     })).resolves.toMatchObject({ status: 409, body: { error: { code: "WORKSPACE_SHARING_DISABLED" } } });
-    state.sharing.set("room-1", true, "member-host", 31);
+    state.sharing.set("room-1", true, "member-host", 31, 3);
     state.rooms.setMemberStatus("room-1", "member-alice", "suspended");
     await expect(state.gateway.handle({
       method: "GET", path: `/v1/rooms/room-1/workspace-versions/${workspaceVersionId}`, headers: headers(state.participantToken),

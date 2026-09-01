@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import type { StagedChangeSet } from "./change-set-staging.js";
 import { createChangeSetApplication, type ChangeSetApplication, type PreparedChangeSetApplication } from "./change-set-integration.js";
-import type { CollaborationEvent, ReviewFinding, ReviewFindingLocation } from "./collaboration-types.js";
+import type { ReviewFinding, ReviewFindingLocation } from "./collaboration-types.js";
 import { CollabError, invalidInput } from "./errors.js";
+import type { EventLedger } from "./events.js";
 import type { RoomStore } from "./room.js";
-import type { RoomMember } from "./types.js";
+import { assertRoomEventConsistency, type ExpectedRoomEvent } from "./room-event-consistency.js";
+import type { RoomEventType, RoomMember } from "./types.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const DEFAULT_PAGE_SIZE = 50;
@@ -74,7 +76,10 @@ export interface ChangeSetReviewFindingPage {
 }
 
 export interface ChangeSetReviewPage {
-  reviews: ChangeSetReview[];
+  items: Array<{
+    review: ChangeSetReview;
+    changeSet: StagedChangeSet;
+  }>;
   nextCursor?: string;
 }
 
@@ -85,6 +90,9 @@ export interface ChangeSetReviewServiceSnapshot {
     roomId: string;
     changeSetId: string;
     authorId: string;
+    title: string;
+    summary: string;
+    submittedAt: number;
     assignments: ChangeSetReviewAssignment[];
     findings: ChangeSetReviewFinding[];
     decisions?: ChangeSetReviewDecision[];
@@ -100,6 +108,7 @@ export interface StagedChangeSetReader {
 interface ChangeSetReviewServiceOptions {
   rooms: RoomStore;
   changeSets: StagedChangeSetReader;
+  ledger: EventLedger;
   now?: () => number;
 }
 
@@ -163,7 +172,9 @@ function validateRestoredLocation(value: ReviewFindingLocation): void {
 
 function validateRestoredRecord(value: SnapshotReviewRecord, rooms: RoomStore): ReviewRecord {
   if (!value || value.version !== 1 || typeof value.roomId !== "string" || !HASH_PATTERN.test(value.changeSetId)
-    || typeof value.authorId !== "string" || !Array.isArray(value.assignments) || !Array.isArray(value.findings)) {
+    || typeof value.authorId !== "string" || typeof value.title !== "string" || value.title.trim() === ""
+    || typeof value.summary !== "string" || !Number.isSafeInteger(value.submittedAt) || value.submittedAt < 0
+    || !Array.isArray(value.assignments) || !Array.isArray(value.findings)) {
     throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review snapshot is invalid");
   }
   rooms.getRoom(value.roomId);
@@ -244,7 +255,6 @@ export class ChangeSetReviewService {
   private readonly revisionLinksById = new Map<string, ChangeSetRevisionLink>();
   private readonly applicationsById = new Map<string, ChangeSetApplication>();
   private readonly successorByChangeSetId = new Map<string, string>();
-  private readonly listeners = new Set<(event: CollaborationEvent) => void>();
   private readonly now: () => number;
 
   constructor(private readonly options: ChangeSetReviewServiceOptions) {
@@ -311,12 +321,31 @@ export class ChangeSetReviewService {
       }
       for (const changeSetId of path) visited.add(changeSetId);
     }
+    service.assertLedgerConsistency();
     return service;
   }
 
-  subscribe(listener: (event: CollaborationEvent) => void): () => void {
-    this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+  observeSubmitted(input: { changeSet: StagedChangeSet; principalId: string }): boolean {
+    const { changeSet } = input;
+    const roomId = changeSet.draft.roomId;
+    if (changeSet.changeSetId !== changeSet.draft.draftId || !HASH_PATTERN.test(changeSet.changeSetId)
+      || !Number.isSafeInteger(changeSet.submittedAt) || changeSet.submittedAt < 0) {
+      throw new CollabError("SNAPSHOT_INVALID", "Submitted ChangeSet identity is invalid");
+    }
+    const existing = this.records.get(key(roomId, changeSet.changeSetId));
+    if (existing) {
+      if (existing.authorId !== changeSet.draft.authorId) {
+        throw new CollabError("SNAPSHOT_INVALID", "Submitted ChangeSet conflicts with its review record");
+      }
+      return false;
+    }
+    this.requireOpenRoom(roomId);
+    const actor = this.options.rooms.authorize(roomId, input.principalId, "read");
+    if (actor.memberId !== changeSet.draft.authorId) {
+      throw new CollabError("ACTION_FORBIDDEN", "only the ChangeSet author can submit it for review");
+    }
+    this.createRecord(changeSet);
+    return true;
   }
 
   async getReview(input: { roomId: string; principalId: string; changeSetId: string }): Promise<ChangeSetReview> {
@@ -370,8 +399,14 @@ export class ChangeSetReviewService {
     const target = record ?? this.createRecord(changeSet);
     target.assignments.push(assignment);
     this.assignmentsById.set(assignment.assignmentId, assignment);
-    const event = this.assignmentEvent(assignment);
-    this.emit(event);
+    this.options.ledger.append({
+      eventId: `changeset-review-assigned:${assignment.assignmentId}`,
+      roomId: assignment.roomId,
+      type: "changeset.review-assigned",
+      actor: { memberId: actor.memberId, principalId: input.principalId },
+      createdAt: assignment.createdAt,
+      payload: assignment,
+    });
     return { review: this.view(changeSet, target), assignment: structuredClone(assignment) };
   }
 
@@ -390,13 +425,13 @@ export class ChangeSetReviewService {
     const start = input.after === undefined ? 0 : ordered.findIndex((record) => record.changeSetId === input.after) + 1;
     if (input.after !== undefined && start === 0) throw invalidInput("ChangeSet Review cursor is invalid");
     const page = ordered.slice(start, start + limit);
-    const reviews = await Promise.all(page.map(async (record) => {
+    const items = await Promise.all(page.map(async (record) => {
       const changeSet = await this.requireChangeSet(record.roomId, record.changeSetId);
       this.assertRecord(record, changeSet);
-      return this.view(changeSet, record);
+      return { review: this.view(changeSet, record), changeSet };
     }));
     const nextCursor = start + page.length < ordered.length ? page.at(-1)?.changeSetId : undefined;
-    return { reviews, ...(nextCursor ? { nextCursor } : {}) };
+    return { items, ...(nextCursor ? { nextCursor } : {}) };
   }
 
   async createFinding(input: {
@@ -438,8 +473,14 @@ export class ChangeSetReviewService {
     const record = this.records.get(key(input.roomId, input.changeSetId)) ?? this.createRecord(changeSet);
     record.findings.push(candidate);
     this.findingsById.set(candidate.findingId, candidate);
-    const event = this.findingEvent(candidate);
-    this.emit(event);
+    this.options.ledger.append({
+      eventId: `changeset-finding-created:${candidate.findingId}`,
+      roomId: candidate.roomId,
+      type: "changeset.finding-created",
+      actor: { memberId: actor.memberId, principalId: input.principalId },
+      createdAt: candidate.createdAt,
+      payload: candidate,
+    });
     return { finding: structuredClone(candidate) };
   }
 
@@ -484,7 +525,14 @@ export class ChangeSetReviewService {
     };
     record.decisions.push(decision);
     this.decisionsById.set(decisionId, decision);
-    this.emit({ type: "changeset.review-decided", roomId: input.roomId, decision: structuredClone(decision) });
+    this.options.ledger.append({
+      eventId: `changeset-review-decided:${decision.decisionId}`,
+      roomId: decision.roomId,
+      type: "changeset.review-decided",
+      actor: { memberId: actor.memberId, principalId: input.principalId },
+      createdAt: decision.createdAt,
+      payload: decision,
+    });
     return { review: this.view(changeSet, record), decision: structuredClone(decision) };
   }
 
@@ -532,7 +580,14 @@ export class ChangeSetReviewService {
     record.revision = revision;
     this.revisionLinksById.set(revisionLinkId, revision);
     this.successorByChangeSetId.set(input.supersedesChangeSetId, input.changeSetId);
-    this.emit({ type: "changeset.revision-linked", roomId: input.roomId, revision: structuredClone(revision) });
+    this.options.ledger.append({
+      eventId: `changeset-revision-linked:${revision.revisionLinkId}`,
+      roomId: revision.roomId,
+      type: "changeset.revision-linked",
+      actor: { memberId: actor.memberId, principalId: input.principalId },
+      createdAt: revision.createdAt,
+      payload: revision,
+    });
     return { review: this.view(changeSet, record), revision: structuredClone(revision) };
   }
 
@@ -619,7 +674,8 @@ export class ChangeSetReviewService {
   }
 
   private assertRecord(record: ReviewRecord, changeSet: StagedChangeSet): void {
-    if (record.roomId !== changeSet.draft.roomId || record.changeSetId !== changeSet.changeSetId || record.authorId !== changeSet.draft.authorId) {
+    if (record.roomId !== changeSet.draft.roomId || record.changeSetId !== changeSet.changeSetId || record.authorId !== changeSet.draft.authorId
+      || record.title !== changeSet.draft.title || record.summary !== changeSet.draft.summary || record.submittedAt !== changeSet.submittedAt) {
       throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review identity does not match its immutable ChangeSet");
     }
     try {
@@ -635,12 +691,113 @@ export class ChangeSetReviewService {
       roomId: changeSet.draft.roomId,
       changeSetId: changeSet.changeSetId,
       authorId: changeSet.draft.authorId,
+      title: changeSet.draft.title,
+      summary: changeSet.draft.summary,
+      submittedAt: changeSet.submittedAt,
       assignments: [],
       findings: [],
       decisions: [],
     };
     this.records.set(key(record.roomId, record.changeSetId), record);
+    const author = memberById(this.options.rooms, record.roomId, record.authorId);
+    this.options.ledger.append({
+      eventId: `changeset-submitted:${record.changeSetId}`,
+      roomId: record.roomId,
+      type: "changeset.submitted",
+      actor: { memberId: author.memberId, principalId: author.principalId },
+      createdAt: record.submittedAt,
+      payload: {
+        changeSetId: record.changeSetId,
+        authorId: record.authorId,
+        title: record.title,
+        summary: record.summary,
+        submittedAt: record.submittedAt,
+      },
+    });
     return record;
+  }
+
+  private assertLedgerConsistency(): void {
+    const managedTypes = new Set<RoomEventType>([
+      "changeset.submitted",
+      "changeset.review-assigned",
+      "changeset.finding-created",
+      "changeset.review-decided",
+      "changeset.revision-linked",
+      "changeset.applied",
+    ]);
+    const expected: ExpectedRoomEvent[] = [];
+    for (const record of this.records.values()) {
+      const author = memberById(this.options.rooms, record.roomId, record.authorId);
+      expected.push({
+        eventId: `changeset-submitted:${record.changeSetId}`,
+        roomId: record.roomId,
+        type: "changeset.submitted",
+        actor: { memberId: author.memberId, principalId: author.principalId },
+        createdAt: record.submittedAt,
+        payload: {
+          changeSetId: record.changeSetId,
+          authorId: record.authorId,
+          title: record.title,
+          summary: record.summary,
+          submittedAt: record.submittedAt,
+        },
+      });
+      for (const assignment of record.assignments) expected.push(this.expectedEvent(
+        `changeset-review-assigned:${assignment.assignmentId}`,
+        "changeset.review-assigned",
+        assignment.assignedBy,
+        assignment.createdAt,
+        assignment,
+      ));
+      for (const finding of record.findings) expected.push(this.expectedEvent(
+        `changeset-finding-created:${finding.findingId}`,
+        "changeset.finding-created",
+        finding.authorId,
+        finding.createdAt,
+        finding,
+      ));
+      for (const decision of record.decisions) expected.push(this.expectedEvent(
+        `changeset-review-decided:${decision.decisionId}`,
+        "changeset.review-decided",
+        decision.reviewerId,
+        decision.createdAt,
+        decision,
+      ));
+      if (record.revision) expected.push(this.expectedEvent(
+        `changeset-revision-linked:${record.revision.revisionLinkId}`,
+        "changeset.revision-linked",
+        record.revision.linkedBy,
+        record.revision.createdAt,
+        record.revision,
+      ));
+      if (record.application) expected.push(this.expectedEvent(
+        `changeset-applied:${record.application.applicationId}`,
+        "changeset.applied",
+        record.application.appliedBy,
+        record.application.createdAt,
+        record.application,
+      ));
+    }
+    assertRoomEventConsistency(this.options.ledger, managedTypes, expected);
+  }
+
+  private expectedEvent(
+    eventId: string,
+    type: RoomEventType,
+    actorMemberId: string,
+    createdAt: number,
+    payload: unknown,
+  ): ExpectedRoomEvent {
+    const actor = memberById(this.options.rooms, (payload as { roomId: string }).roomId, actorMemberId);
+    return {
+      eventId,
+      roomId: (payload as { roomId: string }).roomId,
+      type,
+      actor: { memberId: actor.memberId, principalId: actor.principalId },
+      createdAt,
+      payload,
+    };
   }
 
   private view(changeSet: StagedChangeSet, record?: ReviewRecord): ChangeSetReview {
@@ -666,37 +823,6 @@ export class ChangeSetReviewService {
     };
   }
 
-  private assignmentEvent(assignment: ChangeSetReviewAssignment): CollaborationEvent {
-    return {
-      type: "changeset.review-assigned",
-      roomId: assignment.roomId,
-      assignment: {
-        assignmentId: assignment.assignmentId,
-        changeSetId: assignment.changeSetId,
-        assignedBy: assignment.assignedBy,
-        reviewerId: assignment.reviewerId,
-        ...(assignment.previousReviewerId ? { previousReviewerId: assignment.previousReviewerId } : {}),
-        createdAt: assignment.createdAt,
-      },
-    };
-  }
-
-  private findingEvent(finding: ChangeSetReviewFinding): CollaborationEvent {
-    return {
-      type: "changeset.finding-created",
-      roomId: finding.roomId,
-      finding: {
-        findingId: finding.findingId,
-        changeSetId: finding.changeSetId,
-        authorId: finding.authorId,
-        severity: finding.severity,
-        location: structuredClone(finding.location),
-        body: finding.body,
-        createdAt: finding.createdAt,
-      },
-    };
-  }
-
   private requireOpenRoom(roomId: string): void {
     if (this.options.rooms.getRoom(roomId).state !== "open") {
       throw new CollabError("ACTION_FORBIDDEN", "room is not open for ChangeSet Review changes");
@@ -714,7 +840,4 @@ export class ChangeSetReviewService {
       record.decisions.at(-1)?.createdAt ?? -1, record.revision?.createdAt ?? -1, record.application?.createdAt ?? -1);
   }
 
-  private emit(event: CollaborationEvent): void {
-    for (const listener of this.listeners) listener(event);
-  }
 }

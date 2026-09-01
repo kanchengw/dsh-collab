@@ -10,6 +10,8 @@ import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
 import { WorkspaceService } from "../../src/workspace-service.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 import { ResourceLimiter } from "../../src/limits.js";
+import { RoomStreamHub } from "../../src/stream.js";
+import type { StreamFrame } from "../../src/types.js";
 
 function setup(
   agentOverride?: HostAgentPort,
@@ -56,7 +58,8 @@ function setup(
   activeRooms.activate("room-1");
   activeRooms.activate("room-2");
   const workspaceSharing = new WorkspaceSharingRegistry();
-  const workspace = new WorkspaceService({ rooms, registry: workspaceSharing, now: () => 10 });
+  const workspace = new WorkspaceService({ rooms, ledger, registry: workspaceSharing, now: () => 10 });
+  const tokenFactory = vi.fn(() => `room-token-${String(Math.random())}`);
   const gateway = new CollabGateway({
     rooms, ledger, invites, agent: agentOverride ?? agent, now, approvals,
     hostPrincipalId: "host",
@@ -64,10 +67,11 @@ function setup(
     ownsHostSession: (sessionId) => sessionId !== "session-missing",
     activeRooms,
     workspace,
+    tokenFactory,
     ...(commitCriticalState ? { commitCriticalState } : {}),
     ...(limits ? { limits } : {}),
   });
-  return { gateway, calls, rooms, ledger, approvals, workspaceSharing, activeRooms };
+  return { gateway, calls, rooms, ledger, approvals, workspaceSharing, activeRooms, tokenFactory };
 }
 
 async function request(gateway: CollabGateway, input: GatewayRequest) {
@@ -201,10 +205,10 @@ describe("CollabGateway route contract", () => {
       method: "POST",
       path: "/v1/rooms/room-1/join",
       auth: { principalId: "bob" },
-      body: { inviteId: "invite-1", token: inviteToken, memberId: "member-bob", displayName: "Bob" },
+      body: { inviteId: "invite-1", token: inviteToken, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
     });
     expect(joined.status).toBe(201);
-    expect(joined.body).toMatchObject({ room: { roomId: "room-1" }, member: { principalId: "invite:invite-1", role: "participant" } });
+    expect(joined.body).toMatchObject({ room: { roomId: "room-1" }, member: { principalId: "invite:invite-1:member-bob", role: "participant" } });
     const roomToken = (joined.body as { roomToken: string }).roomToken;
 
     const snapshot = await request(gateway, {
@@ -236,6 +240,128 @@ describe("CollabGateway route contract", () => {
     ] });
   });
 
+  it("does not stream a room event until its persistence barrier succeeds", async () => {
+    let persistenceFails = true;
+    const runtime = setup(undefined, false, async () => {
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const host = await request(runtime.gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "host" },
+    });
+    const roomToken = (host.body as { roomToken: string }).roomToken;
+    const frames: StreamFrame[] = [];
+    const hub = new RoomStreamHub({
+      rooms: runtime.rooms,
+      tokens: runtime.gateway.tokens,
+      ledger: runtime.ledger,
+      activeRooms: runtime.activeRooms,
+      now: () => 10,
+    });
+    hub.connect({ connectionId: "host-stream", roomId: "room-1", token: roomToken, onFrame: (frame) => frames.push(frame) });
+    const mutation = {
+      method: "POST" as const,
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers: {
+        ...bearer(roomToken),
+        [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
+      },
+      body: { enabled: true },
+    };
+
+    expect(await request(runtime.gateway, mutation)).toMatchObject({ status: 500 });
+    expect(frames.some((frame) => frame.kind === "event" && frame.event.type === "workspace-sharing.changed")).toBe(false);
+
+    persistenceFails = false;
+    expect(await request(runtime.gateway, mutation)).toMatchObject({ status: 200 });
+    expect(frames.filter((frame) => frame.kind === "event" && frame.event.type === "workspace-sharing.changed")).toHaveLength(1);
+    hub.dispose();
+  });
+
+  it("does not expose dirty domain state until persistence can recover", async () => {
+    let persistenceFails = true;
+    const runtime = setup(undefined, false, async () => {
+      if (persistenceFails) throw new Error("state write failed");
+    });
+    const host = await request(runtime.gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/bootstrap",
+      auth: { principalId: "host" },
+    });
+    const headers = {
+      ...bearer((host.body as { roomToken: string }).roomToken),
+      [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
+    };
+
+    expect(await request(runtime.gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers,
+      body: { enabled: true },
+    })).toMatchObject({ status: 500 });
+    expect(await request(runtime.gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers,
+    })).toMatchObject({ status: 500 });
+
+    persistenceFails = false;
+    expect(await request(runtime.gateway, {
+      method: "GET",
+      path: "/v1/rooms/room-1/workspace-sharing",
+      headers,
+    })).toMatchObject({ status: 200, body: { state: { enabled: true } } });
+  });
+
+  it("binds each acceptance of a reusable invite to a distinct Participant principal", async () => {
+    const { gateway, rooms } = setup();
+    const created = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/invites",
+      auth: { principalId: "host" },
+      body: { inviteId: "invite-team", expiresAt: 100 },
+    });
+    const token = (created.body as { token: string }).token;
+
+    const alice = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/join",
+      body: { inviteId: "invite-team", token, memberId: "member-team-alice", displayName: "Team Alice", resumeCredential: "team-alice-resume" },
+    });
+    const bob = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/join",
+      body: { inviteId: "invite-team", token, memberId: "member-team-bob", displayName: "Team Bob", resumeCredential: "team-bob-resume" },
+    });
+
+    expect(alice).toMatchObject({ status: 201, body: { member: { principalId: "invite:invite-team:member-team-alice" } } });
+    expect(bob).toMatchObject({ status: 201, body: { member: { principalId: "invite:invite-team:member-team-bob" } } });
+    expect(rooms.listMembers("room-1")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ memberId: "member-team-alice", principalId: "invite:invite-team:member-team-alice" }),
+      expect.objectContaining({ memberId: "member-team-bob", principalId: "invite:invite-team:member-team-bob" }),
+    ]));
+  });
+
+  it("requires the original resume proof before a reusable invite can retry an existing member", async () => {
+    const { gateway, tokenFactory } = setup();
+    const created = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/invites", auth: { principalId: "host" }, body: { inviteId: "invite-team", expiresAt: 100 },
+    });
+    const token = (created.body as { token: string }).token;
+    const join = (memberId: string, displayName: string, resumeCredential?: string) => request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/join",
+      body: { inviteId: "invite-team", token, memberId, displayName, ...(resumeCredential ? { resumeCredential } : {}) },
+    });
+    await join("member-alice-2", "Alice", "alice-resume-proof");
+    await join("member-bob-2", "Bob", "bob-resume-proof");
+    const issuedAfterLegitimateJoins = tokenFactory.mock.calls.length;
+
+    await expect(join("member-bob-2", "Bob")).resolves.toMatchObject({ status: 422 });
+    await expect(join("member-bob-2", "Bob", "wrong-proof")).resolves.toMatchObject({ status: 409 });
+    expect(tokenFactory).toHaveBeenCalledTimes(issuedAfterLegitimateJoins);
+  });
+
   it("bootstraps the authenticated Host into a room-scoped browser token", async () => {
     const { gateway } = setup(undefined, true);
     const response = await request(gateway, {
@@ -245,6 +371,21 @@ describe("CollabGateway route contract", () => {
     });
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ member: { memberId: "member-host", role: "host" }, roomToken: expect.any(String) });
+  });
+
+  it("exchanges a room bearer for a short-lived stream ticket", async () => {
+    const { gateway } = setup();
+    const bootstrap = await request(gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const roomToken = (bootstrap.body as { roomToken: string }).roomToken;
+
+    const response = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/stream-tickets", headers: bearer(roomToken), body: {},
+    });
+
+    expect(response).toMatchObject({ status: 201, body: { ticket: expect.any(String), expiresAt: expect.any(Number) } });
+    expect((response.body as { ticket: string }).ticket).not.toBe(roomToken);
   });
 
   it("preserves a Participant role when an authenticated member bootstraps", async () => {
@@ -270,7 +411,7 @@ describe("CollabGateway route contract", () => {
       method: "POST",
       path: "/v1/rooms/room-1/join",
       auth: { principalId: "bob" },
-      body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" },
+      body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
     });
     const roomToken = (joined.body as { roomToken: string }).roomToken;
 
@@ -360,7 +501,7 @@ describe("CollabGateway route contract", () => {
       method: "POST",
       path: "/v1/rooms/room-1/join",
       auth: { principalId: "bob" },
-      body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" },
+      body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
     });
     const crossRoom = await request(gateway, {
       method: "GET",
@@ -405,7 +546,7 @@ describe("CollabGateway route contract", () => {
       status: 201,
       body: { member: { memberId: "member-retry" }, resumeCredential: "client-owned-resume-secret" },
     });
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
     expect(rooms.listMembers("room-1").filter((member) => member.memberId === "member-retry")).toHaveLength(1);
     expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.joined")).toHaveLength(1);
 
@@ -584,6 +725,7 @@ describe("CollabGateway route contract", () => {
         payload: { text: String(index) },
       });
     }
+    await ledger.commit();
 
     const bootstrapped = await request(gateway, {
       method: "GET",
@@ -608,7 +750,7 @@ describe("CollabGateway route contract", () => {
     });
     const joined = await request(gateway, {
       method: "POST", path: "/v1/rooms/room-1/join",
-      body: { inviteId: "invite-bob", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" },
+      body: { inviteId: "invite-bob", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "resume-secret" },
     });
     const resumeCredential = (joined.body as { resumeCredential: string }).resumeCredential;
 
@@ -650,8 +792,8 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await request(gateway, action)).toMatchObject({ status: 200, body: { member: { status: "suspended" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(statusAtCommit).toEqual(["suspended", "suspended"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(statusAtCommit).toEqual(["suspended", "suspended", "suspended"]);
     expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.suspended")).toHaveLength(1);
   });
 
@@ -681,8 +823,8 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await request(gateway, action)).toMatchObject({ status: 200, body: { member: { role: "observer" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(roleAtCommit).toEqual(["observer", "observer"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(roleAtCommit).toEqual(["observer", "observer", "observer"]);
     expect(ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "member.roleChanged")).toHaveLength(1);
   });
 
@@ -710,8 +852,8 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await request(runtime.gateway, approvalRequest)).toMatchObject({ status: 201, body: { approval: { state: "pending" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(stateAtCommit).toEqual(["pending", "pending"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(stateAtCommit).toEqual(["pending", "pending", "pending"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "approval.requested")).toHaveLength(1);
   });
 
@@ -746,9 +888,29 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await request(runtime.gateway, decision)).toMatchObject({ status: 200, body: { approval: { state: "decided", outcome: "allowed-once" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(3);
-    expect(stateAtCommit).toEqual(["pending", "decided:allowed-once", "decided:allowed-once"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(4);
+    expect(stateAtCommit).toEqual(["pending", "decided:allowed-once", "decided:allowed-once", "decided:allowed-once"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "approval.decided")).toHaveLength(1);
+  });
+
+  it("expires approvals through a durable command before returning the list", async () => {
+    let clock = 10;
+    const runtime = setup(undefined, true, undefined, undefined, () => clock);
+    const host = await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
+    });
+    const headers = bearer((host.body as { roomToken: string }).roomToken);
+    await request(runtime.gateway, {
+      method: "POST", path: "/v1/rooms/room-1/approvals", headers,
+      body: { approvalId: "approval-expiring", toolName: "shell", reason: "run tests", expiresAt: 100 },
+    });
+
+    clock = 100;
+    expect(await request(runtime.gateway, {
+      method: "GET", path: "/v1/rooms/room-1/approvals", headers,
+    })).toMatchObject({ status: 200, body: { approvals: [expect.objectContaining({ state: "expired", outcome: "unavailable" })] } });
+    expect(runtime.ledger.readCommittedAfter("room-1", 0, 500).filter((event) => event.type === "approval.decided"))
+      .toHaveLength(1);
   });
 
   it("confirms a human message in persistent state before reporting success", async () => {
@@ -778,8 +940,8 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await request(runtime.gateway, message)).toMatchObject({ status: 201, body: { message: { text: "hello team" } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(eventCountAtCommit).toEqual([1, 1]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(eventCountAtCommit).toEqual([1, 1, 1]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "human.message")).toHaveLength(1);
   });
 
@@ -821,8 +983,8 @@ describe("CollabGateway route contract", () => {
     expect(await request(runtime.gateway, message)).toMatchObject({ status: 202, body: { request: { status: "queued" } } });
     expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]);
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(6);
-    expect(statusAtCommit).toEqual(["queued", "queued", "running", "completed", "completed", "completed"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(7);
+    expect(statusAtCommit).toEqual(["queued", "queued", "queued", "running", "completed", "completed", "completed"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.queued")).toHaveLength(2);
   });
 
@@ -851,12 +1013,12 @@ describe("CollabGateway route contract", () => {
     const first = sendAgent("agent-first", "run tests");
     await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(1));
     const second = sendAgent("agent-second", "run lint");
-    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(commitCriticalState).toHaveBeenCalledTimes(1);
 
     releases[0]!();
     await expect(first).resolves.toMatchObject({ status: 202 });
-    await vi.waitFor(() => expect(runtime.calls).toEqual(["request:room-1:agent-first"]));
-
+    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(2));
     releases[1]!();
     await expect(second).resolves.toMatchObject({ status: 202 });
     await vi.waitFor(() => expect(runtime.calls).toEqual([
@@ -897,8 +1059,8 @@ describe("CollabGateway route contract", () => {
 
     persistenceFails = false;
     expect(await request(runtime.gateway, cancel)).toMatchObject({ status: 200, body: { request: { status: "cancelled" } } });
-    expect(commitCriticalState).toHaveBeenCalledTimes(2);
-    expect(statusAtCommit).toEqual(["cancelled", "cancelled"]);
+    expect(commitCriticalState).toHaveBeenCalledTimes(3);
+    expect(statusAtCommit).toEqual(["cancelled", "cancelled", "cancelled"]);
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.cancelled")).toHaveLength(1);
   });
 
@@ -930,10 +1092,12 @@ describe("CollabGateway route contract", () => {
     persistenceFails = false;
     expect(await share("Planning room")).toMatchObject({ status: 200, body: { room: { title: "Planning room", revision: 2 } } });
 
-    expect(commitCriticalState).toHaveBeenCalledTimes(4);
+    expect(commitCriticalState).toHaveBeenCalledTimes(6);
     expect(roomAtCommit).toEqual([
       { title: "Release room", revision: 1 },
       { title: "Release room", revision: 1 },
+      { title: "Release room", revision: 1 },
+      { title: "Planning room", revision: 2 },
       { title: "Planning room", revision: 2 },
       { title: "Planning room", revision: 2 },
     ]);

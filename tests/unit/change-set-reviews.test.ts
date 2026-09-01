@@ -82,15 +82,30 @@ function setup() {
   };
   const ledger = new EventLedger();
   let now = 1000;
-  const service = new ChangeSetReviewService({ rooms, changeSets, now: () => now++ });
+  const service = new ChangeSetReviewService({ rooms, changeSets, ledger, now: () => now++ });
   return { rooms, ledger, changeSets, service };
 }
 
 describe("ChangeSetReviewService", () => {
+  it("projects a newly submitted ChangeSet into the review list and appends one durable event", async () => {
+    const { ledger, service } = setup();
+
+    expect(service.observeSubmitted({ changeSet: stagedChangeSet(), principalId: "principal-author" })).toBe(true);
+    expect(service.observeSubmitted({ changeSet: stagedChangeSet(), principalId: "principal-author" })).toBe(false);
+
+    await expect(service.listReviews({ roomId: "room-1", principalId: "principal-host" })).resolves.toMatchObject({
+      items: [{ review: { changeSetId: "a".repeat(64), status: "submitted" }, changeSet: { changeSetId: "a".repeat(64) } }],
+    });
+    expect(ledger.readAfter("room-1", 0)).toEqual([expect.objectContaining({
+      type: "changeset.submitted",
+      roomId: "room-1",
+      actor: { memberId: "member-author", principalId: "principal-author" },
+      payload: expect.objectContaining({ changeSetId: "a".repeat(64), authorId: "member-author" }),
+    })]);
+  });
+
   it("lets the ChangeSet author assign one active reviewer and the Host reassign it durably", async () => {
-    const { service } = setup();
-    const events: unknown[] = [];
-    service.subscribe((event) => events.push(event));
+    const { ledger, service } = setup();
 
     const first = await service.assignReviewer({
       roomId: "room-1",
@@ -126,7 +141,8 @@ describe("ChangeSetReviewService", () => {
     });
     expect(reassigned.assignment.previousReviewerId).toBe("member-reviewer");
     expect(reassigned.review.requiredReviewerId).toBe("member-host");
-    expect(events.map((event) => (event as { type: string }).type)).toEqual([
+    expect(ledger.readAfter("room-1", 0).map((event) => event.type)).toEqual([
+      "changeset.submitted",
       "changeset.review-assigned",
       "changeset.review-assigned",
     ]);
@@ -158,9 +174,7 @@ describe("ChangeSetReviewService", () => {
   });
 
   it("allows every active member to add immutable file or line Findings without using assignment as an ACL", async () => {
-    const { rooms, service } = setup();
-    const events: unknown[] = [];
-    service.subscribe((event) => events.push(event));
+    const { ledger, rooms, service } = setup();
     await service.assignReviewer({
       roomId: "room-1",
       principalId: "principal-author",
@@ -179,10 +193,11 @@ describe("ChangeSetReviewService", () => {
       body: "Reconnect can still race with restore.",
     });
     expect(finding.finding.authorId).toBe("member-other");
-    expect(events.at(-1)).toMatchObject({
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
       type: "changeset.finding-created",
       roomId: "room-1",
-      finding: {
+      actor: { memberId: "member-other", principalId: "principal-other" },
+      payload: {
         findingId: finding.finding.findingId,
         changeSetId: finding.finding.changeSetId,
         authorId: finding.finding.authorId,
@@ -221,7 +236,7 @@ describe("ChangeSetReviewService", () => {
   });
 
   it("records one Owner application only after approval and restores it as applied", async () => {
-    const { changeSets, rooms, service } = setup();
+    const { changeSets, ledger, rooms, service } = setup();
     await service.assignReviewer({
       roomId: "room-1", principalId: "principal-author", changeSetId: "a".repeat(64),
       reviewerId: "member-reviewer", clientRequestId: "assign-apply",
@@ -236,7 +251,16 @@ describe("ChangeSetReviewService", () => {
     expect(await service.getReview({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) }))
       .toMatchObject({ status: "applied", application });
 
-    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: () => 2000 }, service.snapshot());
+    ledger.append({
+      eventId: `changeset-applied:${application.applicationId}`,
+      roomId: application.roomId,
+      type: "changeset.applied",
+      actor: { memberId: application.appliedBy, principalId: "principal-host" },
+      createdAt: application.createdAt,
+      payload: application,
+    });
+
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger, now: () => 2000 }, service.snapshot());
     expect(restored.getApplication("room-1", "a".repeat(64))).toEqual(application);
     const retry = await restored.prepareApplication({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) });
     expect(retry.existing).toEqual(application);
@@ -244,7 +268,7 @@ describe("ChangeSetReviewService", () => {
 
     const damaged = service.snapshot();
     damaged.reviews[0]!.application!.appliedBy = "member-author";
-    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, damaged)).toThrow(/application/i);
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, damaged)).toThrow(/application/i);
   });
 
   it("makes Finding request IDs idempotent, rejects mutations, and restores append-only history", async () => {
@@ -262,7 +286,7 @@ describe("ChangeSetReviewService", () => {
     expect(await service.createFinding(input)).toEqual(created);
     await expect(service.createFinding({ ...input, body: "Changed body." })).rejects.toMatchObject({ code: "REQUEST_CONFLICT" });
 
-    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, now: () => 2000 }, service.snapshot());
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger, now: () => 2000 }, service.snapshot());
     const page = await restored.listFindings({
       roomId: "room-1",
       principalId: "principal-host",
@@ -278,23 +302,17 @@ describe("ChangeSetReviewService", () => {
 
     const corrupted = service.snapshot();
     corrupted.reviews[0]!.findings[0]!.body = "";
-    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, corrupted))
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, corrupted))
       .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
 
     const mismatched = service.snapshot();
     mismatched.reviews[0]!.findings[0]!.location = { kind: "file", path: "src/not-in-change-set.ts" };
-    const mismatchedService = ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, mismatched);
-    await expect(mismatchedService.listFindings({
-      roomId: "room-1",
-      principalId: "principal-host",
-      changeSetId: "a".repeat(64),
-    })).rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, mismatched))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
   });
 
   it("lets only the required reviewer decide once without treating approval as applied", async () => {
-    const { service } = setup();
-    const events: unknown[] = [];
-    service.subscribe((event) => events.push(event));
+    const { ledger, service } = setup();
     await service.assignReviewer({
       roomId: "room-1",
       principalId: "principal-author",
@@ -323,7 +341,7 @@ describe("ChangeSetReviewService", () => {
     expect(await service.decide(input)).toEqual(approved);
     expect(approved.review.status).toBe("approved");
     expect(approved.review.status).not.toBe("applied");
-    expect(events.filter((event) => (event as { type?: string }).type === "changeset.review-decided")).toHaveLength(1);
+    expect(ledger.readAfter("room-1", 0).filter((event) => event.type === "changeset.review-decided")).toHaveLength(1);
     await expect(service.decide({ ...input, clientRequestId: "approve-2" }))
       .rejects.toMatchObject({ code: "REQUEST_STATE" });
     await expect(service.assignReviewer({
@@ -336,7 +354,7 @@ describe("ChangeSetReviewService", () => {
   });
 
   it("links a same-author revision after changes are requested without rewriting old Findings", async () => {
-    const { changeSets, rooms, service } = setup();
+    const { changeSets, ledger, rooms, service } = setup();
     await service.assignReviewer({
       roomId: "room-1",
       principalId: "principal-author",
@@ -384,7 +402,7 @@ describe("ChangeSetReviewService", () => {
       clientRequestId: "foreign-link",
     })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
 
-    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, service.snapshot());
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, service.snapshot());
     await expect(restored.getReview({
       roomId: "room-1",
       principalId: "principal-host",
@@ -420,28 +438,144 @@ describe("ChangeSetReviewService", () => {
       linkedBy: "member-author",
       createdAt: 2000,
     };
-    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, cyclic))
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, cyclic))
       .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
 
     const forgedDecision = service.snapshot();
     forgedDecision.reviews.find((entry) => entry.changeSetId === "a".repeat(64))!.decisions![0]!.reviewerId = "member-other";
-    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, forgedDecision))
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, forgedDecision))
       .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
 
     const forgedRevision = service.snapshot();
     forgedRevision.reviews.find((entry) => entry.changeSetId === "f".repeat(64))!.revision!.linkedBy = "member-other";
-    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets }, forgedRevision))
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, forgedRevision))
       .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+  });
+
+  it("restores review state and its durable event history from the same runtime snapshot", async () => {
+    const { changeSets, ledger, rooms, service } = setup();
+    const assignmentInput = {
+      roomId: "room-1",
+      principalId: "principal-author",
+      changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer",
+      clientRequestId: "restore-assignment",
+    };
+    const decisionInput = {
+      roomId: "room-1",
+      principalId: "principal-reviewer",
+      changeSetId: "a".repeat(64),
+      clientRequestId: "restore-decision",
+      outcome: "approved" as const,
+    };
+    service.observeSubmitted({ changeSet: stagedChangeSet(), principalId: "principal-author" });
+    await service.assignReviewer(assignmentInput);
+    await service.decide(decisionInput);
+
+    const restoredLedger = EventLedger.fromSnapshot(ledger.snapshot());
+    const restored = ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger: restoredLedger }, service.snapshot());
+    await expect(restored.getReview({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) }))
+      .resolves.toMatchObject({ status: "approved", requiredReviewerId: "member-reviewer" });
+    expect(restoredLedger.readAfter("room-1", 0).map((event) => event.type)).toEqual([
+      "changeset.submitted",
+      "changeset.review-assigned",
+      "changeset.review-decided",
+    ]);
+
+    expect(restored.observeSubmitted({ changeSet: stagedChangeSet(), principalId: "principal-author" })).toBe(false);
+    await restored.assignReviewer(assignmentInput);
+    await restored.decide(decisionInput);
+    expect(restoredLedger.latestSeq("room-1")).toBe(3);
+  });
+
+  it("rejects missing, extra, or tampered durable Review events during restore", async () => {
+    const { changeSets, ledger, rooms, service } = setup();
+    service.observeSubmitted({ changeSet: stagedChangeSet(), principalId: "principal-author" });
+    await service.assignReviewer({
+      roomId: "room-1", principalId: "principal-author", changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer", clientRequestId: "ledger-assignment",
+    });
+    await service.createFinding({
+      roomId: "room-1", principalId: "principal-other", changeSetId: "a".repeat(64),
+      clientRequestId: "ledger-finding", severity: "medium", location: { kind: "general" }, body: "Check this path.",
+    });
+    await service.decide({
+      roomId: "room-1", principalId: "principal-reviewer", changeSetId: "a".repeat(64),
+      clientRequestId: "ledger-decision", outcome: "approved",
+    });
+    const domain = service.snapshot();
+    const authority = ledger.snapshot();
+    const restore = (candidate: typeof authority) => ChangeSetReviewService.fromSnapshot({
+      rooms,
+      changeSets,
+      ledger: EventLedger.fromSnapshot(candidate),
+    }, domain);
+
+    const missing = structuredClone(authority);
+    missing.rooms[0]!.events = missing.rooms[0]!.events.filter((event) => event.type !== "changeset.review-assigned");
+    missing.rooms[0]!.events.forEach((event, index) => { event.seq = index + 1; });
+    expect(() => restore(missing)).toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    const extraLedger = EventLedger.fromSnapshot(authority);
+    extraLedger.append({
+      eventId: `changeset-finding-created:${"9".repeat(64)}`,
+      roomId: "room-1",
+      type: "changeset.finding-created",
+      actor: { memberId: "member-other", principalId: "principal-other" },
+      createdAt: 999,
+      payload: {
+        findingId: "9".repeat(64), roomId: "room-1", changeSetId: "a".repeat(64), authorId: "member-other",
+        severity: "note", location: { kind: "general" }, body: "extra", createdAt: 999,
+      },
+    });
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger: extraLedger }, domain))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    for (const mutate of [
+      (event: typeof authority.rooms[number]["events"][number]) => { event.actor.principalId = "principal-other"; },
+      (event: typeof authority.rooms[number]["events"][number]) => { event.createdAt += 1; },
+      (event: typeof authority.rooms[number]["events"][number]) => { event.payload = { forged: true }; },
+    ]) {
+      const tampered = structuredClone(authority);
+      const event = tampered.rooms[0]!.events.find((candidate) => candidate.type === "changeset.review-assigned")!;
+      mutate(event);
+      expect(() => restore(tampered)).toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+    }
+  });
+
+  it("requires every restored ChangeSet application to have one exact durable event", async () => {
+    const { changeSets, ledger, rooms, service } = setup();
+    await service.assignReviewer({
+      roomId: "room-1", principalId: "principal-author", changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer", clientRequestId: "application-assignment",
+    });
+    await service.decide({
+      roomId: "room-1", principalId: "principal-reviewer", changeSetId: "a".repeat(64),
+      clientRequestId: "application-decision", outcome: "approved",
+    });
+    const prepared = await service.prepareApplication({ roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64) });
+    const application = prepared.commit("b".repeat(64), "c".repeat(64));
+
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, service.snapshot()))
+      .toThrow(expect.objectContaining({ code: "SNAPSHOT_INVALID" }));
+
+    ledger.append({
+      eventId: `changeset-applied:${application.applicationId}`,
+      roomId: application.roomId,
+      type: "changeset.applied",
+      actor: { memberId: application.appliedBy, principalId: "principal-host" },
+      createdAt: application.createdAt,
+      payload: application,
+    });
+    expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, service.snapshot())).not.toThrow();
   });
 
   it("exposes assignment and Finding routes through the authenticated ChangeSet capability", async () => {
     const { changeSets, ledger, rooms, service } = setup();
     const activeRooms = new ActiveRoomRegistry();
     activeRooms.activate("room-1");
-    const workspace = new WorkspaceService({ rooms, registry: new WorkspaceSharingRegistry(), now: () => 1000 });
+    const workspace = new WorkspaceService({ rooms, ledger, registry: new WorkspaceSharingRegistry(), now: () => 1000 });
     workspace.setSharing({ roomId: "room-1", principalId: "principal-host", enabled: true });
-    const collaborationEvents: unknown[] = [];
-    service.subscribe((event) => collaborationEvents.push(event));
     let commits = 0;
     let failNextCommit = true;
     const gateway = new CollabGateway({
@@ -486,7 +620,7 @@ describe("ChangeSetReviewService", () => {
       headers: headers(author),
     })).resolves.toMatchObject({
       status: 200,
-      body: { reviews: [{ changeSetId: "a".repeat(64), requiredReviewerId: "member-reviewer" }] },
+      body: { items: [{ review: { changeSetId: "a".repeat(64), requiredReviewerId: "member-reviewer" }, changeSet: { changeSetId: "a".repeat(64) } }] },
     });
     await expect(gateway.handle({
       method: "POST",
@@ -522,14 +656,16 @@ describe("ChangeSetReviewService", () => {
       headers: headers(author),
       body: { clientRequestId: "revision-1", supersedesChangeSetId: "a".repeat(64) },
     })).resolves.toMatchObject({ status: 200, body: { review: { supersedesChangeSetId: "a".repeat(64) } } });
-    expect(commits).toBe(5);
-    expect(collaborationEvents.map((event) => (event as { type: string }).type)).toEqual([
+    expect(commits).toBe(6);
+    expect(ledger.readAfter("room-1", 0).map((event) => event.type)).toEqual([
+      "workspace-sharing.changed",
+      "changeset.submitted",
       "changeset.review-assigned",
       "changeset.finding-created",
       "changeset.review-decided",
+      "changeset.submitted",
       "changeset.revision-linked",
     ]);
-    expect(ledger.readAfter("room-1", 0, 10)).toEqual([]);
 
     await expect(gateway.handle({
       method: "GET",

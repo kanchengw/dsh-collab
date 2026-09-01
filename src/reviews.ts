@@ -53,15 +53,11 @@ function publicationId(roomId: string, principalId: string, taskId: string): str
 }
 
 function integrationRequestId(roomId: string, id: string): string {
-  return MAINLINE_REQUEST_PREFIX + legacyIntegrationRequestId(roomId, id);
-}
-
-function legacyIntegrationRequestId(roomId: string, id: string): string {
-  return createHash("sha256").update(`${roomId}\0${id}\0mainline-integration`).digest("hex");
+  return MAINLINE_REQUEST_PREFIX + createHash("sha256").update(`${roomId}\0${id}\0mainline-integration`).digest("hex");
 }
 
 function isIntegrationRequestId(roomId: string, publicationId: string, value: unknown): value is string {
-  return value === integrationRequestId(roomId, publicationId) || value === legacyIntegrationRequestId(roomId, publicationId);
+  return value === integrationRequestId(roomId, publicationId);
 }
 
 function severity(value: ReviewFinding["severity"]): ReviewFinding["severity"] {

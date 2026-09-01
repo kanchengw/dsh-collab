@@ -4,10 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChangeSetApplyPlan } from "../../src/change-set-apply.js";
-import {
-  IntegrationJournalStore,
-  type IntegrationJournalWorkspace,
-} from "../../src/integration-journal.js";
+import { IntegrationJournalStore, type IntegrationJournalWorkspace } from "../../src/integration-journal.js";
 
 const roots: string[] = [];
 
@@ -20,231 +17,144 @@ function hash(value: Uint8Array | string): string {
 }
 
 const oldModify = Buffer.from("old modify\n");
-const oldDelete = Buffer.from("old delete\n");
-const oldRename = Buffer.from("old rename\n");
 const newModify = Buffer.from("new modify\n");
-const newAdd = Buffer.from("new add\n");
-const newRename = Buffer.from("new rename\n");
+const patch = Buffer.from("diff --git a/src/modify.ts b/src/modify.ts\n--- a/src/modify.ts\n+++ b/src/modify.ts\n@@ -1 +1 @@\n-old modify\n+new modify\n");
 
 function applyPlan(overrides: Partial<ChangeSetApplyPlan> = {}): ChangeSetApplyPlan {
   return {
     roomId: "room-1",
     changeSetId: "a".repeat(64),
     baseWorkspaceVersionId: "version-1",
+    patch: new Uint8Array(patch),
     operations: [{
       path: "src/modify.ts",
       operation: "modify",
       base: { path: "src/modify.ts", contentHash: hash(oldModify), size: oldModify.byteLength },
       result: { contentHash: hash(newModify), size: newModify.byteLength, bytes: new Uint8Array(newModify) },
-    }, {
-      path: "src/added.ts",
-      operation: "add",
-      result: { contentHash: hash(newAdd), size: newAdd.byteLength, bytes: new Uint8Array(newAdd) },
-    }, {
-      path: "src/deleted.ts",
-      operation: "delete",
-      base: { path: "src/deleted.ts", contentHash: hash(oldDelete), size: oldDelete.byteLength },
-    }, {
-      path: "src/renamed.ts",
-      previousPath: "src/rename-me.ts",
-      operation: "rename",
-      base: { path: "src/rename-me.ts", contentHash: hash(oldRename), size: oldRename.byteLength },
-      result: { contentHash: hash(newRename), size: newRename.byteLength, bytes: new Uint8Array(newRename) },
     }],
     ...overrides,
   };
 }
 
 class MemoryWorkspace implements IntegrationJournalWorkspace {
-  readonly files: Map<string, Uint8Array>;
-  mutations = 0;
-  failAfterMutation?: number;
+  state: "original" | "applied" | "conflicted" = "original";
+  applications: boolean[] = [];
+  failReverse = false;
 
-  constructor(files: ReadonlyMap<string, Uint8Array>) {
-    this.files = new Map([...files].map(([path, bytes]) => [path, structuredClone(bytes)]));
+  async checkPatch(_roomId: string, _patch: Uint8Array, reverse = false): Promise<boolean> {
+    if (this.state === "conflicted") return false;
+    return reverse ? this.state === "applied" : this.state === "original";
   }
 
-  async read(path: string): Promise<Uint8Array | undefined> {
-    const bytes = this.files.get(path);
-    return bytes ? structuredClone(bytes) : undefined;
+  async applyPatch(_roomId: string, _patch: Uint8Array, reverse = false): Promise<void> {
+    this.applications.push(reverse);
+    if (reverse && this.failReverse) throw new Error("reverse failed");
+    this.state = reverse ? "original" : "applied";
   }
-
-  async replace(path: string, bytes: Uint8Array): Promise<void> {
-    this.files.set(path, structuredClone(bytes));
-    this.afterMutation();
-  }
-
-  async remove(path: string): Promise<void> {
-    this.files.delete(path);
-    this.afterMutation();
-  }
-
-  private afterMutation(): void {
-    this.mutations += 1;
-    if (this.failAfterMutation === this.mutations) throw new Error("simulated process interruption");
-  }
-}
-
-function initialFiles(): Map<string, Uint8Array> {
-  return new Map([
-    ["src/modify.ts", oldModify],
-    ["src/deleted.ts", oldDelete],
-    ["src/rename-me.ts", oldRename],
-    ["unrelated.ts", Buffer.from("keep\n")],
-  ]);
 }
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "dsh-collab-integration-journal-"));
   roots.push(root);
-  return { root, store: new IntegrationJournalStore(root), workspace: new MemoryWorkspace(initialFiles()) };
-}
-
-function expectOriginalWorkspace(workspace: MemoryWorkspace): void {
-  const actual = [...workspace.files].sort(([left], [right]) => left.localeCompare(right));
-  const expected = [...initialFiles()].sort(([left], [right]) => left.localeCompare(right));
-  expect(actual.map(([path, bytes]) => [path, [...bytes]])).toEqual(expected.map(([path, bytes]) => [path, [...bytes]]));
-}
-
-async function putFullyAppliedState(workspace: MemoryWorkspace): Promise<void> {
-  await workspace.replace("src/modify.ts", newModify);
-  await workspace.replace("src/added.ts", newAdd);
-  await workspace.remove("src/deleted.ts");
-  await workspace.remove("src/rename-me.ts");
-  await workspace.replace("src/renamed.ts", newRename);
+  return { root, store: new IntegrationJournalStore(root), workspace: new MemoryWorkspace() };
 }
 
 describe("Integration journal", () => {
-  it("publishes a complete original-state journal before exposing it to apply", async () => {
+  it("publishes one immutable patch journal before apply", async () => {
     const { root, store, workspace } = await setup();
-
-    const journal = await store.prepare(applyPlan(), workspace);
+    const journal = await store.prepare(applyPlan());
 
     expect(journal).toMatchObject({
       version: 1,
       roomId: "room-1",
       changeSetId: "a".repeat(64),
-      executorStepCount: 5,
-      originals: [
-        { path: "src/added.ts", present: false },
-        { path: "src/deleted.ts", present: true, contentHash: hash(oldDelete) },
-        { path: "src/modify.ts", present: true, contentHash: hash(oldModify) },
-        { path: "src/rename-me.ts", present: true, contentHash: hash(oldRename) },
-        { path: "src/renamed.ts", present: false },
-      ],
+      patchHash: hash(patch),
+      patchBytes: patch.byteLength,
+      operations: [{ path: "src/modify.ts", operation: "modify" }],
     });
     expect(await store.list()).toEqual([journal.integrationId]);
-    expect(workspace.mutations).toBe(0);
-    const files = await readdir(join(root, journal.integrationId));
-    expect(files.sort()).toEqual(["blobs", "checkpoint.json", "manifest.json"]);
-    expect(JSON.parse(await readFile(join(root, journal.integrationId, "checkpoint.json"), "utf8"))).toMatchObject({
-      integrationId: journal.integrationId,
-      executorCompletedSteps: 0,
-      recovery: { phase: "pending", completedSteps: 0 },
-    });
-
-    await expect(store.prepare(applyPlan(), workspace)).resolves.toEqual(journal);
-    expect((await readdir(root)).filter((name) => name.includes(".tmp"))).toEqual([]);
+    expect(workspace.applications).toEqual([]);
+    expect((await readdir(join(root, journal.integrationId))).sort()).toEqual(["manifest.json", "patch.diff"]);
+    expect(await readFile(join(root, journal.integrationId, "patch.diff"))).toEqual(patch);
+    await expect(store.prepare(applyPlan())).resolves.toEqual(journal);
   });
 
-  it("publishes nothing when originals changed after preflight or cannot all be read", async () => {
-    const { store, workspace } = await setup();
-    workspace.files.set("src/modify.ts", Buffer.from("owner changed\n"));
-
-    await expect(store.prepare(applyPlan(), workspace)).rejects.toMatchObject({ code: "REQUEST_STATE" });
+  it("rejects an invalid patch or a different pending plan for the same ChangeSet", async () => {
+    const { store } = await setup();
+    await expect(store.prepare(applyPlan({ patch: new Uint8Array() }))).rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
     expect(await store.list()).toEqual([]);
 
-    workspace.files.set("src/modify.ts", oldModify);
-    const originalRead = workspace.read.bind(workspace);
-    workspace.read = async (path) => {
-      if (path === "src/rename-me.ts") throw new Error("read failed");
-      return originalRead(path);
-    };
-    await expect(store.prepare(applyPlan(), workspace)).rejects.toThrow("read failed");
-    expect(await store.list()).toEqual([]);
-  });
-
-  it("rejects a different pending plan for the same ChangeSet", async () => {
-    const { store, workspace } = await setup();
-    await store.prepare(applyPlan(), workspace);
-    const changedResult = Buffer.from("different result\n");
-    const changed = applyPlan();
-    changed.operations[0]!.result = {
-      contentHash: hash(changedResult),
-      size: changedResult.byteLength,
-      bytes: new Uint8Array(changedResult),
-    };
-
-    await expect(store.prepare(changed, workspace)).rejects.toMatchObject({ code: "REQUEST_STATE" });
+    await store.prepare(applyPlan());
+    const changedPatch = Buffer.from(patch.toString("utf8").replace("new modify", "different"));
+    await expect(store.prepare(applyPlan({ patch: new Uint8Array(changedPatch) })))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
     expect(await store.list()).toHaveLength(1);
   });
 
-  it("rolls every touched path back even when executor checkpoints lag writes", async () => {
+  it("retires a prepared journal when Git proves the patch was never applied", async () => {
     const { store, workspace } = await setup();
-    const journal = await store.prepare(applyPlan(), workspace);
-    await workspace.replace("src/modify.ts", newModify);
-    await store.markExecutorCheckpoint(journal.integrationId, 1);
-    await workspace.replace("src/added.ts", newAdd);
-    await store.markExecutorCheckpoint(journal.integrationId, 2);
-    await workspace.remove("src/deleted.ts");
-    await workspace.remove("src/rename-me.ts");
-    await workspace.replace("src/renamed.ts", newRename);
+    const journal = await store.prepare(applyPlan());
 
     await expect(store.recover(journal.integrationId, workspace)).resolves.toBe("recovered");
-    expectOriginalWorkspace(workspace);
+
+    expect(workspace.applications).toEqual([]);
     expect(await store.list()).toEqual([]);
-    await expect(store.recover(journal.integrationId, workspace)).resolves.toBe("not-found");
-    expectOriginalWorkspace(workspace);
   });
 
-  it("retries an interrupted rollback without trusting a stale recovery checkpoint", async () => {
+  it("uses the same Git patch in reverse when recovery finds the fully applied state", async () => {
     const { store, workspace } = await setup();
-    const journal = await store.prepare(applyPlan(), workspace);
-    await putFullyAppliedState(workspace);
-    workspace.mutations = 0;
-    workspace.failAfterMutation = 2;
+    const journal = await store.prepare(applyPlan());
+    workspace.state = "applied";
 
-    await expect(store.recover(journal.integrationId, workspace)).rejects.toThrow("simulated process interruption");
-    expect(await store.list()).toEqual([journal.integrationId]);
-
-    workspace.mutations = 0;
-    workspace.failAfterMutation = undefined;
     await expect(store.recover(journal.integrationId, workspace)).resolves.toBe("recovered");
-    expectOriginalWorkspace(workspace);
-    await expect(store.recover(journal.integrationId, workspace)).resolves.toBe("not-found");
+
+    expect(workspace.state).toBe("original");
+    expect(workspace.applications).toEqual([true]);
+    expect(await store.list()).toEqual([]);
   });
 
-  it("fails closed on a corrupt manifest, checkpoint, or original blob before mutating workspace", async () => {
-    for (const corrupt of ["manifest", "checkpoint", "blob"] as const) {
+  it("keeps the journal and Owner files when neither patch direction is safe", async () => {
+    const { store, workspace } = await setup();
+    const journal = await store.prepare(applyPlan());
+    workspace.state = "conflicted";
+
+    await expect(store.recover(journal.integrationId, workspace)).rejects.toMatchObject({ code: "REQUEST_CONFLICT" });
+
+    expect(workspace.applications).toEqual([]);
+    expect(await store.list()).toEqual([journal.integrationId]);
+  });
+
+  it("retains a fully applied journal when reverse Git apply fails", async () => {
+    const { store, workspace } = await setup();
+    const journal = await store.prepare(applyPlan());
+    workspace.state = "applied";
+    workspace.failReverse = true;
+
+    await expect(store.recover(journal.integrationId, workspace)).rejects.toThrow("reverse failed");
+
+    expect(workspace.state).toBe("applied");
+    expect(await store.list()).toEqual([journal.integrationId]);
+  });
+
+  it("fails closed on a corrupt manifest or patch before invoking Git", async () => {
+    for (const corrupt of ["manifest", "patch"] as const) {
       const { root, store, workspace } = await setup();
-      const journal = await store.prepare(applyPlan(), workspace);
-      if (corrupt === "manifest") await writeFile(join(root, journal.integrationId, "manifest.json"), "{}\n");
-      if (corrupt === "checkpoint") await writeFile(join(root, journal.integrationId, "checkpoint.json"), "{}\n");
-      if (corrupt === "blob") {
-        const original = journal.originals.find((entry) => entry.present)!;
-        await writeFile(join(root, journal.integrationId, "blobs", original.contentHash), "corrupt");
-      }
+      const journal = await store.prepare(applyPlan());
+      await writeFile(join(root, journal.integrationId, corrupt === "manifest" ? "manifest.json" : "patch.diff"), "corrupt\n");
 
       await expect(store.recover(journal.integrationId, workspace)).rejects.toMatchObject({ code: "SNAPSHOT_INVALID" });
-      expect(workspace.mutations).toBe(0);
+      expect(workspace.applications).toEqual([]);
     }
   });
 
-  it("only discards a successful journal after every executor step is checkpointed", async () => {
+  it("retires a successful journal without modifying the already applied workspace", async () => {
     const { store, workspace } = await setup();
-    const journal = await store.prepare(applyPlan(), workspace);
-    await expect(store.markExecutorCheckpoint(journal.integrationId, 2)).rejects.toMatchObject({ code: "REQUEST_STATE" });
-    for (let step = 1; step <= journal.executorStepCount; step += 1) {
-      await store.markExecutorCheckpoint(journal.integrationId, step);
-      await store.markExecutorCheckpoint(journal.integrationId, step);
-    }
-    await putFullyAppliedState(workspace);
+    const journal = await store.prepare(applyPlan());
+    workspace.state = "applied";
 
     await expect(store.complete(journal.integrationId)).resolves.toBe("completed");
+
     expect(await store.list()).toEqual([]);
-    await expect(store.recover(journal.integrationId, workspace)).resolves.toBe("not-found");
-    expect(workspace.files.get("src/modify.ts")).toEqual(new Uint8Array(newModify));
-    expect(workspace.files.has("src/deleted.ts")).toBe(false);
-    expect(workspace.files.get("src/renamed.ts")).toEqual(new Uint8Array(newRename));
+    expect(workspace.applications).toEqual([]);
   });
 });

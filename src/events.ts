@@ -33,10 +33,20 @@ export class EventLedger {
   private readonly rooms = new Map<string, RoomEvent[]>();
   private readonly eventsById = new Map<string, RoomEvent>();
   private readonly listeners = new Set<(event: RoomEvent) => void>();
+  private readonly committedListeners = new Set<(event: RoomEvent) => void>();
+  private readonly committedSeq = new Map<string, number>();
+  private commitQueue: Promise<void> = Promise.resolve();
+  private durabilityPending = false;
+  private retryPersistence: (() => Promise<void>) | undefined;
 
   subscribe(listener: (event: RoomEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeCommitted(listener: (event: RoomEvent) => void): () => void {
+    this.committedListeners.add(listener);
+    return () => this.committedListeners.delete(listener);
   }
 
   append(input: AppendEventInput): RoomEvent {
@@ -48,11 +58,11 @@ export class EventLedger {
 
     const existing = this.eventsById.get(eventId);
     if (existing) {
-      if (comparableEvent(input) === JSON.stringify({
+      if (comparableEvent({ ...input, createdAt: input.createdAt ?? existing.createdAt }) === JSON.stringify({
         roomId: existing.roomId,
         type: existing.type,
         actor: existing.actor,
-        createdAt: input.createdAt,
+        createdAt: existing.createdAt,
         payload: existing.payload,
       })) {
         return copy(existing);
@@ -83,6 +93,34 @@ export class EventLedger {
     return copy(event);
   }
 
+  commit(persist?: () => Promise<void>): Promise<void> {
+    if (persist) this.retryPersistence = persist;
+    this.durabilityPending = true;
+    const watermark = new Map([...this.rooms].map(([roomId, events]) => [roomId, events.length]));
+    const result = this.commitQueue.then(async () => {
+      try {
+        await persist?.();
+        for (const [roomId, throughSeq] of watermark) this.publishCommittedThrough(roomId, throughSeq);
+        this.durabilityPending = false;
+      } catch (error) {
+        this.durabilityPending = true;
+        throw error;
+      }
+    });
+    this.commitQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  async awaitDurable(): Promise<void> {
+    while (true) {
+      const pending = this.commitQueue;
+      await pending;
+      if (pending !== this.commitQueue) continue;
+      if (!this.durabilityPending) return;
+      await this.commit(this.retryPersistence);
+    }
+  }
+
   readAfter(roomId: string, afterSeq: number, limit = 100): RoomEvent[] {
     const normalizedRoomId = requiredText(roomId, "roomId");
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
@@ -95,9 +133,27 @@ export class EventLedger {
     return copy((this.rooms.get(normalizedRoomId) ?? []).slice(afterSeq, afterSeq + boundedLimit));
   }
 
+  readCommittedAfter(roomId: string, afterSeq: number, limit = 100): RoomEvent[] {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+      throw invalidInput("afterSeq must be a non-negative integer", { afterSeq });
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw invalidInput("limit must be a positive integer", { limit });
+    }
+    const boundedLimit = Math.min(limit, MAX_READ_LIMIT);
+    const committed = this.committedSeq.get(normalizedRoomId) ?? 0;
+    return copy((this.rooms.get(normalizedRoomId) ?? []).slice(afterSeq, Math.min(afterSeq + boundedLimit, committed)));
+  }
+
   latestSeq(roomId: string): number {
     const normalizedRoomId = requiredText(roomId, "roomId");
     return this.rooms.get(normalizedRoomId)?.length ?? 0;
+  }
+
+  latestCommittedSeq(roomId: string): number {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    return this.committedSeq.get(normalizedRoomId) ?? 0;
   }
 
   snapshot(): LedgerSnapshot {
@@ -134,8 +190,26 @@ export class EventLedger {
         }
         expectedSeq += 1;
       }
+      ledger.committedSeq.set(room.roomId, room.events.length);
     }
     return ledger;
+  }
+
+  private publishCommittedThrough(roomId: string, throughSeq: number): void {
+    const previous = this.committedSeq.get(roomId) ?? 0;
+    if (throughSeq <= previous) return;
+    const events = this.rooms.get(roomId) ?? [];
+    if (throughSeq > events.length) throw new Error("Event Ledger commit watermark exceeds the room sequence");
+    this.committedSeq.set(roomId, throughSeq);
+    for (const event of events.slice(previous, throughSeq)) {
+      for (const listener of this.committedListeners) {
+        try {
+          listener(copy(event));
+        } catch {
+          // A committed-event subscriber cannot roll back durable room state.
+        }
+      }
+    }
   }
 }
 
@@ -148,6 +222,14 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "human.message"
     || value === "work-update.published"
     || value === "workspace-version.published"
+    || value === "workspace-sharing.changed"
+    || value === "changeset.submitted"
+    || value === "changeset.review-assigned"
+    || value === "changeset.finding-created"
+    || value === "changeset.review-decided"
+    || value === "changeset.revision-linked"
+    || value === "changeset.applied"
+    || value === "changeset.apply-conflicted"
     || value === "agent.request.created"
     || value === "agent.request.queued"
     || value === "agent.request.claimed"

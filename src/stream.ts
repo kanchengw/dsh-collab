@@ -5,7 +5,6 @@ import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import type { AgentOutputFrame, RoomEvent, StreamFrame } from "./types.js";
 import type { ActiveRoomRegistry } from "./active-rooms.js";
-import { CHANGE_SET_CAPABILITY, SIDECAR_REVIEW_CAPABILITY, type CollaborationCapability, type CollaborationEvent } from "./collaboration-types.js";
 
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -20,11 +19,8 @@ interface ConnectionRecord {
   memberId: string;
   principalId: string;
   token: string;
-  agentOutput: boolean;
-  capabilities: ReadonlySet<CollaborationCapability>;
   lastEventSeq: number;
   onFrame: (frame: StreamFrame) => void;
-  onCollaborationEvent?: (event: CollaborationEvent) => void;
 }
 
 export interface StreamConnection {
@@ -51,7 +47,7 @@ export class RoomStreamHub {
     activeRooms?: ActiveRoomRegistry;
   }) {
     this.now = options.now ?? (() => Date.now());
-    this.unsubscribe = options.ledger.subscribe((event) => this.publish(event));
+    this.unsubscribe = options.ledger.subscribeCommitted((event) => this.publish(event));
     this.unsubscribeActive = options.activeRooms?.subscribe((roomId, active) => {
       if (!active) {
         this.clearRoomAgentOutputs(roomId);
@@ -65,10 +61,7 @@ export class RoomStreamHub {
     roomId: string;
     token: string;
     afterSeq?: number;
-    agentOutput?: boolean;
-    capabilities?: readonly CollaborationCapability[];
     onFrame: (frame: StreamFrame) => void;
-    onCollaborationEvent?: (event: CollaborationEvent) => void;
   }): StreamConnection {
     const connectionId = requiredText(input.connectionId, "connectionId");
     const roomId = requiredText(input.roomId, "roomId");
@@ -83,27 +76,25 @@ export class RoomStreamHub {
     }
     this.options.limits?.acquireConnection(roomId);
     try {
+      const committedSeq = this.options.ledger.latestCommittedSeq(roomId);
       const record: ConnectionRecord = {
         connectionId,
         roomId,
         memberId: claims.memberId,
         principalId: claims.principalId,
         token: input.token,
-        agentOutput: input.agentOutput === true,
-        capabilities: new Set(input.capabilities ?? []),
-        lastEventSeq: afterSeq,
+        lastEventSeq: Math.min(afterSeq, committedSeq),
         onFrame: input.onFrame,
-        onCollaborationEvent: input.onCollaborationEvent,
       };
       this.connections.set(connectionId, record);
-      this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: afterSeq });
+      this.emit(record, { kind: "connected", connectionId, roomId, lastEventSeq: record.lastEventSeq });
       while (true) {
-        const events = this.options.ledger.readAfter(roomId, record.lastEventSeq, 500);
+        const events = this.options.ledger.readCommittedAfter(roomId, record.lastEventSeq, 500);
         if (events.length === 0) break;
         for (const event of events) this.publishTo(record, event);
       }
       for (const frame of this.activeAgentOutputs.values()) {
-        if (record.agentOutput && frame.roomId === roomId) this.emit(record, frame);
+        if (frame.roomId === roomId) this.emit(record, frame);
       }
       this.broadcastPresence(roomId);
       return {
@@ -140,7 +131,7 @@ export class RoomStreamHub {
     if (frame.streaming) this.activeAgentOutputs.set(outputKey, output);
     else this.activeAgentOutputs.delete(outputKey);
     for (const record of [...this.connections.values()]) {
-      if (record.roomId !== frame.roomId || !record.agentOutput) continue;
+      if (record.roomId !== frame.roomId) continue;
       try {
         this.options.tokens.verify({ roomId: record.roomId, token: record.token, now: this.now() });
       } catch (error) {
@@ -149,27 +140,6 @@ export class RoomStreamHub {
         continue;
       }
       this.emit(record, output);
-    }
-  }
-
-  publishCollaborationEvent(event: CollaborationEvent): void {
-    const roomId = event.type === "workspace-sharing.changed" ? event.state.roomId : event.roomId;
-    const capability = event.type === "workspace-sharing.changed" ? SIDECAR_REVIEW_CAPABILITY : CHANGE_SET_CAPABILITY;
-    if (this.options.activeRooms && !this.options.activeRooms.isActive(roomId)) return;
-    for (const record of [...this.connections.values()]) {
-      if (record.roomId !== roomId || !record.capabilities.has(capability)) continue;
-      try {
-        this.options.tokens.verify({ roomId: record.roomId, token: record.token, now: this.now() });
-      } catch (error) {
-        const reason = error instanceof CollabError && error.code === "MEMBER_INACTIVE" ? "member_inactive" : "auth_invalid";
-        this.close(record.connectionId, reason);
-        continue;
-      }
-      try {
-        record.onCollaborationEvent?.(event);
-      } catch {
-        // A broken optional projection cannot roll back room state.
-      }
     }
   }
 

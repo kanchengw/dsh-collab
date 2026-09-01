@@ -26,6 +26,13 @@ export interface BindRoomSessionInput {
   sessionCwd: string;
 }
 
+interface NormalizedRoomSessionBinding {
+  roomId: string;
+  memberId: string;
+  sessionId: string;
+  workspacePath: string;
+}
+
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw invalidInput(`${field} must not be blank`, { field });
   return value.trim();
@@ -43,6 +50,16 @@ function samePath(left: string, right: string): boolean {
 
 function validSeq(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function normalizeBinding(input: BindRoomSessionInput): NormalizedRoomSessionBinding {
+  const roomId = requiredText(input.roomId, "roomId");
+  const memberId = requiredText(input.memberId, "memberId");
+  const sessionId = requiredText(input.sessionId, "sessionId");
+  const path = workspacePath(input.workspacePath, "workspacePath");
+  const cwd = workspacePath(input.sessionCwd, "sessionCwd");
+  if (!samePath(path, cwd)) throw invalidInput("Session cwd does not match the room workspace", { sessionId });
+  return { roomId, memberId, sessionId, workspacePath: path };
 }
 
 function copy<T>(value: T): T {
@@ -87,12 +104,7 @@ export class RoomSessionLinkStore {
   private readonly links = new Map<string, RoomSessionLink>();
 
   bind(input: BindRoomSessionInput): RoomSessionLink {
-    const roomId = requiredText(input.roomId, "roomId");
-    const memberId = requiredText(input.memberId, "memberId");
-    const sessionId = requiredText(input.sessionId, "sessionId");
-    const path = workspacePath(input.workspacePath, "workspacePath");
-    const cwd = workspacePath(input.sessionCwd, "sessionCwd");
-    if (!samePath(path, cwd)) throw invalidInput("Session cwd does not match the room workspace", { sessionId });
+    const { roomId, memberId, sessionId, workspacePath: path } = normalizeBinding(input);
 
     const existing = this.links.get(sessionId);
     if (existing && (existing.roomId !== roomId || existing.memberId !== memberId)) {
@@ -109,6 +121,28 @@ export class RoomSessionLinkStore {
     link.active = true;
     this.links.set(sessionId, link);
     return copy(link);
+  }
+
+  rebindMember(input: BindRoomSessionInput): RoomSessionLink {
+    const { roomId, memberId, sessionId, workspacePath: path } = normalizeBinding(input);
+    const existing = this.links.get(sessionId);
+    if (!existing) throw new CollabError("REQUEST_NOT_FOUND", "Room Session Link does not exist", { sessionId });
+    if (existing.roomId !== roomId) {
+      throw new CollabError("REQUEST_CONFLICT", "Session is already bound to another room", { sessionId });
+    }
+    if (!samePath(existing.workspacePath, path)) {
+      throw new CollabError("REQUEST_CONFLICT", "Session is already bound to another workspace", { sessionId });
+    }
+
+    for (const link of this.links.values()) {
+      if (link.roomId === roomId && link.memberId === memberId && link.sessionId !== sessionId) link.active = false;
+    }
+    if (existing.memberId !== memberId) {
+      existing.memberId = memberId;
+      existing.lastInjectedRoomSeq = 0;
+    }
+    existing.active = true;
+    return copy(existing);
   }
 
   getBySession(sessionId: string): RoomSessionLink | undefined {

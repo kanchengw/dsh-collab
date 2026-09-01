@@ -8,7 +8,6 @@ import {
   decodeCollaborationCapabilities,
   decodeClientStreamFrame,
   decodeServerStreamFrame,
-  encodeCollaborationServerStreamFrame,
   encodeGatewayResponse,
   encodeClientStreamFrame,
   encodeServerStreamFrame,
@@ -100,55 +99,34 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeServerStreamFrame(frame)).toEqual({ kind: "event", event: frame.event });
   });
 
-  it("round-trips capability-gated ChangeSet Review collaboration events outside the durable room cursor", () => {
-    const events = [{
-      type: "changeset.review-assigned" as const,
-      roomId: "room-1",
-      assignment: {
-        assignmentId: "b".repeat(64),
-        changeSetId: "a".repeat(64),
-        assignedBy: "member-author",
-        reviewerId: "member-reviewer",
-        createdAt: 10,
-      },
-    }, {
-      type: "changeset.finding-created" as const,
-      roomId: "room-1",
-      finding: {
-        findingId: "c".repeat(64),
-        changeSetId: "a".repeat(64),
-        authorId: "member-reviewer",
-        severity: "high" as const,
-        location: { kind: "line" as const, path: "src/app.ts", line: 2 },
-        body: "Reconnect can race.",
-        createdAt: 11,
-      },
-    }, {
-      type: "changeset.review-decided" as const,
-      roomId: "room-1",
-      decision: {
-        decisionId: "d".repeat(64),
-        changeSetId: "a".repeat(64),
-        reviewerId: "member-reviewer",
-        outcome: "changes-requested" as const,
-        note: "Please add a guard.",
-        createdAt: 12,
-      },
-    }, {
-      type: "changeset.revision-linked" as const,
-      roomId: "room-1",
-      revision: {
-        revisionLinkId: "e".repeat(64),
-        changeSetId: "f".repeat(64),
-        supersedesChangeSetId: "a".repeat(64),
-        linkedBy: "member-author",
-        createdAt: 13,
-      },
-    }];
+  it("accepts every durable collaboration event on the ordinary room stream", () => {
+    const types = [
+      "work-update.published",
+      "workspace-sharing.changed",
+      "changeset.submitted",
+      "changeset.review-assigned",
+      "changeset.finding-created",
+      "changeset.review-decided",
+      "changeset.revision-linked",
+      "changeset.applied",
+      "changeset.apply-conflicted",
+    ] as const;
 
-    for (const event of events) {
-      const wire = encodeCollaborationServerStreamFrame({ kind: "collaboration-event", event });
-      expect(decodeServerStreamFrame(wire)).toEqual({ kind: "collaboration-event", event });
+    for (const [index, type] of types.entries()) {
+      const frame = {
+        protocol: COLLAB_PROTOCOL,
+        type: "event",
+        event: {
+          eventId: `event-${String(index)}`,
+          roomId: "room-1",
+          seq: index + 1,
+          type,
+          actor: { memberId: "member-author", principalId: "principal-author" },
+          createdAt: 10 + index,
+          payload: {},
+        },
+      } as const;
+      expect(decodeServerStreamFrame(frame)).toEqual({ kind: "event", event: frame.event });
     }
   });
 
@@ -186,72 +164,6 @@ describe("dsh-collab wire protocol", () => {
     expect(decodeCollaborationCapabilities(`future.v9, ${SIDECAR_REVIEW_CAPABILITY}`)).toEqual([SIDECAR_REVIEW_CAPABILITY]);
     expect(decodeCollaborationCapabilities(undefined)).toEqual([]);
     expect(() => decodeCollaborationCapabilities([SIDECAR_REVIEW_CAPABILITY, 42])).toThrow("capability");
-  });
-
-  it("round-trips capability-gated workspace sharing events", () => {
-    const frame = {
-      kind: "collaboration-event",
-      event: {
-        type: "workspace-sharing.changed",
-        state: {
-          roomId: "room-1",
-          enabled: true,
-          enabledBy: "member-host",
-          enabledAt: 100,
-          revision: 1,
-        },
-      },
-    } as const;
-
-    const wire = encodeCollaborationServerStreamFrame(frame);
-
-    expect(wire).toEqual({ protocol: COLLAB_PROTOCOL, type: "collaboration-event", event: frame.event });
-    expect(decodeServerStreamFrame(wire)).toEqual(frame);
-  });
-
-  it("fails closed on malformed collaboration payloads", () => {
-    expect(() => decodeServerStreamFrame({
-      protocol: COLLAB_PROTOCOL,
-      type: "collaboration-event",
-      event: {
-        type: "workspace-sharing.changed",
-        state: { roomId: "room-1", enabled: true, revision: 1 },
-      },
-    })).toThrow("enabledBy");
-    expect(() => decodeServerStreamFrame({
-      protocol: COLLAB_PROTOCOL,
-      type: "collaboration-event",
-      event: { type: "future.event", state: {} },
-    })).toThrow("event.type");
-    expect(() => decodeServerStreamFrame({
-      protocol: COLLAB_PROTOCOL,
-      type: "collaboration-event",
-      event: {
-        type: "changeset.review-decided",
-        roomId: "room-1",
-        decision: {
-          decisionId: "d".repeat(64),
-          changeSetId: "a".repeat(64),
-          reviewerId: "member-reviewer",
-          outcome: "applied",
-          createdAt: 12,
-        },
-      },
-    })).toThrow("outcome");
-    expect(() => decodeServerStreamFrame({
-      protocol: COLLAB_PROTOCOL,
-      type: "collaboration-event",
-      event: {
-        type: "changeset.revision-linked",
-        roomId: "room-1",
-        revision: {
-          revisionLinkId: "e".repeat(64),
-          changeSetId: "f".repeat(64),
-          linkedBy: "member-author",
-          createdAt: 13,
-        },
-      },
-    })).toThrow("supersedesChangeSetId");
   });
 
   it("rejects unknown versions, frame types, and negative cursors", () => {

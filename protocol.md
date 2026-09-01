@@ -39,12 +39,11 @@ wildcard bind addresses, and paths other than `/collab` are rejected.
 
 The invitation is a secret because it contains an opaque invite token. It must not
 be placed in a URL, browser history, access log, or analytics event. The
-external `wss://` endpoint is declarative: v1 does not provision a tunnel,
+external `wss://` endpoint is declarative: Collab does not provision a tunnel,
 reverse proxy, public Relay, TLS certificate, or NAT traversal.
 
-EasyTier invitations use `dsh-collab.invitation.v2` so a v1 client rejects the
-invitation at the protocol boundary instead of ignoring an unknown network
-mode. The versioned envelope adds one `network` discriminator. LAN and custom
+Every invitation uses the single `dsh-collab.invitation.v2` envelope and an
+explicit `network` discriminator. LAN and custom
 WSS descriptions repeat the canonical endpoint and must match
 `gatewayEndpoint`; an EasyTier description carries only the overlay identity,
 credential, Owner virtual IPv4 and bootstrap peer:
@@ -189,7 +188,7 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads` | Host, lead or Participant creates or resumes an idempotent ChangeSet upload; requires `change-set.v1` and enabled Workspace Sharing |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/chunks` | Uploads the next authenticated patch or result chunk; each chunk is at most 262144 bytes |
 | `POST` | `/collab/v1/rooms/:roomId/change-sets/uploads/:uploadId/finalize` | Revalidates the complete artifact and atomically publishes it to the Owner Staging Area |
-| `GET` | `/collab/v1/rooms/:roomId/change-sets/reviews?after=&limit=` | Active member reads the authoritative ChangeSet review queue newest-activity first; defaults to 50 and caps at 100 |
+| `GET` | `/collab/v1/rooms/:roomId/change-sets/reviews?after=&limit=` | Active member reads authoritative `{ review, changeSet }` queue items newest-activity first; defaults to 50 and caps at 100, so the Collab Bar does not fetch each manifest separately |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId` | Active member reads one immutable staged ChangeSet manifest under the sharing gate |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/patch?offset=&limit=` | Active member reads the exact staged diff in authenticated bounded chunks |
 | `GET` | `/collab/v1/rooms/:roomId/change-sets/:changeSetId/review` | Active member reads the current required-reviewer and Finding counts |
@@ -211,6 +210,20 @@ The current routes are:
 | `POST` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member publishes selected requester-local Review findings as one group |
 | `GET` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications` | Active member reads persisted publication groups newest-first |
 | `PUT` | `/collab/v1/rooms/:roomId/review-points/:reviewPointId/publications/:publicationId/state` | Host accepts one publication group and idempotently creates its Mainline Integration Task |
+
+The Participant Room Workspace is local DSH state, not a remotely mounted Host
+filesystem. A linked Session is bound to exactly one room, member and workspace
+path. Rejoining the same room with a new member identity may explicitly rebind
+only that same Session/workspace pair; the client resets its injected Room
+cursor to zero and recreates the context/tool binding before catch-up. A
+different room or workspace remains a conflict.
+
+Workspace sync stages the target version under a random sibling directory named
+`.s-<12 lowercase hex>` so the temporary Git worktree stays below practical
+Windows path limits. Its transaction journal records that short name. Recovery
+restores the previous workspace only when the promoted files still exactly
+match the immutable target manifest; any post-crash edit preserves both live
+and backup state and fails closed.
 
 ChangeSet upload creation accepts `{ clientRequestId, draft }`.
 `clientRequestId` is namespaced by the authenticated room member. An exact
@@ -251,13 +264,14 @@ the exact `changeSetId`; file/line paths must occur in that ChangeSet and line
 numbers are positive integers. Exact request retries return the original
 assignment/Finding, while reusing an ID with changed content returns `409`.
 Mutations append the assignment/Finding to the Host's durable Review snapshot
-and wait for critical-state persistence before the Gateway responds. A new
-mutation also emits `changeset.review-assigned` or `changeset.finding-created`
-as a live `collaboration-event`, only to stream connections that declared
-`change-set.v1`. These notifications do not enter the durable RoomEvent stream
-or advance its cursor. After reconnecting, clients recover authoritative state
-from `GET /change-sets/reviews` and the review/Finding routes. These routes
-require the existing `change-set.v1` capability and enabled Workspace Sharing.
+and append `changeset.review-assigned` or `changeset.finding-created` to the
+same durable Room Ledger used by discussion and Workspace Version events. The
+whole-runtime persistence barrier must capture both projections before the
+Gateway responds. Reconnecting clients replay those ordinary RoomEvents from
+their last confirmed sequence and may then refresh the authoritative Review
+projection from `GET /change-sets/reviews` and the review/Finding routes. These
+routes require the existing `change-set.v1` capability and enabled Workspace
+Sharing.
 
 Only the current required reviewer may record the first terminal review
 decision. Exact retries with the same member-scoped request ID are idempotent;
@@ -266,8 +280,8 @@ apply workflow and never means `applied`. After `changes-requested`, the author
 may link one new immutable same-author ChangeSet as the direct revision. The
 old Review and Findings remain anchored to their original ChangeSet; the queue
 projects the predecessor as `superseded`. Decision and revision mutations use
-the same persistence barrier and emit `changeset.review-decided` or
-`changeset.revision-linked` live notifications.
+the same persistence barrier and append `changeset.review-decided` or
+`changeset.revision-linked` to the Room Ledger.
 
 Apply preflight is currently a Host-domain contract rather than a public HTTP
 route. Only the active Owner member can invoke it. Its canonical-workspace port
@@ -278,30 +292,42 @@ fully verified in-memory plan or one conflict containing all stale touched
 paths. Add and rename operations also require an absent target. Artifact
 corruption fails closed and is not mislabeled as a workspace conflict.
 
-Conflict records use deterministic IDs, are append-only in the apply-preflight
-service snapshot, and exact retries do not emit duplicates. They do not enter
-the v1 RoomEvent cursor. `approved` remains distinct from `applied`: only the
-Owner's explicit apply request may create the latter state.
+A stale preflight returns HTTP `409` with code `CHANGE_SET_CONFLICT`; its
+`details.conflict` is the complete durable conflict projection, including every
+touched path that failed the base/target check. It is not returned as an
+unstructured success body. Participant draft storage is retired only after both
+the submission response and the resulting room projection are confirmed; a
+durable submission with an unavailable projection leaves the draft available
+for recovery.
 
-Apply re-runs the complete preflight, publishes a rollback journal before the
-first canonical workspace mutation, and checkpoints each concrete remove or
-replace. The executor supports add, modify, delete and rename without invoking
-an Agent or Git. Canonical writes reuse the DSH filesystem service's contained
-path resolution and atomic `writeText`; deletion alone uses Node `unlink` on
-the already-resolved DSH path because the current public DSH filesystem service
-does not expose delete. ChangeSet result bytes must be valid UTF-8 and an
-explicit UTF-8 BOM is preserved.
+Conflict records use deterministic IDs, are append-only in the apply-preflight
+service snapshot, and append one deterministic `changeset.apply-conflicted`
+RoomEvent. Exact retries do not duplicate either record. `approved` remains
+distinct from `applied`: only the Owner's explicit apply request may create the
+latter state.
+
+Apply re-runs the complete preflight and atomically publishes a journal that
+contains the verified immutable unified diff plus its hash, size and operation
+metadata before the first canonical workspace mutation. The Owner Session
+workspace must be the Git repository root. The adapter runs `git apply --check`
+and then `git apply` against that root, so add, modify, delete and rename use one
+Git-native patch operation without touching the index or creating a commit.
+Patch bytes must be valid UTF-8. DSH filesystem containment and byte reads remain
+the authority for preflight inspection; there is no separate per-file writer.
 
 The room integration lock also covers manual Workspace Version publication,
 so it cannot capture a partially applied workspace. The application record is
 installed before the next `workspace-version.published` ledger event becomes
-visible, then the whole runtime is durably saved before the journal is retired.
-If runtime persistence fails after the in-memory application and version were
-created, the completed journal remains; an exact ChangeSet retry only repeats
-the persistence barrier and does not rewrite files. On restart, a journal with
-a matching durable application is retired, while one without an application is
-rolled back. A pending journal that cannot be recovered prevents the Gateway
-from listening instead of exposing an indeterminate workspace.
+visible. The Host then appends `changeset.applied`, saves the application,
+Workspace Version and both ledger events through one whole-runtime barrier, and
+only then retires the journal. If persistence fails, the journal remains and an
+exact retry only finishes durable state; it never reapplies the patch. On
+restart, a journal with a matching durable application is retired. Without one,
+recovery checks whether the forward or reverse patch is applicable: an
+already-applied patch is reversed, an unapplied patch is left unchanged, and
+ambiguous or unrelated workspace state fails closed. A pending journal that
+cannot be recovered prevents the Gateway from listening instead of exposing an
+indeterminate workspace.
 
 The `host` request is authenticated by the local Gateway boundary rather than
 an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`;
@@ -309,8 +335,8 @@ an existing room token. Its body is `{ "hostSessionId": "...", "title": "..." }`
 characters, and the Host session service must prove that the current DSH
 runtime owns that session. A successful response issues the Host's initial room
 token. `join` authenticates with the one-hour invitation, which may be used by
-multiple members, and accepts an optional
-client-generated `resumeCredential`, while `resume` authenticates with that
+multiple members, and requires a client-generated `resumeCredential`, while
+`resume` authenticates with that
 durable Participant credential.
 
 A successful `join` response includes both a short-lived `roomToken` and a
@@ -334,9 +360,8 @@ same member binding, display name and resume credential may be retried exactly
 when a response or persistence acknowledgement is lost; it returns the existing
 member without adding another member, event or credential. The Gateway waits for
 its configured critical-state persistence barrier after the member, credential
-digest and joined event mutations before returning success. Older clients may omit
-`resumeCredential`; the Gateway continues to issue one for compatibility. A later
-resume request uses this body:
+digest and joined event mutations before returning success. A later resume
+request uses this body:
 
 ```json
 { "credential": "opaque-participant-resume-secret" }
@@ -344,8 +369,10 @@ resume request uses this body:
 
 The Gateway validates the durable room/member binding and returns a fresh
 short-lived `roomToken`. The Participant stores the raw credential in its own
-DSH's hidden `dsh-collab-participant` settings namespace, not browser storage
-or the Host configuration namespace. Suspending or removing the member
+DSH credential record. The hidden `dsh-collab-participant` settings namespace
+stores only that record's opaque key and room metadata, not the raw secret.
+Browser storage and the Host configuration namespace never receive it.
+Suspending or removing the member
 invalidates all of that member's resume credentials.
 
 Event pages are cursor-continuous. A non-empty response starts at `after + 1`,
@@ -403,6 +430,9 @@ change the state, while any active member may read it. The state defaults to
 disabled, is not included in Host snapshots, and resets to disabled when room
 sharing stops or the Host runtime restarts. A later workspace read while the
 switch is off returns `409 WORKSPACE_SHARING_DISABLED`.
+The Changes client reads this state before activation, explicit refresh and
+durable-event refresh. While disabled it updates only its local projection and
+does not call a protected workspace route that is guaranteed to fail.
 
 Snapshot capture accepts `{ "clientRequestId": "..." }`. The Gateway derives a
 stable snapshot ID from the verified room principal, the resource purpose and
@@ -456,8 +486,8 @@ Changing only chat history or a non-reviewed file never creates a third
 freshness state. It updates progress while freshness remains `current`. Refresh
 accepts `{ clientRequestId }`; it is Host-only because it captures the current
 Host workspace. Active Participants read the most recently persisted comparison
-result and may explicitly reload the list. CM-U08 adds no Review WebSocket frame,
-so old clients and the existing durable room cursor remain unchanged.
+result and may explicitly reload the list. Review state uses ordinary RoomEvent
+replay and the existing durable room cursor rather than a second WebSocket frame family.
 
 Review Point creation, refresh, reviewer assignment and lifecycle updates wait
 for critical-state persistence before returning success. A persistence failure
@@ -504,9 +534,9 @@ mutation with its own combined publication/Dispatcher barrier.
 
 Findings remain publishable after Workspace Sharing is disabled because they
 contain review metadata rather than a new code read. Reading the historical diff
-remains under the room-level Workspace Sharing gate. No Review/finding WebSocket
-event is introduced; explicit HTTP reload avoids a second durable cursor and
-remains compatible with older clients.
+remains under the room-level Workspace Sharing gate. No second Review/finding
+WebSocket event family is introduced; ordinary RoomEvent replay remains the
+only durable cursor and explicit HTTP reload reads the authoritative projection.
 
 Requester-local Review publication accepts
 `{ taskId, workspaceSnapshotId, summary, findings }`. `taskId` is trimmed and
@@ -538,7 +568,7 @@ reimplement against current Host code rather than applying a Sidecar patch.
 
 New Mainline Integration Tasks use the reserved
 `internal:mainline:<64 lowercase hex>` request-ID namespace. External messages
-using the legacy raw `messageId` contract cannot claim that namespace. The
+using the external raw `messageId` contract cannot claim that namespace. The
 Dispatcher must synchronously accept the deterministic request before the
 publication and its findings become `accepted`; a queue or request-ID conflict
 therefore leaves them `published` and `open`. Exact acceptance retries recreate a
@@ -552,10 +582,6 @@ a queued `internal:mainline:` request that is not referenced by an accepted
 publication is failed rather than delivered. In-process Mainline requests use
 the same non-dispatchable persistence gate as ordinary Agent requests, so no
 other queue trigger can deliver a failed or still-pending acceptance.
-For upgrade compatibility, Host snapshot restoration and Browser response
-decoding continue to accept the former unprefixed 64-lowercase-hex integration
-ID, but new acceptance never generates that legacy form.
-
 ## HTTP responses
 
 Successful responses use:
@@ -603,7 +629,7 @@ exact paths only; registering one dynamic route per room would leak room
 lifecycle into the global route table.
 
 ```text
-GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>&feature=agent-output&feature=sidecar-review.v1
+GET /collab/v1/stream?roomId=<room-id>&after=<exclusive-event-seq>&connectionId=<optional-id>
 Authorization: Bearer <room-token>
 ```
 
@@ -628,10 +654,8 @@ Each JSON server frame has `protocol: "dsh-collab.v1"` and one of these types:
 }
 ```
 
-Clients opt in to active Agent text with the repeatable `feature=agent-output`
-query parameter. Without that feature the Host sends only the original v1
-frames, so older clients continue to receive the durable final result. An
-opted-in client receives accumulated, transient snapshots:
+Every authenticated room stream receives accumulated, transient Agent output
+snapshots while a request is active:
 
 ```json
 {
@@ -653,39 +677,48 @@ Only `streaming: true` output is retained for a later connection. A
 remain the authoritative history. A connection opened during generation
 receives the latest accumulated snapshot after complete normal event replay.
 
-Clients that declare `sidecar-review.v1` may also receive collaboration event
-frames. The first additive event reports the runtime-only Workspace Sharing
-state used by the next implementation Unit:
+Workspace Sharing, ChangeSet and Review mutations are ordinary durable `event`
+frames. They use the same contiguous sequence, reconnect replay and gap handling
+as discussion and Workspace Version events. For example:
 
 ```json
 {
   "protocol": "dsh-collab.v1",
-  "type": "collaboration-event",
+  "type": "event",
   "event": {
+    "eventId": "workspace-sharing:room-1:5",
+    "roomId": "room-1",
+    "seq": 5,
     "type": "workspace-sharing.changed",
-    "state": {
+    "actor": { "memberId": "member-host", "principalId": "host-principal" },
+    "createdAt": 1720000000000,
+    "payload": {
       "roomId": "room-1",
       "enabled": true,
       "enabledBy": "member-host",
       "enabledAt": 1720000000000,
-      "revision": 1
+      "revision": 5
     }
   }
 }
 ```
 
-When `enabled` is `false`, `enabledBy` and `enabledAt` are omitted. This event
-is a live projection and does not advance the durable room event cursor. A
-client reconnects by reading the authoritative Workspace Sharing state from
-the capability-gated HTTP API introduced with Workspace Sharing.
-
-Clients that declare `change-set.v1` may receive `changeset.review-assigned`,
-`changeset.finding-created`, `changeset.review-decided`, and
-`changeset.revision-linked` collaboration events. They are best-effort live
-notifications: they do not advance `lastEventSeq` and are not replayed from the
-RoomEvent cursor. The persisted Review queue, Review detail, and Finding routes
-are the authoritative reconnect path. Connections that did not declare
-`change-set.v1` retain the original v1 frame set.
+When `enabled` is `false`, `enabledBy` and `enabledAt` are omitted. `revision`
+uses the event's Room Ledger sequence, so it remains monotonic even though the
+current sharing state resets to disabled after Host restart. The complete
+durable collaboration event set is `workspace-sharing.changed`,
+`changeset.submitted`, `changeset.review-assigned`,
+`changeset.finding-created`, `changeset.review-decided`,
+`changeset.revision-linked`, `changeset.applied`, and
+`changeset.apply-conflicted`. Domain snapshots remain the authoritative current
+projection, while the Room Ledger is the single ordered activity and Agent
+context feed. There is no separate collaboration frame or cursor.
+The persistence callback and event watermark share one serialized commit queue,
+so concurrent whole-runtime saves cannot complete out of order and replace a
+newer snapshot with an older one. A Room Context claim that was already pending
+does not invalidate a successful remote action; after the claim is durably
+acknowledged the linked Session immediately catches up from its confirmed
+cursor.
 
 ```json
 {
@@ -724,15 +757,12 @@ other live event must be exactly `lastEventSeq + 1`; a gap closes that stream
 without rendering the event and reconnects from the last confirmed cursor.
 Transient Agent output never advances that cursor.
 
-## Compatibility rules
+## Protocol rules
 
-- v1 additions must be optional fields or new event payload fields.
-- A new server frame must be gated by an explicit client `feature` query;
-  clients without that opt-in must retain the previous v1 frame set.
-- Unknown additive capabilities are ignored; a known capability never changes
-  the meaning of a pre-existing frame or route.
-- A required field, enum removal, or changed meaning requires a new protocol
-  version and an explicit adapter negotiation decision.
+- The current unpublished protocol has one authoritative contract; the Host
+  does not dual-write legacy collaboration frames or maintain migration paths.
+- Unknown additive capabilities are ignored. Known capabilities authorize
+  their corresponding HTTP routes but do not create a second event stream.
 - The wire protocol never carries a local Agent handle, DSH connection ID,
   filesystem path, tool argument, or approval secret. Invite, room and resume
   credentials appear only in their dedicated authentication fields and must
@@ -763,13 +793,13 @@ snapshot contract.
 | Resume credential binding | Durable digest only | The Host stores only the SHA-256 digest and binding; raw credentials and room tokens are reissued or kept on the Participant side. |
 | Agent request queued, claimed/running, output, completed/failed/cancelled | Durable | Queue and ledger transitions are barrier-confirmed; an unconfirmed active delivery is failed as outcome-unknown on restart and is never redelivered automatically. |
 | Approval request and decision | Durable | Approval projection and ledger event are committed before the HTTP response. |
-| ChangeSet reviewer assignment, Finding, decision and revision link | Durable | Append-only review workflow state is captured by the whole-runtime snapshot barrier before the Gateway responds; capability-gated live notifications are not Room Ledger events. |
-| Applied ChangeSet and resulting Workspace Version | Durable | The Owner-only executor records `applied` before publishing the next Workspace Version event, saves both through the whole-runtime barrier, then retires the completed journal. Persistence retries never rewrite canonical files. |
-| Pending ChangeSet integration journal | Durable local recovery state | Before the first canonical workspace write, the Host atomically publishes the operation manifest, verified original blobs and checkpoint under `DSH_HOME/collab/v1/integration-journals`. Restart recovery is rollback-only: it validates the complete journal before mutation, restores every touched path to its recorded original state, and retires the journal only after full rollback or an explicitly completed apply. This state is not a Room Ledger event or wire route. |
+| ChangeSet submission, reviewer assignment, Finding, decision, revision link and apply conflict | Durable | Domain projection and the corresponding deterministic RoomEvent are captured by the same whole-runtime snapshot barrier before the Gateway responds. Exact retries do not append duplicate events. |
+| Applied ChangeSet and resulting Workspace Version | Durable | The Owner-only integration installs the application before publishing the Workspace Version event, then appends `changeset.applied`, saves all state through the whole-runtime barrier and retires the journal. Persistence retries never rewrite canonical files. |
+| Pending ChangeSet integration journal | Durable local recovery state | Before `git apply`, the Host atomically publishes the verified immutable patch, hash, size and operation metadata under `DSH_HOME/collab/v1/integration-journals`. Restart recovery uses forward/reverse `git apply --check`: it reverses an applied patch, leaves an unapplied patch unchanged and fails closed when neither or both states are provable. This state is not a Room Ledger event or wire route. |
 | Review Point, freshness comparison, reviewers, lifecycle, findings and publication | Durable | Review aggregates and their immutable references are committed before success. Mainline acceptance commits the accepted publication and integration request together. |
 | One-time invitation lifecycle | Ephemeral | Invite secrets and active/accepted/expired projections are held in memory; a restart invalidates them. A joined member is durable through the member and ledger commit. |
 | Room tokens and resume exchange access tokens | Ephemeral | Tokens are reissued after restart; revocation is enforced in the current process and durable resume records are revoked when applicable. |
-| ActiveRoomRegistry, Workspace Sharing, live presence/connections and transient Agent output | Ephemeral | Sharing and live projections are cleared on stop/restart; clients reacquire authoritative state through HTTP and replay durable events. |
+| ActiveRoomRegistry, current Workspace Sharing state, live presence/connections and transient Agent output | Ephemeral | Current sharing and live projections are cleared on stop/restart. Each Workspace Sharing transition remains in the durable Room Ledger, while clients reacquire the current disabled state through HTTP. |
 
 No mutation outside the durable rows above may be promoted to a durable
 contract merely because it is observable in memory.

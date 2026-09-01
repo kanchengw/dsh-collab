@@ -5,6 +5,7 @@
 }
 
 .header,
+.headerActions,
 .cardHeader,
 .actions,
 .error,
@@ -20,6 +21,11 @@
   gap: 12px;
   padding: 14px 0;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.headerActions {
+  flex: 0 0 auto;
+  gap: 7px;
 }
 
 .header h2,
@@ -136,6 +142,7 @@
 
 .primary,
 .danger,
+.refresh,
 .error button,
 .changeSets button {
   min-height: 30px;
@@ -163,6 +170,12 @@
   font-size: 12px;
 }
 
+.refresh {
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
 .danger:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover-danger);
 }
@@ -173,6 +186,7 @@
 
 .primary:disabled,
 .danger:disabled,
+.refresh:disabled,
 .error button:disabled,
 .changeSets button:disabled {
   opacity: 0.45;
@@ -181,6 +195,7 @@
 
 .primary:focus-visible,
 .danger:focus-visible,
+.refresh:focus-visible,
 .error button:focus-visible,
 .changeSets button:focus-visible,
 .form input:focus-visible,

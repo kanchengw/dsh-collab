@@ -2,6 +2,7 @@ import { CollabError, invalidInput } from "./errors.js";
 import type { DshNativeAgentContextBinding } from "./dsh-native-agent-context.js";
 import type { RoomContextSnapshot } from "./room-context.js";
 import { RoomSessionLinkStore } from "./room-session-links.js";
+import type { RoomSessionLink } from "./room-session-links.js";
 
 export interface RoomContextDeliveryResult {
   deliveryId: string;
@@ -56,6 +57,7 @@ export class RoomContextDeliveryCoordinator {
   constructor(private readonly input: {
     links: RoomSessionLinkStore;
     binding: DshNativeAgentContextBinding;
+    onCursorAdvanced?: (link: RoomSessionLink) => void;
   }) {
     if (!input.links.getBySession(input.binding.sessionId)) {
       throw new CollabError("ACTION_FORBIDDEN", "Native context binding Session has no Room Session Link", {
@@ -147,6 +149,7 @@ export class RoomContextDeliveryCoordinator {
     const link = this.input.links.getBySession(this.input.binding.sessionId);
     if (!link?.active || link.roomId !== delivery.roomId || link.lastInjectedRoomSeq >= delivery.toSeq) return;
     if (link.lastInjectedRoomSeq !== delivery.fromSeq - 1) return;
-    this.input.links.advanceCursor(link.sessionId, delivery.toSeq);
+    const advanced = this.input.links.advanceCursor(link.sessionId, delivery.toSeq);
+    this.input.onCursorAdvanced?.(advanced);
   }
 }

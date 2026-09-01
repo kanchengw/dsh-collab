@@ -1,5 +1,6 @@
 param(
-  [string]$DshRepo = (Resolve-Path (Join-Path $PSScriptRoot "../../deepseek-harness")).Path
+  [string]$DshRepo = (Resolve-Path (Join-Path $PSScriptRoot "../../deepseek-harness")).Path,
+  [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,8 +14,10 @@ $clients = @(
 try {
   Push-Location $projectRoot
   try {
-    pnpm build
-    if ($LASTEXITCODE -ne 0) { throw "dsh-collab build failed" }
+    if (-not $SkipBuild) {
+      pnpm build
+      if ($LASTEXITCODE -ne 0) { throw "dsh-collab build failed" }
+    }
     foreach ($artifact in @("lib/index.js", "lib/client.js")) {
       if (-not (Test-Path (Join-Path $projectRoot $artifact))) {
         throw "dsh-collab build did not produce $artifact"
@@ -52,8 +55,8 @@ try {
 
     $settingsBlock = "$beginMarker`r`n$settingsPatch`r`n$endMarker"
     if ($hasBeginMarker) {
-      $pattern = "(?ms)^$([regex]::Escape($beginMarker)).*?^$([regex]::Escape($endMarker))"
-      $nextSettings = [regex]::Replace($currentSettings, $pattern, $settingsBlock)
+      # DSH persists Joined Rooms inside this plugin block; replacing it would erase test state on every prepare.
+      $nextSettings = $currentSettings
     } else {
       if ($currentSettings -match "(?m)^dsh-collab:\s*$") {
         throw "Client test settings already contain an unmanaged dsh-collab section: $settingsPath"

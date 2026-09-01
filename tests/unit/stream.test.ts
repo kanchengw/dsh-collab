@@ -3,7 +3,6 @@ import { EventLedger } from "../../src/events.js";
 import { RoomStore } from "../../src/room.js";
 import { RoomTokenStore } from "../../src/tokens.js";
 import { RoomStreamHub } from "../../src/stream.js";
-import { CHANGE_SET_CAPABILITY, SIDECAR_REVIEW_CAPABILITY, type CollaborationEvent } from "../../src/collaboration-types.js";
 import type { StreamFrame } from "../../src/types.js";
 
 function setup() {
@@ -53,9 +52,10 @@ function event(roomId: string, eventId: string, seqExpected: number) {
 }
 
 describe("RoomStreamHub", () => {
-  it("replays by cursor and fans out live events only within the same room", () => {
+  it("replays by cursor and fans out committed events only within the same room", async () => {
     const { hub, ledger, token1, token2 } = setup();
     ledger.append(event("room-1", "event-1", 1));
+    await ledger.commit();
     const framesA: StreamFrame[] = [];
     const framesB: StreamFrame[] = [];
     hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, afterSeq: 0, onFrame: (frame) => framesA.push(frame) });
@@ -67,6 +67,8 @@ describe("RoomStreamHub", () => {
       expect.objectContaining({ kind: "presence", onlineMemberCount: 1 }),
     ]);
     ledger.append(event("room-1", "event-2", 2));
+    expect(framesA.at(-1)).toMatchObject({ kind: "presence" });
+    await ledger.commit();
 
     expect(framesA.at(-1)).toMatchObject({ kind: "event", event: { eventId: "event-2", seq: 2 } });
     expect(framesB).toHaveLength(2);
@@ -74,9 +76,10 @@ describe("RoomStreamHub", () => {
     expect(framesB[1]).toMatchObject({ kind: "presence", onlineMemberCount: 1 });
   });
 
-  it("replays every event when the connection gap exceeds one ledger page", () => {
+  it("replays every committed event when the connection gap exceeds one ledger page", async () => {
     const { hub, ledger, token1 } = setup();
     for (let seq = 1; seq <= 501; seq += 1) ledger.append(event("room-1", `event-${String(seq)}`, seq));
+    await ledger.commit();
     const frames: StreamFrame[] = [];
 
     hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, afterSeq: 0, onFrame: (frame) => frames.push(frame) });
@@ -131,24 +134,27 @@ describe("RoomStreamHub", () => {
     alice.close();
   });
 
-  it("broadcasts transient Agent output and replays only its latest snapshot", () => {
+  it("broadcasts transient Agent output and replays only its latest snapshot", async () => {
     const { hub, ledger, token1 } = setup();
     const firstFrames: StreamFrame[] = [];
     const secondFrames: StreamFrame[] = [];
-    const legacyFrames: StreamFrame[] = [];
-    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => firstFrames.push(frame) });
-    hub.connect({ connectionId: "connection-legacy", roomId: "room-1", token: token1, onFrame: (frame) => legacyFrames.push(frame) });
+    const defaultFrames: StreamFrame[] = [];
+    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, onFrame: (frame) => firstFrames.push(frame) });
+    hub.connect({ connectionId: "connection-default", roomId: "room-1", token: token1, onFrame: (frame) => defaultFrames.push(frame) });
 
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "Hel", streaming: true });
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true });
-    hub.connect({ connectionId: "connection-b", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => secondFrames.push(frame) });
+    hub.connect({ connectionId: "connection-b", roomId: "room-1", token: token1, onFrame: (frame) => secondFrames.push(frame) });
 
     expect(firstFrames.filter((frame) => frame.kind === "agent-output")).toEqual([
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hel", streaming: true },
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
     ]);
     expect(secondFrames).toContainEqual({ kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true });
-    expect(legacyFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
+    expect(defaultFrames.filter((frame) => frame.kind === "agent-output")).toEqual([
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hel", streaming: true },
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
+    ]);
 
     ledger.append({
       eventId: "request-1:output",
@@ -158,12 +164,13 @@ describe("RoomStreamHub", () => {
       createdAt: 21,
       payload: { requestId: "request-1", state: "output", text: "Hello" },
     });
+    await ledger.commit();
     const thirdFrames: StreamFrame[] = [];
-    hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => thirdFrames.push(frame) });
+    hub.connect({ connectionId: "connection-c", roomId: "room-1", token: token1, onFrame: (frame) => thirdFrames.push(frame) });
     expect(thirdFrames.some((frame) => frame.kind === "agent-output")).toBe(false);
   });
 
-  it("does not replay transient Agent output after a terminal frame or event", () => {
+  it("does not replay transient Agent output after a terminal frame or event", async () => {
     const { hub, ledger, token1 } = setup();
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-finished", text: "done", streaming: false });
     hub.publishAgentOutput({ roomId: "room-1", requestId: "request-completed", text: "partial", streaming: true });
@@ -184,70 +191,50 @@ describe("RoomStreamHub", () => {
       createdAt: 22,
       payload: { requestId: "request-rejected" },
     });
+    await ledger.commit();
     const frames: StreamFrame[] = [];
 
-    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, agentOutput: true, onFrame: (frame) => frames.push(frame) });
+    hub.connect({ connectionId: "connection-a", roomId: "room-1", token: token1, onFrame: (frame) => frames.push(frame) });
 
     expect(frames.some((frame) => frame.kind === "agent-output")).toBe(false);
   });
 
-  it("sends collaboration events only to clients that declared the capability", () => {
-    const { hub, token1 } = setup();
-    const event: CollaborationEvent = {
-      type: "workspace-sharing.changed",
-      state: { roomId: "room-1", enabled: false, revision: 2 },
-    };
-    const legacyEvents: CollaborationEvent[] = [];
-    const capableEvents: CollaborationEvent[] = [];
-
-    hub.connect({
-      connectionId: "legacy",
-      roomId: "room-1",
-      token: token1,
-      onFrame: () => {},
-      onCollaborationEvent: (value) => legacyEvents.push(value),
-    });
-    hub.connect({
-      connectionId: "capable",
-      roomId: "room-1",
-      token: token1,
-      capabilities: [SIDECAR_REVIEW_CAPABILITY],
-      onFrame: () => {},
-      onCollaborationEvent: (value) => capableEvents.push(value),
-    });
-
-    hub.publishCollaborationEvent(event);
-
-    expect(legacyEvents).toEqual([]);
-    expect(capableEvents).toEqual([event]);
-  });
-
-  it("sends ChangeSet Review notifications only to change-set clients without advancing the room cursor", () => {
+  it("persists, broadcasts, and replays collaboration events through the room cursor", async () => {
     const { hub, ledger, token1 } = setup();
-    const event = {
-      type: "changeset.review-assigned",
+    const firstFrames: StreamFrame[] = [];
+    const secondFrames: StreamFrame[] = [];
+    const thirdFrames: StreamFrame[] = [];
+    hub.connect({ connectionId: "review-a", roomId: "room-1", token: token1, onFrame: (frame) => firstFrames.push(frame) });
+    hub.connect({ connectionId: "review-b", roomId: "room-1", token: token1, onFrame: (frame) => secondFrames.push(frame) });
+    hub.connect({ connectionId: "review-c", roomId: "room-1", token: token1, onFrame: (frame) => thirdFrames.push(frame) });
+
+    const event = ledger.append({
+      eventId: `changeset-assignment:${"b".repeat(64)}`,
       roomId: "room-1",
-      assignment: {
+      type: "changeset.review-assigned",
+      actor: { memberId: "member-host", principalId: "host" },
+      createdAt: 10,
+      payload: {
         assignmentId: "b".repeat(64),
         changeSetId: "a".repeat(64),
-        assignedBy: "member-author",
+        assignedBy: "member-host",
         reviewerId: "member-reviewer",
         createdAt: 10,
       },
-    } as CollaborationEvent;
-    const legacyEvents: CollaborationEvent[] = [];
-    const sidecarEvents: CollaborationEvent[] = [];
-    const changeSetEvents: CollaborationEvent[] = [];
+    });
 
-    hub.connect({ connectionId: "legacy-review", roomId: "room-1", token: token1, onFrame: () => {}, onCollaborationEvent: (value) => legacyEvents.push(value) });
-    hub.connect({ connectionId: "sidecar-review", roomId: "room-1", token: token1, capabilities: [SIDECAR_REVIEW_CAPABILITY], onFrame: () => {}, onCollaborationEvent: (value) => sidecarEvents.push(value) });
-    hub.connect({ connectionId: "changeset-review", roomId: "room-1", token: token1, capabilities: [CHANGE_SET_CAPABILITY], onFrame: () => {}, onCollaborationEvent: (value) => changeSetEvents.push(value) });
+    for (const frames of [firstFrames, secondFrames, thirdFrames]) {
+      expect(frames).not.toContainEqual({ kind: "event", event });
+    }
+    await ledger.commit();
 
-    hub.publishCollaborationEvent(event);
+    for (const frames of [firstFrames, secondFrames, thirdFrames]) {
+      expect(frames).toContainEqual({ kind: "event", event });
+    }
+    expect(ledger.latestSeq("room-1")).toBe(1);
 
-    expect(legacyEvents).toEqual([]);
-    expect(sidecarEvents).toEqual([]);
-    expect(changeSetEvents).toEqual([event]);
-    expect(ledger.latestSeq("room-1")).toBe(0);
+    const replayed: StreamFrame[] = [];
+    hub.connect({ connectionId: "replayed-review", roomId: "room-1", token: token1, afterSeq: 0, onFrame: (frame) => replayed.push(frame) });
+    expect(replayed).toContainEqual({ kind: "event", event });
   });
 });

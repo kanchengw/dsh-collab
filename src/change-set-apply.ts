@@ -3,7 +3,10 @@ import type { ChangeSetReview } from "./change-set-reviews.js";
 import type { StagedChangeSet } from "./change-set-staging.js";
 import type { ChangeSetDraftFile } from "./change-sets.js";
 import { CollabError } from "./errors.js";
+import type { EventLedger } from "./events.js";
 import type { RoomStore } from "./room.js";
+import { assertRoomEventConsistency, type ExpectedRoomEvent } from "./room-event-consistency.js";
+import type { RoomEventType } from "./types.js";
 import { isSafeWorkspaceSnapshotPath } from "./workspace-snapshot-store.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
@@ -19,6 +22,7 @@ export interface ChangeSetApplyWorkspaceReader {
 
 export interface ChangeSetApplyStagingReader {
   get(roomId: string, changeSetId: string): Promise<StagedChangeSet | undefined>;
+  readPatch(roomId: string, changeSetId: string): Promise<Uint8Array>;
   readResult(roomId: string, changeSetId: string, path: string): Promise<Uint8Array>;
 }
 
@@ -38,6 +42,7 @@ export interface ChangeSetApplyPlan {
   roomId: string;
   changeSetId: string;
   baseWorkspaceVersionId: string;
+  patch: Uint8Array;
   operations: ChangeSetApplyPlanOperation[];
 }
 
@@ -72,14 +77,9 @@ export type ChangeSetApplyPreflightResult =
   | { outcome: "ready"; plan: ChangeSetApplyPlan }
   | { outcome: "conflicted"; conflict: ChangeSetApplyConflictRecord };
 
-export interface ChangeSetApplyConflictEvent {
-  type: "changeset.apply-conflicted";
-  roomId: string;
-  conflict: ChangeSetApplyConflictRecord;
-}
-
 export interface ChangeSetApplyPreflightServiceOptions {
   rooms: RoomStore;
+  ledger: EventLedger;
   changeSets: ChangeSetApplyStagingReader;
   reviews: ChangeSetApplyReviewReader;
   workspace: ChangeSetApplyWorkspaceReader;
@@ -196,7 +196,6 @@ function validateConflictRecord(value: ChangeSetApplyConflictRecord, rooms: Room
 
 export class ChangeSetApplyPreflightService {
   private readonly conflicts = new Map<string, ChangeSetApplyConflictRecord>();
-  private readonly listeners = new Set<(event: ChangeSetApplyConflictEvent) => void>();
   private readonly now: () => number;
 
   constructor(private readonly options: ChangeSetApplyPreflightServiceOptions) {
@@ -217,12 +216,20 @@ export class ChangeSetApplyPreflightService {
       if (service.conflicts.has(conflict.conflictId)) throw invalidSnapshot("ChangeSet apply preflight snapshot contains duplicate conflicts");
       service.conflicts.set(conflict.conflictId, conflict);
     }
+    const managedTypes = new Set<RoomEventType>(["changeset.apply-conflicted"]);
+    const expected: ExpectedRoomEvent[] = [...service.conflicts.values()].map((conflict) => {
+      const actor = options.rooms.listMembers(conflict.roomId).find((member) => member.memberId === conflict.detectedBy)!;
+      return {
+        eventId: `changeset-apply-conflicted:${conflict.conflictId}`,
+        roomId: conflict.roomId,
+        type: "changeset.apply-conflicted",
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        createdAt: conflict.createdAt,
+        payload: conflict,
+      };
+    });
+    assertRoomEventConsistency(options.ledger, managedTypes, expected);
     return service;
-  }
-
-  subscribe(listener: (event: ChangeSetApplyConflictEvent) => void): () => void {
-    this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
   }
 
   async preflight(input: { roomId: string; principalId: string; changeSetId: string }): Promise<ChangeSetApplyPreflightResult> {
@@ -230,6 +237,21 @@ export class ChangeSetApplyPreflightService {
     if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can preflight a ChangeSet apply");
     const changeSet = validateChangeSet(await this.options.changeSets.get(input.roomId, input.changeSetId), input.roomId, input.changeSetId);
     validateApprovedReview(await this.options.reviews.getReview(input), changeSet);
+    let patch: Uint8Array;
+    try {
+      patch = await this.options.changeSets.readPatch(input.roomId, input.changeSetId);
+    } catch {
+      throw invalidSnapshot("Staged ChangeSet patch cannot be read");
+    }
+    if (!(patch instanceof Uint8Array) || patch.byteLength !== changeSet.draft.artifact.patchBytes
+      || hash(patch) !== changeSet.draft.artifact.patchHash) {
+      throw invalidSnapshot("Staged ChangeSet patch does not match its manifest");
+    }
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(patch);
+    } catch {
+      throw invalidSnapshot("Staged ChangeSet patch is not UTF-8 text");
+    }
 
     const operations: ChangeSetApplyPlanOperation[] = [];
     const conflicts: ChangeSetApplyConflictItem[] = [];
@@ -279,13 +301,16 @@ export class ChangeSetApplyPreflightService {
       });
     }
 
-    if (conflicts.length > 0) return { outcome: "conflicted", conflict: this.recordConflict(changeSet, actor.memberId, conflicts) };
+    if (conflicts.length > 0) {
+      return { outcome: "conflicted", conflict: this.recordConflict(changeSet, actor.memberId, input.principalId, conflicts) };
+    }
     return {
       outcome: "ready",
       plan: {
         roomId: input.roomId,
         changeSetId: input.changeSetId,
         baseWorkspaceVersionId: changeSet.draft.baseWorkspaceVersionId,
+        patch: structuredClone(patch),
         operations,
       },
     };
@@ -299,7 +324,7 @@ export class ChangeSetApplyPreflightService {
     return { version: 1, conflicts: structuredClone([...this.conflicts.values()]) };
   }
 
-  private recordConflict(changeSet: StagedChangeSet, detectedBy: string, conflicts: ChangeSetApplyConflictItem[]): ChangeSetApplyConflictRecord {
+  private recordConflict(changeSet: StagedChangeSet, detectedBy: string, principalId: string, conflicts: ChangeSetApplyConflictItem[]): ChangeSetApplyConflictRecord {
     const identityInput = {
       roomId: changeSet.draft.roomId,
       changeSetId: changeSet.changeSetId,
@@ -314,8 +339,14 @@ export class ChangeSetApplyPreflightService {
     if (!Number.isSafeInteger(createdAt) || createdAt < 0) throw new Error("ChangeSet apply conflict timestamp is invalid");
     const conflict: ChangeSetApplyConflictRecord = { version: 1, conflictId, ...identityInput, createdAt };
     this.conflicts.set(conflictId, conflict);
-    const event: ChangeSetApplyConflictEvent = { type: "changeset.apply-conflicted", roomId: conflict.roomId, conflict: structuredClone(conflict) };
-    for (const listener of this.listeners) listener(event);
+    this.options.ledger.append({
+      eventId: `changeset-apply-conflicted:${conflict.conflictId}`,
+      roomId: conflict.roomId,
+      type: "changeset.apply-conflicted",
+      actor: { memberId: conflict.detectedBy, principalId },
+      createdAt: conflict.createdAt,
+      payload: conflict,
+    });
     return structuredClone(conflict);
   }
 }

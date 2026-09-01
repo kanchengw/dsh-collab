@@ -78,10 +78,6 @@ export class HostSnapshotFile {
     return this.enqueue(() => serialized);
   }
 
-  saveLatest(snapshot: () => DshCollabHostRuntimeSnapshot): Promise<void> {
-    return this.enqueue(() => JSON.stringify(snapshot(), null, 2) + "\n");
-  }
-
   private enqueue(serialize: () => string): Promise<void> {
     this.writes = this.writes.catch(() => undefined).then(async () => {
       const serialized = serialize();

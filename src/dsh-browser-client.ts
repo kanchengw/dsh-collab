@@ -3,7 +3,7 @@ import { projectAgentQueue, projectTimeline } from "./ui.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import { decodeCollabInvitation, encodeCollabInvitation, type CollabInvitationNetwork } from "./invitation.js";
 import type { EasyTierInvitationNetwork } from "./easytier-invitation.js";
-import { COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
+import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, COLLAB_PROTOCOL, SIDECAR_REVIEW_CAPABILITY, decodeServerStreamFrame, encodeClientStreamFrame, type DecodedServerStreamFrame } from "./protocol.js";
 import type { AgentOutputFrame, AgentQueueItem, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 import type { LocalSnapshotAccess } from "./local-sidecar.js";
@@ -69,6 +69,7 @@ export interface ParticipantResumeState {
 export interface JoinedRoomRef { gatewayEndpoint: string; roomId: string }
 
 export interface ParticipantPersistence {
+  prepare?(): Promise<void>;
   load(ref?: JoinedRoomRef): ParticipantResumeState | undefined;
   list?(): readonly ParticipantResumeState[];
   subscribe?(listener: () => void): () => void;
@@ -120,6 +121,7 @@ type SnapshotData = {
 };
 
 type EventsData = { events: RoomEvent[]; nextSeq?: number };
+type StreamTicketData = { ticket: string; expiresAt: number };
 
 type Envelope = { ok: boolean; data?: unknown; error?: { code?: string; message?: string } };
 
@@ -188,6 +190,15 @@ function snapshotData(value: unknown, roomId: string): SnapshotData {
   }
   if (data.agentQueue !== undefined) data.agentQueue = agentQueue(data.agentQueue, roomId);
   return data;
+}
+
+function streamTicketData(value: unknown): StreamTicketData {
+  const data = record(value);
+  if (!data || typeof data.ticket !== "string" || data.ticket === ""
+    || !Number.isSafeInteger(data.expiresAt) || (data.expiresAt as number) < 0) {
+    throw new Error("Gateway stream ticket response is invalid");
+  }
+  return data as unknown as StreamTicketData;
 }
 
 function agentQueue(value: unknown, roomId: string): AgentQueueItem[] {
@@ -415,7 +426,7 @@ function reviewPublication(value: unknown, roomId: string, reviewPointId: string
     || (accepted
       ? typeof publication.acceptedBy !== "string" || publication.acceptedBy.trim() === ""
         || !Number.isSafeInteger(publication.acceptedAt) || (publication.acceptedAt as number) < 0
-        || typeof publication.integrationRequestId !== "string" || !/^(?:[a-f0-9]{64}|internal:mainline:[a-f0-9]{64})$/.test(publication.integrationRequestId)
+        || typeof publication.integrationRequestId !== "string" || !/^internal:mainline:[a-f0-9]{64}$/.test(publication.integrationRequestId)
       : publication.acceptedBy !== undefined || publication.acceptedAt !== undefined || publication.integrationRequestId !== undefined)) {
     throw new Error("Gateway Review publication response is invalid");
   }
@@ -566,7 +577,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const normalizedRoomId = roomId.trim();
     if (normalizedRoomId === "") throw new Error("roomId must not be blank");
     parseEnvelope(await this.request("DELETE", `/v1/rooms/${encodeURIComponent(normalizedRoomId)}/host`, undefined, false, this.hostBase));
-    this.disconnect();
+    if (this.snapshot.role === "host" && this.roomId === normalizedRoomId) this.disconnect();
   }
 
   disconnect(): void {
@@ -585,6 +596,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async join(input: DshBrowserJoinInput, roomId?: string): Promise<void> {
+    await this.options.participantPersistence?.prepare?.();
     const invitation = decodeCollabInvitation(input.invitation);
     let nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
     const nextRoomId = invitation.roomId;
@@ -651,6 +663,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async restoreParticipant(ref?: JoinedRoomRef): Promise<boolean> {
+    await this.options.participantPersistence?.prepare?.();
     const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
     const nextRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
@@ -700,12 +713,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async disconnectJoinedRoom(): Promise<void> {
+    await this.options.participantPersistence?.prepare?.();
     const saved = this.participantRef ? this.options.participantPersistence?.load(this.participantRef) : undefined;
-    this.disconnect();
     if (saved?.easyTier) await this.options.easyTierTransport?.stop();
+    this.disconnect();
   }
 
   async forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> {
+    await this.options.participantPersistence?.prepare?.();
     const saved = this.options.participantPersistence?.load(ref);
     if (!saved) return;
     if (this.snapshot.role === "participant" && this.participantRef?.roomId === ref.roomId && this.participantRef.gatewayEndpoint === ref.gatewayEndpoint) {
@@ -717,10 +732,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> {
-    this.base = this.hostBase;
-    if (roomId?.trim()) this.roomId = roomId.trim();
+    const inviteRoomId = roomId?.trim() || this.roomId;
     const inviteId = input.inviteId?.trim() || randomId("invite");
-    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(this.roomId)}/invites`, { inviteId, expiresAt: input.expiresAt }, false));
+    const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(inviteRoomId)}/invites`, { inviteId, expiresAt: input.expiresAt }, false, this.hostBase));
     const created = data as { invite?: { inviteId?: unknown; roomId?: unknown; expiresAt?: unknown }; token?: unknown };
     if (!created?.invite || typeof created.invite.inviteId !== "string" || typeof created.invite.roomId !== "string" || typeof created.invite.expiresAt !== "number" || typeof created.token !== "string") {
       throw new Error("Gateway invite response is invalid");
@@ -733,9 +747,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       token: created.token,
       expiresAt: created.invite.expiresAt,
     } as const;
-    return { invitation: encodeCollabInvitation(input.network
-      ? { protocol: "dsh-collab.invitation.v2", ...common, network: input.network }
-      : { protocol: "dsh-collab.v1", ...common }) };
+    const endpoint = new URL(input.gatewayEndpoint);
+    const network = input.network ?? (endpoint.protocol === "wss:"
+      ? { mode: "custom-wss" as const, version: 1 as const, endpoint: input.gatewayEndpoint }
+      : { mode: "lan" as const, version: 1 as const, endpoint: input.gatewayEndpoint });
+    return { invitation: encodeCollabInvitation({ protocol: "dsh-collab.invitation.v2", ...common, network }) };
   }
 
   async send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void> {
@@ -921,13 +937,21 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     )), input.roomId);
     const events = await this.recoverEvents(input.roomId, snapshot.lastEventSeq, input.base, input.data.roomToken);
     const lastEventSeq = Math.max(snapshot.lastEventSeq, ...[...events.values()].map((event) => event.seq));
+    const streamTicket = streamTicketData(parseEnvelope(await this.request(
+      "POST",
+      `/v1/rooms/${encodeURIComponent(input.roomId)}/stream-tickets`,
+      {},
+      true,
+      input.base,
+      input.data.roomToken,
+    )));
     const url = new URL(gatewayWebSocketUrl(input.base) + "/v1/stream");
     url.searchParams.set("roomId", input.roomId);
     url.searchParams.set("after", String(lastEventSeq));
     url.searchParams.set("connectionId", this.connectionIdFactory());
-    url.searchParams.set("token", input.data.roomToken);
-    url.searchParams.append("feature", "agent-output");
+    url.searchParams.set("ticket", streamTicket.ticket);
     url.searchParams.append("feature", SIDECAR_REVIEW_CAPABILITY);
+    url.searchParams.append("feature", CHANGE_SET_CAPABILITY);
     const bufferedFrames: string[] = [];
     const socket = await new Promise<BrowserSocket>((resolve, reject) => {
       const socket = new this.socketFactory(url.toString());
@@ -961,13 +985,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.events.clear();
     for (const [eventId, event] of events) this.events.set(eventId, event);
     this.activeAgentOutputs.clear();
-    const sameRoom = input.roomId === this.snapshot.roomId;
     this.snapshot = {
       roomId: input.roomId,
       gatewayEndpoint: input.participantRef?.gatewayEndpoint ?? gatewayWebSocketUrl(input.base),
       memberId: input.data.member.memberId,
       roomTitle: snapshot.room.title,
-      hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? input.data.room.hostDisplayName ?? (sameRoom ? this.snapshot.hostDisplayName : ""),
+      hostDisplayName: snapshot.room.hostDisplayName ?? snapshot.members.find((member) => member.role === "host")?.displayName ?? input.data.room.hostDisplayName ?? "",
       role: input.data.member.role === "host" ? "host" : "participant",
       connection: "online",
       onlineCount: 0,
@@ -979,7 +1002,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       timeline: projectTimeline([...events.values()], []),
       agentQueue: projectAgentQueue([...events.values()]),
       roomEvents: [...events.values()],
-      ...(sameRoom && this.snapshot.workspaceSharing ? { workspaceSharing: this.snapshot.workspaceSharing } : {}),
     };
     this.manuallyDisconnected = false;
     this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
@@ -1044,7 +1066,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private async request(method: string, path: string, body: unknown, withToken: boolean, base = this.base, token = this.token): Promise<unknown> {
     const headers: Record<string, string> = {
       accept: "application/json",
-      [COLLAB_CAPABILITY_HEADER]: SIDECAR_REVIEW_CAPABILITY,
+      [COLLAB_CAPABILITY_HEADER]: `${SIDECAR_REVIEW_CAPABILITY},${CHANGE_SET_CAPABILITY}`,
     };
     if (body !== undefined) headers["content-type"] = "application/json";
     if (withToken && token) headers.authorization = `Bearer ${token}`;
@@ -1079,10 +1101,6 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       this.emit();
       return;
     }
-    if (frame.kind === "collaboration-event") {
-      if (frame.event.type === "workspace-sharing.changed") this.applyWorkspaceSharing(frame.event.state);
-      return;
-    }
     if (frame.kind === "event") {
       const event = frame.event;
       if (event.roomId !== this.roomId) return;
@@ -1113,7 +1131,19 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         const memberId = (event.payload as Record<string, unknown>).memberId;
         if (typeof memberId === "string") members = (members ?? []).filter((member) => member.memberId !== memberId);
       }
-      this.snapshot = { ...this.snapshot, members, timeline: this.projectTimeline(), agentQueue: projectAgentQueue([...this.events.values()]), roomEvents: [...this.events.values()] };
+      let workspaceSharing = this.snapshot.workspaceSharing;
+      if (event.type === "workspace-sharing.changed") {
+        const state = workspaceSharingState(event.payload, event.roomId);
+        if ((workspaceSharing?.revision ?? -1) <= state.revision) workspaceSharing = state;
+      }
+      this.snapshot = {
+        ...this.snapshot,
+        members,
+        timeline: this.projectTimeline(),
+        agentQueue: projectAgentQueue([...this.events.values()]),
+        roomEvents: [...this.events.values()],
+        ...(workspaceSharing ? { workspaceSharing } : {}),
+      };
       this.emit();
     }
   }
@@ -1123,7 +1153,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   private async recoverEvents(roomId: string, untilSeq: number, base: string, token: string): Promise<Map<string, RoomEvent>> {
-    const events = roomId === this.roomId ? new Map(this.events) : new Map<string, RoomEvent>();
+    const events = new Map<string, RoomEvent>();
     let after = 0;
     while (after < untilSeq) {
       const data = parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(roomId)}/events?after=${String(after)}&limit=500`, undefined, true, base, token)) as EventsData;

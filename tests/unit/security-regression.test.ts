@@ -19,7 +19,7 @@ function setup() {
 
 async function participantToken(gateway: CollabGateway): Promise<string> {
   const invite = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/invites", auth: { principalId: "host" }, body: { inviteId: "invite-1", expiresAt: 100 } });
-  const joined = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-1", token: (invite.body as { token: string }).token, memberId: "member-bob", displayName: "Bob" } });
+  const joined = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/join", body: { inviteId: "invite-1", token: (invite.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" } });
   return (joined.body as { roomToken: string }).roomToken;
 }
 
@@ -33,7 +33,7 @@ describe("security regression", () => {
     expect(message.status).toBe(201);
     const replayConflict = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "forged", text: "changed" } });
     expect(replayConflict.status).toBe(409);
-    expect(ledger.readAfter("room-1", 0).at(-1)?.actor).toEqual({ memberId: "member-bob", principalId: "invite:invite-1" });
+    expect(ledger.readAfter("room-1", 0).at(-1)?.actor).toEqual({ memberId: "member-bob", principalId: "invite:invite-1:member-bob" });
   });
 
   it("rejects participant steer and approval decisions", async () => {
@@ -43,7 +43,7 @@ describe("security regression", () => {
     expect(steer.status).toBe(403);
     const approvals = new ApprovalStore({ rooms, ledger, answerer: {} });
     approvals.request({ approvalId: "approval-1", roomId: "room-1", requesterPrincipalId: "host", toolName: "bash", reason: "release", expiresAt: 100, now: 10 });
-    expect(() => approvals.decide({ approvalId: "approval-1", roomId: "room-1", principalId: "invite:invite-1", outcome: "allowed-once", now: 11 })).toThrow("not allowed");
+    expect(() => approvals.decide({ approvalId: "approval-1", roomId: "room-1", principalId: "invite:invite-1:member-bob", outcome: "allowed-once", now: 11 })).toThrow("not allowed");
   });
 
   it("bounds context references before mapping untrusted input", () => {

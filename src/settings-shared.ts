@@ -1,5 +1,3 @@
-import type { EasyTierInvitationNetwork } from "./easytier-invitation.js";
-
 export type CollabExposeMode = "loopback" | "network";
 export type CollabConnectionMethod = "unconfigured" | "private-network" | "easytier" | "custom-wss";
 export type CollabApprovalPolicy = "host-only" | "disabled";
@@ -54,11 +52,6 @@ export const defaultCollabSettings: CollabSettings = {
   maxQueue: 5,
 };
 
-/** The pre-release default was 32; migrate that value to the current default on read. */
-export function migrateLegacyMaxQueue(value: number | undefined): number | undefined {
-  return value === 32 ? defaultCollabSettings.maxQueue : value;
-}
-
 export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
 export const DSH_COLLAB_PARTICIPANT_NAMESPACE = "dsh-collab-participant";
 
@@ -88,24 +81,18 @@ export interface DshCollabPersistedSettings {
 
 export interface DshCollabEasyTierRoom {
   roomId: string;
-  network: EasyTierInvitationNetwork;
+  credentialKey: string;
 }
 
 export interface DshCollabJoinedRoom {
   gatewayEndpoint: string;
   roomId: string;
   memberId: string;
-  credential: string;
+  credentialKey: string;
   roomTitle?: string;
   hostDisplayName?: string;
-  easyTier?: {
-    network: EasyTierInvitationNetwork;
-    localVirtualAddress: string;
-  };
 }
 
 export interface DshCollabParticipantSettings {
   joinedRooms?: DshCollabJoinedRoom[];
-  /** Pre-release migration source; new writes use joinedRooms. */
-  resume?: DshCollabJoinedRoom;
 }

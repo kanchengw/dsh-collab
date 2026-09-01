@@ -76,6 +76,120 @@ describe("EventLedger", () => {
     }
   });
 
+  it("rejects reusing an event id with a different timestamp", () => {
+    const ledger = new EventLedger();
+    ledger.append({
+      eventId: "event-1",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      createdAt: 1,
+      payload: { text: "same payload" },
+    });
+
+    try {
+      ledger.append({
+        eventId: "event-1",
+        roomId: "room-1",
+        type: "human.message",
+        actor,
+        createdAt: 2,
+        payload: { text: "same payload" },
+      });
+      throw new Error("expected timestamp reuse to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "EVENT_CONFLICT" });
+    }
+  });
+
+  it("publishes only events covered by a successful persistence watermark", async () => {
+    const ledger = new EventLedger();
+    const committed: string[] = [];
+    ledger.subscribeCommitted((event) => committed.push(event.eventId));
+    ledger.append({
+      eventId: "event-1",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      payload: { text: "first" },
+    });
+    let release!: () => void;
+    const persistence = new Promise<void>((resolve) => { release = resolve; });
+    const committing = ledger.commit(async () => await persistence);
+    ledger.append({
+      eventId: "event-2",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      payload: { text: "second" },
+    });
+
+    release();
+    await committing;
+
+    expect(committed).toEqual(["event-1"]);
+    expect(ledger.readCommittedAfter("room-1", 0).map((event) => event.eventId)).toEqual(["event-1"]);
+    await ledger.commit();
+    expect(committed).toEqual(["event-1", "event-2"]);
+  });
+
+  it("keeps failed persistence events hidden until a later barrier succeeds", async () => {
+    const ledger = new EventLedger();
+    const committed: string[] = [];
+    ledger.subscribeCommitted((event) => committed.push(event.eventId));
+    ledger.append({
+      eventId: "event-1",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      payload: { text: "retry" },
+    });
+
+    await expect(ledger.commit(async () => { throw new Error("disk failed"); })).rejects.toThrow("disk failed");
+    expect(committed).toEqual([]);
+    expect(ledger.readCommittedAfter("room-1", 0)).toEqual([]);
+
+    await ledger.commit();
+    expect(committed).toEqual(["event-1"]);
+  });
+
+  it("serializes concurrent persistence writes and publishes their watermarks in order", async () => {
+    const ledger = new EventLedger();
+    const writes: string[] = [];
+    let releaseFirst!: () => void;
+    const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    ledger.append({
+      eventId: "event-1",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      payload: { text: "first" },
+    });
+    const first = ledger.commit(async () => {
+      writes.push("first");
+      await firstWrite;
+    });
+    ledger.append({
+      eventId: "event-2",
+      roomId: "room-1",
+      type: "human.message",
+      actor,
+      payload: { text: "second" },
+    });
+    let secondSettled = false;
+    const second = ledger.commit(async () => { writes.push("second"); }).then(() => { secondSettled = true; });
+
+    await Promise.resolve();
+    expect(writes).toEqual(["first"]);
+    expect(secondSettled).toBe(false);
+    expect(ledger.latestCommittedSeq("room-1")).toBe(0);
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(ledger.latestCommittedSeq("room-1")).toBe(2);
+    expect(writes).toEqual(["first", "second"]);
+  });
+
   it("caps reads and survives snapshot restore", () => {
     const ledger = new EventLedger();
     for (let index = 0; index < 510; index += 1) {

@@ -67,7 +67,7 @@ async function configValue(commands: RepositoryCommandPort, key: string): Promis
   return result.stdout.trim();
 }
 
-async function ensureSyntheticGitBaseline(workspace: RoomWorkspace, subprocess: DshRepositorySubprocess): Promise<void> {
+export async function ensureRoomWorkspaceGitBaseline(workspace: RoomWorkspace, subprocess: DshRepositorySubprocess): Promise<void> {
   const commands = createDshRepositoryCommandPort({ subprocess, cwd: workspace.workspacePath });
   const workspaceRoot = await canonical(workspace.workspacePath);
   let root = await repositoryRoot(commands);
@@ -116,25 +116,21 @@ export class DshRoomWorkspaceBindingService {
   }) {}
 
   async bind(input: { roomId: string; memberId: string; sessionId: string }): Promise<RoomSessionLink> {
-    const workspace = await this.options.roomWorkspaces.open(input.roomId);
-    if (!workspace) throw new Error("Room Workspace does not exist");
-    const agent = this.options.agents.get(input.sessionId);
-    if (!agent) throw new Error("The selected live native Session does not exist");
-    const sessionCwd = agent.session?.header?.cwd;
-    if (!sessionCwd) throw new Error("The selected native Session does not expose a cwd");
-    const [workspacePath, cwd] = await Promise.all([canonical(workspace.workspacePath), canonical(sessionCwd)]);
-    if (!samePath(workspacePath, cwd)) throw new Error("Native Session cwd does not match the Room Workspace");
-
-    await ensureSyntheticGitBaseline(workspace, this.options.subprocess);
-    const nativeWorkspace = await this.options.nativeWorkspaces.create(workspacePath);
-    if (!samePath(await canonical(nativeWorkspace.path), workspacePath)) {
-      throw new Error("DSH native Workspace resolved to a different path");
-    }
-    await nativeWorkspace.attachSession(input.sessionId);
+    const prepared = await this.prepare(input);
     try {
-      return this.options.links.bind({ ...input, workspacePath, sessionCwd: cwd });
+      return this.options.links.bind({ ...input, workspacePath: prepared.workspacePath, sessionCwd: prepared.cwd });
     } catch (error) {
-      await nativeWorkspace.detachSession(input.sessionId).catch(() => undefined);
+      await prepared.nativeWorkspace.detachSession(input.sessionId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async rebindMember(input: { roomId: string; memberId: string; sessionId: string }): Promise<RoomSessionLink> {
+    const prepared = await this.prepare(input);
+    try {
+      return this.options.links.rebindMember({ ...input, workspacePath: prepared.workspacePath, sessionCwd: prepared.cwd });
+    } catch (error) {
+      await prepared.nativeWorkspace.detachSession(input.sessionId).catch(() => undefined);
       throw error;
     }
   }
@@ -145,5 +141,28 @@ export class DshRoomWorkspaceBindingService {
     const nativeWorkspace = await this.options.nativeWorkspaces.resolveByPath(link.workspacePath);
     await nativeWorkspace?.detachSession(sessionId);
     return this.options.links.unbind(sessionId);
+  }
+
+  private async prepare(input: { roomId: string; sessionId: string }): Promise<{
+    workspacePath: string;
+    cwd: string;
+    nativeWorkspace: DshNativeWorkspace;
+  }> {
+    const workspace = await this.options.roomWorkspaces.open(input.roomId);
+    if (!workspace) throw new Error("Room Workspace does not exist");
+    const agent = this.options.agents.get(input.sessionId);
+    if (!agent) throw new Error("The selected live native Session does not exist");
+    const sessionCwd = agent.session?.header?.cwd;
+    if (!sessionCwd) throw new Error("The selected native Session does not expose a cwd");
+    const [workspacePath, cwd] = await Promise.all([canonical(workspace.workspacePath), canonical(sessionCwd)]);
+    if (!samePath(workspacePath, cwd)) throw new Error("Native Session cwd does not match the Room Workspace");
+
+    await ensureRoomWorkspaceGitBaseline(workspace, this.options.subprocess);
+    const nativeWorkspace = await this.options.nativeWorkspaces.create(workspacePath);
+    if (!samePath(await canonical(nativeWorkspace.path), workspacePath)) {
+      throw new Error("DSH native Workspace resolved to a different path");
+    }
+    await nativeWorkspace.attachSession(input.sessionId);
+    return { workspacePath, cwd, nativeWorkspace };
   }
 }

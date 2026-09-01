@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkspaceSnapshotFile, WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 import { DshRoomWorkspaceBindingService } from "../../src/dsh-room-workspace.js";
@@ -29,6 +29,23 @@ interface VersionFixture {
   artifacts: WorkspaceSnapshotStore;
   current: WorkspaceVersionRecord;
   target: WorkspaceVersionRecord;
+}
+
+function crashTransaction(workspaceRoot: string): {
+  transactionId: string;
+  backupName: string;
+  stagingName: string;
+  manifestTempName: string;
+} {
+  const transactionId = randomUUID();
+  const stagingName = `.s-${transactionId.replaceAll("-", "").slice(0, 12)}`;
+  roots.push(join(dirname(workspaceRoot), stagingName));
+  return {
+    transactionId,
+    backupName: `.workspace-sync-backup-${transactionId}`,
+    stagingName,
+    manifestTempName: `current.json.sync-${transactionId}.tmp`,
+  };
 }
 
 async function versionFixture(): Promise<VersionFixture> {
@@ -70,10 +87,10 @@ async function versionFixture(): Promise<VersionFixture> {
   return { artifacts, current, target };
 }
 
-async function materializedFixture(): Promise<VersionFixture & { materializer: RoomWorkspaceMaterializer; workspaceRoot: string }> {
+async function materializedFixture(input: { workspaceRoot?: string } = {}): Promise<VersionFixture & { materializer: RoomWorkspaceMaterializer; workspaceRoot: string }> {
   const fixture = await versionFixture();
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "dsh-collab-sync-rooms-"));
-  roots.push(workspaceRoot);
+  const workspaceRoot = input.workspaceRoot ?? await mkdtemp(join(tmpdir(), "dsh-collab-sync-rooms-"));
+  if (!input.workspaceRoot) roots.push(workspaceRoot);
   const materializer = new RoomWorkspaceMaterializer({ root: workspaceRoot, artifacts: fixture.artifacts });
   const workspace = await materializer.materialize({ roomId: "room-1", record: fixture.current });
   const subprocess = localDshSubprocess();
@@ -91,6 +108,98 @@ async function materializedFixture(): Promise<VersionFixture & { materializer: R
 }
 
 describe("RoomWorkspaceSyncService", () => {
+  it("recovers the previous workspace after a process exits with the live workspace renamed away", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    const { backupName, stagingName, manifestTempName } = crashTransaction(fixture.workspaceRoot);
+    await rename(workspace.workspacePath, join(workspace.root, backupName));
+    await mkdir(join(dirname(fixture.workspaceRoot), stagingName));
+    await writeFile(join(workspace.root, "workspace-sync.json"), JSON.stringify({
+      version: 1,
+      roomId: "room-1",
+      ownerPid: 2147483647,
+      previousVersionId: fixture.current.version.workspaceVersionId,
+      targetVersionId: fixture.target.version.workspaceVersionId,
+      backupName,
+      stagingName,
+      manifestTempName,
+    }));
+
+    const restarted = new RoomWorkspaceMaterializer({ root: fixture.workspaceRoot, artifacts: fixture.artifacts });
+    const recovered = await restarted.open("room-1");
+
+    expect(recovered?.record).toEqual(fixture.current);
+    expect(await readFile(join(recovered!.workspacePath, "README.md"), "utf8")).toBe("one\n");
+    expect((await readdir(workspace.root)).filter((name) => name.includes("sync"))).toEqual([]);
+    expect((await readdir(fixture.workspaceRoot)).filter((name) => name.includes("sync"))).toEqual([]);
+    await expect(lstat(join(dirname(fixture.workspaceRoot), stagingName))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rolls back a promoted workspace when the process exits before committing its base manifest", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    const { backupName, stagingName, manifestTempName } = crashTransaction(fixture.workspaceRoot);
+    const staging = new RoomWorkspaceMaterializer({ root: join(dirname(fixture.workspaceRoot), stagingName), artifacts: fixture.artifacts });
+    const promoted = await staging.materialize({ roomId: "room-1", record: fixture.target });
+    await rename(workspace.workspacePath, join(workspace.root, backupName));
+    await rename(promoted.workspacePath, workspace.workspacePath);
+    await writeFile(join(workspace.baseManifestPath, "..", manifestTempName), JSON.stringify({
+      version: 1,
+      roomId: "room-1",
+      record: fixture.target,
+    }));
+    await writeFile(join(workspace.root, "workspace-sync.json"), JSON.stringify({
+      version: 1,
+      roomId: "room-1",
+      ownerPid: 2147483647,
+      previousVersionId: fixture.current.version.workspaceVersionId,
+      targetVersionId: fixture.target.version.workspaceVersionId,
+      backupName,
+      stagingName,
+      manifestTempName,
+    }));
+
+    const restarted = new RoomWorkspaceMaterializer({ root: fixture.workspaceRoot, artifacts: fixture.artifacts });
+    const recovered = await restarted.open("room-1");
+
+    expect(recovered?.record).toEqual(fixture.current);
+    expect(await readFile(join(recovered!.workspacePath, "README.md"), "utf8")).toBe("one\n");
+    expect((await readdir(workspace.root)).filter((name) => name.includes("sync"))).toEqual([]);
+    expect((await readdir(fixture.workspaceRoot)).filter((name) => name.includes("sync"))).toEqual([]);
+    await expect(lstat(join(dirname(fixture.workspaceRoot), stagingName))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses crash rollback when the promoted workspace was edited after the crash", async () => {
+    const fixture = await materializedFixture();
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    const { backupName, stagingName, manifestTempName } = crashTransaction(fixture.workspaceRoot);
+    const staging = new RoomWorkspaceMaterializer({ root: join(dirname(fixture.workspaceRoot), stagingName), artifacts: fixture.artifacts });
+    const promoted = await staging.materialize({ roomId: "room-1", record: fixture.target });
+    await rename(workspace.workspacePath, join(workspace.root, backupName));
+    await rename(promoted.workspacePath, workspace.workspacePath);
+    await writeFile(join(workspace.workspacePath, "README.md"), "post-crash edit\n");
+    await writeFile(join(workspace.baseManifestPath, "..", manifestTempName), JSON.stringify({
+      version: 1,
+      roomId: "room-1",
+      record: fixture.target,
+    }));
+    await writeFile(join(workspace.root, "workspace-sync.json"), JSON.stringify({
+      version: 1,
+      roomId: "room-1",
+      ownerPid: 2147483647,
+      previousVersionId: fixture.current.version.workspaceVersionId,
+      targetVersionId: fixture.target.version.workspaceVersionId,
+      backupName,
+      stagingName,
+      manifestTempName,
+    }));
+
+    const restarted = new RoomWorkspaceMaterializer({ root: fixture.workspaceRoot, artifacts: fixture.artifacts });
+    await expect(restarted.open("room-1")).rejects.toThrow(/changed after the interrupted sync/i);
+    expect(await readFile(join(workspace.workspacePath, "README.md"), "utf8")).toBe("post-crash edit\n");
+    expect(await readFile(join(workspace.root, backupName, "README.md"), "utf8")).toBe("one\n");
+  });
+
   it("fast-forwards a clean workspace and amends the one local baseline", async () => {
     const fixture = await materializedFixture();
     const subprocess = localDshSubprocess();
@@ -156,6 +265,24 @@ describe("RoomWorkspaceSyncService", () => {
     expect(await readFile(join(opened.draftsPath, "saved-draft.txt"), "utf8")).toBe("keep me\n");
     expect((await gitCommand(subprocess, opened.workspacePath, ["status", "--short"])).stdout).toBe("");
   });
+
+  it.runIf(process.platform === "win32")("keeps the temporary Git workspace below the Windows path limit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-sync-long-"));
+    roots.push(root);
+    const workspaceRoot = join(root, "x".repeat(Math.max(1, 90 - root.length - 1)));
+    await mkdir(workspaceRoot, { recursive: true });
+    const fixture = await materializedFixture({ workspaceRoot });
+    const workspace = (await fixture.materializer.open("room-1"))!;
+    await writeFile(join(workspace.workspacePath, "README.md"), "discard me\n");
+    const service = new RoomWorkspaceSyncService({
+      roomWorkspaces: fixture.materializer,
+      artifacts: fixture.artifacts,
+      subprocess: localDshSubprocess(),
+    });
+
+    await expect(service.discardAndSync({ roomId: "room-1", target: fixture.target }))
+      .resolves.toMatchObject({ status: "advanced", versionId: "version-2" });
+  }, 10_000);
 
   it("blocks and restores a local edit that arrives while the target is being staged", async () => {
     const fixture = await materializedFixture();

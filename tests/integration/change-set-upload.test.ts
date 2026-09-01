@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ChangeSetClient } from "../../src/collaboration-client.js";
 import { CHANGE_SET_CAPABILITY, type WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
-import { ChangeSetDraftService, ChangeSetDraftStore } from "../../src/change-sets.js";
+import { ChangeSetDraftService, ChangeSetDraftStore, type ChangeSetDraft } from "../../src/change-sets.js";
 import { ChangeSetStagingService } from "../../src/change-set-staging.js";
+import { ChangeSetReviewService } from "../../src/change-set-reviews.js";
 import { EventLedger } from "../../src/events.js";
 import { CollabGateway } from "../../src/gateway.js";
 import { InviteStore } from "../../src/invites.js";
@@ -28,6 +29,26 @@ function sha256(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function reidentifyDraft<T extends ChangeSetDraft>(draft: T): T {
+  draft.artifact.artifactId = "0".repeat(64);
+  draft.artifact.manifestHash = "0".repeat(64);
+  const draftId = sha256(JSON.stringify({
+    roomId: draft.roomId,
+    authorId: draft.authorId,
+    baseWorkspaceVersionId: draft.baseWorkspaceVersionId,
+    title: draft.title,
+    summary: draft.summary,
+    files: draft.files,
+    patchHash: draft.artifact.patchHash,
+    patchBytes: draft.artifact.patchBytes,
+    resultBytes: draft.artifact.resultBytes,
+  }));
+  draft.draftId = draftId;
+  draft.artifact.artifactId = draftId;
+  draft.artifact.manifestHash = draftId;
+  return draft;
+}
+
 function headers(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}`, [COLLAB_CAPABILITY_HEADER]: CHANGE_SET_CAPABILITY };
 }
@@ -46,7 +67,10 @@ function transport(gateway: CollabGateway): ParticipantGatewayTransport {
   };
 }
 
-async function setup() {
+async function setup(
+  stagingOverrides: { maxRetainedChangeSetsPerMember?: number; maxRetainedChangeSetsPerRoom?: number } = {},
+  commitCriticalState?: () => Promise<void>,
+) {
   const root = await mkdtemp(join(tmpdir(), "dsh-collab-changeset-upload-"));
   roots.push(root);
   const artifacts = new WorkspaceSnapshotStore(join(root, "artifacts"));
@@ -105,12 +129,15 @@ async function setup() {
     artifacts,
     subprocess,
     now: () => ++stagingNow,
+    ...stagingOverrides,
   };
   const staging = new ChangeSetStagingService(stagingOptions);
+  const changeSetReviews = new ChangeSetReviewService({ rooms, changeSets: staging, ledger, now: () => 40 });
   const sharing = new WorkspaceSharingRegistry();
-  sharing.set("room-1", true, "member-host", 5);
+  sharing.set("room-1", true, "member-host", 5, 1);
   const workspaceService = new WorkspaceService({
     rooms,
+    ledger,
     registry: sharing,
     snapshots: {
       capture: async () => { throw new Error("capture is not used by this test"); },
@@ -133,12 +160,14 @@ async function setup() {
     workspace: workspaceService,
     workspaceVersions,
     changeSets: staging,
+    changeSetReviews,
+    ...(commitCriticalState ? { commitCriticalState } : {}),
   });
   const host = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
   const alice = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "alice" } });
   const observer = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "observer" } });
   return {
-    root, gateway, staging, stagingOptions, sharing, bundle, draftStore, canonical,
+    root, gateway, staging, stagingOptions, sharing, bundle, draftStore, canonical, changeSetReviews,
     client: new ChangeSetClient({ transport: transport(gateway), chunkBytes: 7 }),
     hostToken: (host.body as { roomToken: string }).roomToken,
     aliceToken: (alice.body as { roomToken: string }).roomToken,
@@ -147,6 +176,42 @@ async function setup() {
 }
 
 describe("ChangeSet atomic upload and Owner Staging Area", () => {
+  it("retries critical persistence after finalize succeeded but its first commit failed", async () => {
+    let commits = 0;
+    const state = await setup({}, async () => {
+      commits += 1;
+      if (commits === 1) throw new Error("persistence unavailable");
+    });
+    const submit = () => state.client.submit({
+      roomId: "room-1", token: state.aliceToken, clientRequestId: "durable-finalize",
+      draftId: state.bundle.draft.draftId, drafts: state.draftStore,
+    });
+
+    await expect(submit()).rejects.toThrow(/500/);
+    await expect(submit()).resolves.toMatchObject({ changeSetId: state.bundle.draft.draftId });
+    expect(commits).toBe(2);
+  }, 30_000);
+
+  it("bounds finalized ChangeSet retention independently of active upload slots", async () => {
+    const state = await setup({ maxRetainedChangeSetsPerMember: 1, maxRetainedChangeSetsPerRoom: 2 });
+    await state.client.submit({
+      roomId: "room-1", token: state.aliceToken, clientRequestId: "retained-1",
+      draftId: state.bundle.draft.draftId, drafts: state.draftStore,
+    });
+    const secondDraft = reidentifyDraft(structuredClone({ ...state.bundle.draft, summary: "A distinct retained ChangeSet." }));
+    const results = new Map<string, Uint8Array>();
+    for (const file of secondDraft.files) {
+      if (file.resultContentHash) results.set(file.path, await state.draftStore.readResult(state.bundle.draft.draftId, file.path));
+    }
+    await state.draftStore.save(secondDraft, state.bundle.patch, results);
+
+    await expect(state.client.submit({
+      roomId: "room-1", token: state.aliceToken, clientRequestId: "retained-2",
+      draftId: secondDraft.draftId, drafts: state.draftStore,
+    })).rejects.toThrow(/429/);
+    await expect(state.staging.get("room-1", secondDraft.draftId)).resolves.toBeUndefined();
+  }, 30_000);
+
   it("keeps partial uploads invisible and publishes only after complete verification", async () => {
     const state = await setup();
     const created = await state.gateway.handle({
@@ -209,6 +274,22 @@ describe("ChangeSet atomic upload and Owner Staging Area", () => {
     expect((await readdir(join(state.root, "staging", "staged"), { recursive: true })).filter((path) => path.endsWith("manifest.json"))).toHaveLength(1);
   }, 10_000);
 
+  it("makes a finalized upload immediately visible to the Owner review queue", async () => {
+    const state = await setup();
+    const submitted = await state.client.submit({
+      roomId: "room-1", token: state.aliceToken, clientRequestId: "review-queue",
+      draftId: state.bundle.draft.draftId, drafts: state.draftStore,
+    });
+
+    const response = await state.gateway.handle({
+      method: "GET",
+      path: "/v1/rooms/room-1/change-sets/reviews",
+      headers: headers(state.hostToken),
+    });
+
+    expect(response).toMatchObject({ status: 200, body: { items: [{ review: { changeSetId: submitted.changeSetId, status: "submitted" }, changeSet: { changeSetId: submitted.changeSetId } }] } });
+  }, 10_000);
+
   it("rejects reuse of one idempotency key with different content", async () => {
     const state = await setup();
     await state.client.submit({
@@ -248,6 +329,73 @@ describe("ChangeSet atomic upload and Owner Staging Area", () => {
       method: "POST", path: `/v1/rooms/room-1/change-sets/uploads/${uploadId}/finalize`, headers: headers(state.aliceToken), body: {},
     })).resolves.toMatchObject({ status: 422 });
     await expect(state.staging.get("room-1", state.bundle.draft.draftId)).resolves.toBeUndefined();
+  }, 10_000);
+
+  it("rejects oversized declarations before allocating upload storage and bounds abandoned sessions per member", async () => {
+    const state = await setup();
+    const oversized = reidentifyDraft(structuredClone(state.bundle.draft));
+    oversized.artifact.patchBytes = 16 * 1024 * 1024 + 1;
+    reidentifyDraft(oversized);
+
+    await expect(state.staging.createUpload({
+      roomId: "room-1", principalId: "alice", clientRequestId: "oversized", draft: oversized,
+    })).rejects.toThrow(/patch.*limit/i);
+
+    for (let index = 0; index < 4; index += 1) {
+      await expect(state.staging.createUpload({
+        roomId: "room-1", principalId: "alice", clientRequestId: `abandoned-${String(index)}`, draft: state.bundle.draft,
+      })).resolves.toMatchObject({ state: "uploading" });
+    }
+    await expect(state.staging.createUpload({
+      roomId: "room-1", principalId: "alice", clientRequestId: "abandoned-over-limit", draft: state.bundle.draft,
+    })).rejects.toMatchObject({ code: "RESOURCE_LIMIT" });
+  }, 10_000);
+
+  it("expires abandoned uploads and excludes finalized uploads from the active quota", async () => {
+    const state = await setup();
+    let now = 100;
+    const staging = new ChangeSetStagingService({
+      ...state.stagingOptions,
+      now: () => now,
+      uploadTtlMs: 10,
+      maxActiveUploadsPerMember: 1,
+    });
+    const expired = await staging.createUpload({
+      roomId: "room-1", principalId: "alice", clientRequestId: "expired", draft: state.bundle.draft,
+    });
+    now = 111;
+
+    await expect(staging.createUpload({
+      roomId: "room-1", principalId: "alice", clientRequestId: "replacement", draft: state.bundle.draft,
+    })).resolves.toMatchObject({ state: "uploading" });
+    expect(await readdir(join(state.root, "staging", "uploads"))).not.toContain(expired.uploadId);
+
+    const finalizedState = await setup();
+    const finalized = await finalizedState.client.submit({
+      roomId: "room-1", token: finalizedState.aliceToken, clientRequestId: "finalized",
+      draftId: finalizedState.bundle.draft.draftId, drafts: finalizedState.draftStore,
+    });
+    const finalizedQuota = new ChangeSetStagingService({ ...finalizedState.stagingOptions, maxActiveUploadsPerMember: 1 });
+    await expect(finalizedQuota.createUpload({
+      roomId: "room-1", principalId: "alice", clientRequestId: "after-finalize", draft: finalizedState.bundle.draft,
+    })).resolves.toMatchObject({ state: "uploading", changeSetId: finalized.changeSetId });
+  }, 10_000);
+
+  it("serializes concurrent upload creation so the active quota cannot be bypassed", async () => {
+    const state = await setup();
+    const staging = new ChangeSetStagingService({ ...state.stagingOptions, maxActiveUploadsPerMember: 4 });
+
+    const attempts = await Promise.allSettled(Array.from({ length: 5 }, (_, index) => staging.createUpload({
+      roomId: "room-1",
+      principalId: "alice",
+      clientRequestId: `concurrent-${String(index)}`,
+      draft: state.bundle.draft,
+    })));
+
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(4);
+    expect(attempts.filter((attempt) => attempt.status === "rejected")).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: "RESOURCE_LIMIT" }) }),
+    ]);
   }, 10_000);
 
   it("recomputes every result blob instead of trusting its uploaded chunk hash", async () => {
@@ -302,7 +450,7 @@ describe("ChangeSet atomic upload and Owner Staging Area", () => {
       method: "POST", path: "/v1/rooms/room-1/change-sets/uploads", headers: headers(state.aliceToken),
       body: { clientRequestId: "wrong-author", draft: wrongAuthor },
     })).resolves.toMatchObject({ status: 422 });
-    state.sharing.set("room-1", false, "member-host", 40);
+    state.sharing.set("room-1", false, "member-host", 40, 2);
     await expect(state.gateway.handle({
       method: "POST", path: "/v1/rooms/room-1/change-sets/uploads", headers: headers(state.aliceToken),
       body: { clientRequestId: "sharing-disabled", draft: state.bundle.draft },

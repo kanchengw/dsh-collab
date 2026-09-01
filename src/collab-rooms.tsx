@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client.js";
 import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
@@ -156,12 +157,9 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   useEffect(() => {
     if (!open) return;
     closeRef.current?.focus();
-    const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape") setDshCollabRoomsOpen(false); };
-    window.addEventListener("keydown", closeOnEscape);
     void Promise.resolve(port?.refreshOwnedRooms?.()).catch((cause) => {
       setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.refreshError") });
     });
-    return () => { window.removeEventListener("keydown", closeOnEscape); };
   }, [open, port]);
 
   if (!open) return null;
@@ -204,9 +202,8 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   };
 
   return (
-    <div className={css.overlay} data-collab-rooms-overlay="true">
-      <div className={css.mask} aria-hidden="true" onClick={() => { setDshCollabRoomsOpen(false); }} />
-      <section ref={panelRef} className={css.panel} role="dialog" aria-modal="true" aria-labelledby="collab-rooms-title" onKeyDown={trapFocus}>
+    <Modal open={open} onClose={() => { setDshCollabRoomsOpen(false); }} title={t("rooms.title")} closeLabel={t("rooms.close")} headless className={css.panel}>
+      <section ref={panelRef} className={css.panelContents} aria-labelledby="collab-rooms-title" onKeyDown={trapFocus} data-collab-rooms-panel="true">
         <header className={css.panelHeader}>
           <div><h2 id="collab-rooms-title">{t("rooms.title")}</h2><p>{t("rooms.description")}</p></div>
           <button ref={closeRef} type="button" className={css.close} aria-label={t("rooms.close")} onClick={() => { setDshCollabRoomsOpen(false); }}><span className={css.closeIcon} aria-hidden="true" /></button>
@@ -273,6 +270,6 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
           {notice ? <p className={notice.tone === "error" ? css.error : css.success} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }

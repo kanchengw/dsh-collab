@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess, type RepositoryCommandPort, type RepositoryCommandResult } from "./repository-inspector.js";
@@ -7,10 +7,10 @@ import type { RoomWorkspace } from "./room-workspace.js";
 import { isSafeWorkspaceSnapshotPath } from "./workspace-snapshot-store.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionArtifactStore, type WorkspaceVersionFile } from "./workspace-versions.js";
 
-const DEFAULT_MAX_FILES = 1_000;
-const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
-const DEFAULT_MAX_TOTAL_TEXT_BYTES = 8 * 1024 * 1024;
-const DEFAULT_MAX_PATCH_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAX_CHANGE_SET_FILES = 1_000;
+export const DEFAULT_MAX_CHANGE_SET_FILE_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_MAX_CHANGE_SET_PATCH_BYTES = 16 * 1024 * 1024;
 export const MAX_CHANGE_SET_MANIFEST_BYTES = 768 * 1024;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -402,6 +402,24 @@ export class ChangeSetDraftStore {
     return { draft, patch };
   }
 
+  async list(): Promise<ChangeSetDraftBundle[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const drafts = await Promise.all(names.filter((name) => HASH_PATTERN.test(name)).map(async (name) => await this.load(name)));
+    return drafts.filter((draft): draft is ChangeSetDraftBundle => draft !== undefined)
+      .sort((left, right) => right.draft.createdAt - left.draft.createdAt || left.draft.draftId.localeCompare(right.draft.draftId));
+  }
+
+  async remove(draftId: string): Promise<void> {
+    if (!HASH_PATTERN.test(draftId)) throw new Error("ChangeSet draft id is invalid");
+    await rm(join(this.root, draftId), { recursive: true, force: true });
+  }
+
   async readResult(draftId: string, path: string): Promise<Uint8Array> {
     const bundle = await this.load(draftId);
     const file = bundle?.draft.files.find((candidate) => candidate.path === path);
@@ -423,10 +441,10 @@ export async function verifyChangeSetDraftBundle(input: {
   maxPatchBytes?: number;
   maxManifestBytes?: number;
 }): Promise<ChangeSetDraft> {
-  const maxFiles = input.maxFiles ?? DEFAULT_MAX_FILES;
-  const maxFileBytes = input.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
-  const maxTotalTextBytes = input.maxTotalTextBytes ?? DEFAULT_MAX_TOTAL_TEXT_BYTES;
-  const maxPatchBytes = input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
+  const maxFiles = input.maxFiles ?? DEFAULT_MAX_CHANGE_SET_FILES;
+  const maxFileBytes = input.maxFileBytes ?? DEFAULT_MAX_CHANGE_SET_FILE_BYTES;
+  const maxTotalTextBytes = input.maxTotalTextBytes ?? DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES;
+  const maxPatchBytes = input.maxPatchBytes ?? DEFAULT_MAX_CHANGE_SET_PATCH_BYTES;
   const maxManifestBytes = input.maxManifestBytes ?? MAX_CHANGE_SET_MANIFEST_BYTES;
   const draft = validateChangeSetDraft(input.draft);
   if (Buffer.byteLength(JSON.stringify(draft)) > maxManifestBytes) throw new Error("ChangeSet manifest exceeds the upload limit");
@@ -518,10 +536,10 @@ export class ChangeSetDraftService {
     maxPatchBytes?: number;
     maxManifestBytes?: number;
   }) {
-    this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
-    this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
-    this.maxTotalTextBytes = options.maxTotalTextBytes ?? DEFAULT_MAX_TOTAL_TEXT_BYTES;
-    this.maxPatchBytes = options.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
+    this.maxFiles = options.maxFiles ?? DEFAULT_MAX_CHANGE_SET_FILES;
+    this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_CHANGE_SET_FILE_BYTES;
+    this.maxTotalTextBytes = options.maxTotalTextBytes ?? DEFAULT_MAX_CHANGE_SET_TOTAL_TEXT_BYTES;
+    this.maxPatchBytes = options.maxPatchBytes ?? DEFAULT_MAX_CHANGE_SET_PATCH_BYTES;
     this.maxManifestBytes = options.maxManifestBytes ?? MAX_CHANGE_SET_MANIFEST_BYTES;
     for (const value of [this.maxFiles, this.maxFileBytes, this.maxTotalTextBytes, this.maxPatchBytes, this.maxManifestBytes]) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error("ChangeSet draft limit is invalid");

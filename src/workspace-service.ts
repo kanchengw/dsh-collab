@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { CollabError } from "./errors.js";
+import type { EventLedger } from "./events.js";
 import { RoomStore } from "./room.js";
 import type { ReviewPointDiff, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import { WorkspaceSharingRegistry } from "./workspace-sharing.js";
@@ -20,6 +21,7 @@ export class WorkspaceService {
 
   constructor(private readonly options: {
     rooms: RoomStore;
+    ledger: EventLedger;
     registry: WorkspaceSharingRegistry;
     snapshots?: WorkspaceSnapshotProvider;
     now?: () => number;
@@ -29,7 +31,7 @@ export class WorkspaceService {
 
   getState(input: { roomId: string; principalId: string }): WorkspaceSharingState {
     this.options.rooms.authorize(input.roomId, input.principalId, "read");
-    return this.options.registry.get(input.roomId);
+    return this.currentState(input.roomId);
   }
 
   setSharing(input: { roomId: string; principalId: string; enabled: boolean }): WorkspaceSharingState {
@@ -37,7 +39,26 @@ export class WorkspaceService {
     if (member.role !== "host") {
       throw new CollabError("ACTION_FORBIDDEN", "only the Host can change Workspace Sharing");
     }
-    return this.options.registry.set(input.roomId, input.enabled, member.memberId, this.now());
+    const previous = this.options.registry.get(input.roomId);
+    const createdAt = this.now();
+    const state = this.options.registry.set(
+      input.roomId,
+      input.enabled,
+      member.memberId,
+      createdAt,
+      this.options.ledger.latestSeq(input.roomId) + 1,
+    );
+    if (state.revision !== previous.revision) {
+      this.options.ledger.append({
+        eventId: `workspace-sharing:${input.roomId}:${String(state.revision)}`,
+        roomId: input.roomId,
+        type: "workspace-sharing.changed",
+        actor: { memberId: member.memberId, principalId: input.principalId },
+        createdAt,
+        payload: state,
+      });
+    }
+    return this.currentState(input.roomId);
   }
 
   requireWorkspaceRead(input: { roomId: string; principalId: string }): WorkspaceSharingState {
@@ -114,6 +135,16 @@ export class WorkspaceService {
   private requireSnapshots(): WorkspaceSnapshotProvider {
     if (!this.options.snapshots) throw new CollabError("SNAPSHOT_NOT_FOUND", "Workspace Snapshot transport is unavailable");
     return this.options.snapshots;
+  }
+
+  private currentState(roomId: string): WorkspaceSharingState {
+    const state = this.options.registry.get(roomId);
+    if (state.enabled) return state;
+    return {
+      roomId,
+      enabled: false,
+      revision: Math.max(state.revision, this.options.ledger.latestCommittedSeq(roomId)),
+    };
   }
 
   private assertRoomSnapshot(snapshot: WorkspaceSnapshotPackage, roomId: string, hostSessionId?: string): WorkspaceSnapshotPackage {

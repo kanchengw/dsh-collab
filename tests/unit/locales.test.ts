@@ -6,6 +6,15 @@ import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import { applyDshCollabClient, DshCollabSessionAction, type DshCollabClientContext, type DshCollabSettingsPort } from "../../src/dsh-client.js";
 import { COLLAB_LOCALE_NAMESPACE, en, zh, type CollabTranslate } from "../../src/locales.js";
 
+vi.mock("@deepseek-ai/dsh-client-ui-primitives", async () => {
+  const React = await import("react");
+  return {
+    Modal: ({ open, children, className }: { open: boolean; children: React.ReactNode; className?: string }) => open
+      ? React.createElement("div", { "data-dsh-modal": "true", className }, children)
+      : null,
+  };
+});
+
 const t: CollabTranslate = (key, params) => {
   const template = zh[key];
   return params

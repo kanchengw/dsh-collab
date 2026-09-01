@@ -44,7 +44,7 @@ export interface AuditExport {
 
 export function exportAudit(options: AuditExportOptions): AuditExport {
   options.rooms.authorize(options.roomId, options.principalId, "manageMembers");
-  const events = options.ledger.readAfter(options.roomId, options.afterSeq ?? 0, options.limit ?? 500);
+  const events = options.ledger.readCommittedAfter(options.roomId, options.afterSeq ?? 0, options.limit ?? 500);
   return {
     version: 1,
     roomId: options.roomId,

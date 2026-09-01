@@ -32,6 +32,7 @@ function hash(value: Uint8Array | string): string {
 const oldBytes = Buffer.from("old\n");
 const newBytes = Buffer.from("new\n");
 const addBytes = Buffer.from("added\n");
+const patchBytes = Buffer.from("diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1 @@\n-old\n+new\n");
 const changeSetId = "a".repeat(64);
 
 function plan(): ChangeSetApplyPlan {
@@ -39,6 +40,7 @@ function plan(): ChangeSetApplyPlan {
     roomId: "room-1",
     changeSetId,
     baseWorkspaceVersionId: "version-1",
+    patch: new Uint8Array(patchBytes),
     operations: [{
       path: "src/value.ts",
       operation: "modify",
@@ -62,18 +64,22 @@ class MemoryWorkspace implements ChangeSetIntegrationWorkspace {
     return bytes ? { contentHash: hash(bytes), size: bytes.byteLength } : undefined;
   }
 
-  forRoom(_roomId: string) {
-    return {
-      read: async (path: string) => this.files.get(path) ? structuredClone(this.files.get(path)) : undefined,
-      replace: async (path: string, bytes: Uint8Array) => {
-        this.files.set(path, structuredClone(bytes));
-        this.afterMutation();
-      },
-      remove: async (path: string) => {
-        this.files.delete(path);
-        this.afterMutation();
-      },
-    };
+  async checkPatch(_roomId: string, _patch: Uint8Array, reverse = false): Promise<boolean> {
+    const value = this.files.get("src/value.ts");
+    const applied = value !== undefined && hash(value) === hash(newBytes) && this.files.has("src/added.ts");
+    return reverse ? applied : !applied;
+  }
+
+  async applyPatch(_roomId: string, _patch: Uint8Array, reverse = false): Promise<void> {
+    if (this.failAtMutation === this.mutations + 1) throw new Error("write failed");
+    if (reverse) {
+      this.files.set("src/value.ts", structuredClone(oldBytes));
+      this.files.delete("src/added.ts");
+    } else {
+      this.files.set("src/value.ts", structuredClone(newBytes));
+      this.files.set("src/added.ts", structuredClone(addBytes));
+    }
+    this.afterMutation();
   }
 
   private afterMutation(): void {
@@ -121,6 +127,7 @@ async function setup(input: {
     return { record: structuredClone(published), created: true };
   });
   let now = 100;
+  const ledger = new EventLedger();
   const reviews = {
     getApplication: (roomId: string, id: string) => applications.get(`${roomId}\0${id}`),
     prepareApplication: vi.fn(async ({ roomId, principalId, changeSetId: id }: { roomId: string; principalId: string; changeSetId: string }) => {
@@ -148,6 +155,7 @@ async function setup(input: {
   const commit = vi.fn(input.commit ?? (async () => {}));
   const serviceOptions: ChangeSetIntegrationServiceOptions = {
     rooms,
+    ledger,
     preflight: { preflight },
     journals: new IntegrationJournalStore(root),
     workspace,
@@ -162,7 +170,7 @@ async function setup(input: {
   };
   if (input.persist === false) delete (serviceOptions as { commitCriticalState?: () => Promise<void> }).commitCriticalState;
   const service = new ChangeSetIntegrationService(serviceOptions);
-  return { applications, capture, commit, create, journals: new IntegrationJournalStore(root), preflight, published, records, rooms, service, workspace };
+  return { applications, capture, commit, create, journals: new IntegrationJournalStore(root), ledger, preflight, published, records, rooms, service, workspace };
 }
 
 describe("ChangeSet apply integration", () => {
@@ -178,17 +186,23 @@ describe("ChangeSet apply integration", () => {
     expect(result).toMatchObject({ outcome: "applied", application: { changeSetId, workspaceVersionId: state.published.version.workspaceVersionId } });
     expect(state.workspace.files.get("src/value.ts")).toEqual(new Uint8Array(newBytes));
     expect(state.workspace.files.get("src/added.ts")).toEqual(new Uint8Array(addBytes));
-    expect(state.workspace.mutations).toBe(2);
+    expect(state.workspace.mutations).toBe(1);
     expect(state.capture).toHaveBeenCalledWith(expect.objectContaining({ parentVersionId: "version-1", changeSetId }));
     expect(state.create).toHaveBeenCalledWith(expect.objectContaining({ parentVersionId: "version-1" }), expect.objectContaining({ beforePublish: expect.any(Function) }));
     expect(state.commit).toHaveBeenCalledOnce();
     expect(await state.journals.list()).toEqual([]);
+    expect(state.ledger.readAfter("room-1", 0)).toEqual([expect.objectContaining({
+      type: "changeset.applied",
+      actor: { memberId: "member-host", principalId: "principal-host" },
+      payload: expect.objectContaining({ changeSetId, workspaceVersionId: state.published.version.workspaceVersionId }),
+    })]);
 
     const retry = await state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, clientRequestId: "apply-retry" });
     expect(retry).toEqual(result);
-    expect(state.workspace.mutations).toBe(2);
+    expect(state.workspace.mutations).toBe(1);
     expect(state.capture).toHaveBeenCalledOnce();
     expect(state.create).toHaveBeenCalledOnce();
+    expect(state.ledger.readAfter("room-1", 0)).toHaveLength(1);
   });
 
   it("persists a preflight conflict without creating a journal or touching the workspace", async () => {
@@ -211,9 +225,9 @@ describe("ChangeSet apply integration", () => {
     expect(await state.journals.list()).toEqual([]);
   });
 
-  it("rolls back every file and leaves no published state when a workspace step fails", async () => {
+  it("leaves no partial files or published state when Git rejects the patch", async () => {
     const workspace = new MemoryWorkspace();
-    workspace.failAtMutation = 2;
+    workspace.failAtMutation = 1;
     const state = await setup({ workspace });
 
     await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, clientRequestId: "failing" }))
@@ -231,12 +245,12 @@ describe("ChangeSet apply integration", () => {
 
     await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, clientRequestId: "apply" }))
       .rejects.toThrow("state save failed");
-    expect(state.workspace.mutations).toBe(2);
+    expect(state.workspace.mutations).toBe(1);
     expect(await state.journals.list()).toHaveLength(1);
 
     await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, clientRequestId: "retry" }))
       .resolves.toMatchObject({ outcome: "applied" });
-    expect(state.workspace.mutations).toBe(2);
+    expect(state.workspace.mutations).toBe(1);
     expect(state.commit).toHaveBeenCalledTimes(2);
     expect(await state.journals.list()).toEqual([]);
   });
@@ -275,8 +289,7 @@ describe("ChangeSet apply integration", () => {
 
   it("reconciles pending journals by retiring durable applications and rolling back uncommitted writes", async () => {
     const committed = await setup();
-    const committedJournal = await committed.journals.prepare(plan(), committed.workspace.forRoom("room-1"));
-    for (let step = 1; step <= committedJournal.executorStepCount; step += 1) await committed.journals.markExecutorCheckpoint(committedJournal.integrationId, step);
+    const committedJournal = await committed.journals.prepare(plan());
     committed.applications.set(`room-1\0${changeSetId}`, {
       version: 1,
       applicationId: hash(`room-1\0${changeSetId}\0application`),
@@ -293,9 +306,8 @@ describe("ChangeSet apply integration", () => {
     expect(committed.workspace.mutations).toBe(0);
 
     const interrupted = await setup();
-    const interruptedJournal = await interrupted.journals.prepare(plan(), interrupted.workspace.forRoom("room-1"));
-    await interrupted.workspace.forRoom("room-1").replace("src/value.ts", newBytes);
-    await interrupted.journals.markExecutorCheckpoint(interruptedJournal.integrationId, 1);
+    const interruptedJournal = await interrupted.journals.prepare(plan());
+    await interrupted.workspace.applyPatch("room-1", plan().patch);
     await interrupted.service.recoverPending();
     expect([...interrupted.workspace.files.get("src/value.ts")!]).toEqual([...oldBytes]);
     expect(await interrupted.journals.list()).toEqual([]);
@@ -307,7 +319,7 @@ describe("ChangeSet apply integration", () => {
     const activeRooms = new ActiveRoomRegistry();
     activeRooms.activate("room-1");
     const sharing = new WorkspaceSharingRegistry();
-    sharing.set("room-1", true, "member-host", 2);
+    sharing.set("room-1", true, "member-host", 2, 1);
     const gateway = new CollabGateway({
       rooms: state.rooms,
       ledger,
@@ -316,7 +328,7 @@ describe("ChangeSet apply integration", () => {
       tokenTtlMs: null,
       tokenFactory: () => "host-token",
       activeRooms,
-      workspace: new WorkspaceService({ rooms: state.rooms, registry: sharing }),
+      workspace: new WorkspaceService({ rooms: state.rooms, ledger, registry: sharing }),
       changeSets: { get: async () => undefined } as unknown as ChangeSetStagingService,
       changeSetIntegration: state.service,
     });
@@ -335,5 +347,53 @@ describe("ChangeSet apply integration", () => {
       headers: { authorization: `Bearer ${token}`, [COLLAB_CAPABILITY_HEADER]: CHANGE_SET_CAPABILITY },
       body: { clientRequestId: "apply-route" },
     })).resolves.toMatchObject({ status: 200, body: { outcome: "applied" } });
+  });
+
+  it("returns a structured, actionable error when apply detects stale workspace files", async () => {
+    const conflict = {
+      version: 1 as const,
+      conflictId: "c".repeat(64),
+      roomId: "room-1",
+      changeSetId,
+      baseWorkspaceVersionId: "version-1",
+      detectedBy: "member-host",
+      conflicts: [{ path: "src/value.ts", kind: "base-changed" as const }],
+      createdAt: 20,
+    };
+    const state = await setup({ preflight: { outcome: "conflicted", conflict } });
+    const activeRooms = new ActiveRoomRegistry();
+    activeRooms.activate("room-1");
+    const sharing = new WorkspaceSharingRegistry();
+    sharing.set("room-1", true, "member-host", 2, 1);
+    const gateway = new CollabGateway({
+      rooms: state.rooms,
+      ledger: state.ledger,
+      invites: new InviteStore(state.rooms),
+      agent: { followup() {}, steer() {}, cancel() {} },
+      tokenTtlMs: null,
+      tokenFactory: () => "host-token",
+      activeRooms,
+      workspace: new WorkspaceService({ rooms: state.rooms, ledger: state.ledger, registry: sharing }),
+      changeSets: { get: async () => undefined } as unknown as ChangeSetStagingService,
+      changeSetIntegration: state.service,
+    });
+    const bootstrap = await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "principal-host" } });
+    const token = (bootstrap.body as { roomToken: string }).roomToken;
+
+    await expect(gateway.handle({
+      method: "POST",
+      path: `/v1/rooms/room-1/change-sets/${changeSetId}/apply`,
+      headers: { authorization: `Bearer ${token}`, [COLLAB_CAPABILITY_HEADER]: CHANGE_SET_CAPABILITY },
+      body: { clientRequestId: "conflicted-apply" },
+    })).resolves.toMatchObject({
+      status: 409,
+      body: {
+        error: {
+          code: "CHANGE_SET_CONFLICT",
+          message: expect.stringContaining("src/value.ts"),
+          details: { conflict },
+        },
+      },
+    });
   });
 });

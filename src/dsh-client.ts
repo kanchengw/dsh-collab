@@ -5,7 +5,7 @@ import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserC
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, migrateLegacyMaxQueue, type CollabConnectionMethod, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type CollabConnectionMethod, type DshCollabJoinedRoom, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointPage, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
 import type { RepositoryDiff, RepositoryInspection } from "./repository-inspector.js";
@@ -21,6 +21,37 @@ import type { CollabChangesPort } from "./collab-changes.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
 import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
 import type { CollabInvitationNetwork } from "./invitation.js";
+import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from "./collab-workspace-client.js";
+
+interface DshClientWorkspaces {
+  create(input: { path: string }): Promise<{ workspaceId: string }>;
+  connectWorkspace(workspaceId: string): Promise<string>;
+}
+
+interface DshClientSessions {
+  open(sessionId: string): void;
+}
+
+export function createDshParticipantWorkspaceOpener(input: {
+  workspaces: DshClientWorkspaces;
+  sessions: DshClientSessions;
+  panelHost(): CollabPanelHost | undefined;
+}): (room: OpenParticipantRoomWorkspaceInput) => Promise<void> {
+  return async (room) => {
+    const panelHost = input.panelHost();
+    if (!panelHost) throw new Error("Collab Bar is unavailable");
+    const workspace = await input.workspaces.create({ path: room.path });
+    const sessionId = await input.workspaces.connectWorkspace(workspace.workspaceId);
+    input.sessions.open(sessionId);
+    openDshCollabRoom({
+      kind: "joined",
+      roomId: room.roomId,
+      gatewayEndpoint: room.gatewayEndpoint,
+      roomTitle: room.roomTitle,
+      ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}),
+    }, panelHost, { sessionId, cwd: room.path });
+  };
+}
 
 export interface DshCollabClientSnapshot {
   roomId: string;
@@ -179,7 +210,7 @@ function decodeGateway(value: unknown): PersistedCollabSettings["gateway"] | und
   return { ...candidate as Omit<PersistedCollabSettings["gateway"], "advertisedEndpoint">, advertisedEndpoint };
 }
 
-function decodeParticipant(value: unknown): ParticipantResumeState | undefined {
+export function decodeParticipantResumeState(value: unknown): ParticipantResumeState | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
   if ([candidate.gatewayEndpoint, candidate.roomId, candidate.memberId, candidate.credential].some((field) => typeof field !== "string" || field.trim() === "")) return undefined;
@@ -219,7 +250,7 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
     approvalPolicy: security.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
     maxMembers: security.maxMembers ?? defaultCollabSettings.maxMembers,
     maxMessageBytes: security.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-    maxQueue: migrateLegacyMaxQueue(security.maxQueue) ?? defaultCollabSettings.maxQueue,
+    maxQueue: security.maxQueue ?? defaultCollabSettings.maxQueue,
   };
   const configuredMethod = (value as { connectionMethod?: unknown }).connectionMethod;
   const fallbackMethod: CollabConnectionMethod = gateway.exposeMode === "network" ? "private-network" : gateway.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
@@ -235,39 +266,125 @@ function decodePersistedSettings(value: unknown): PersistedCollabSettings | unde
 export function decodeDshParticipantSettings(value: unknown): DshCollabParticipantSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const decodedRooms = Array.isArray((value as { joinedRooms?: unknown }).joinedRooms)
-    ? (value as { joinedRooms: unknown[] }).joinedRooms.map(decodeParticipant).filter((room): room is ParticipantResumeState => room !== undefined)
+    ? (value as { joinedRooms: unknown[] }).joinedRooms.map(decodeParticipantSetting).filter((room): room is DshCollabJoinedRoom => room !== undefined)
     : [];
-  const resume = decodeParticipant((value as { resume?: unknown }).resume);
-  if (resume) decodedRooms.push(resume);
   const joinedRooms = [...new Map(decodedRooms.map((room) => [room.roomId, room])).values()];
   return joinedRooms.length > 0 ? { joinedRooms } : {};
 }
 
-export function createDshParticipantPersistence(scope: DshSettingsScope<DshCollabParticipantSettings>): ParticipantPersistence {
-  const list = (): ParticipantResumeState[] => [...(scope.getSnapshot().value?.joinedRooms ?? [])];
-  const sameRoom = (room: JoinedRoomRef, other: JoinedRoomRef): boolean => room.gatewayEndpoint === other.gatewayEndpoint && room.roomId === other.roomId;
+export interface DshParticipantSecretPort {
+  save(state: ParticipantResumeState): Promise<string>;
+  load(key: string): Promise<ParticipantResumeState>;
+  remove(key: string): Promise<void>;
+}
+
+function participantMetadata(state: ParticipantResumeState, credentialKey: string): DshCollabJoinedRoom {
   return {
+    gatewayEndpoint: state.gatewayEndpoint,
+    roomId: state.roomId,
+    memberId: state.memberId,
+    credentialKey,
+    ...(state.roomTitle ? { roomTitle: state.roomTitle } : {}),
+    ...(state.hostDisplayName ? { hostDisplayName: state.hostDisplayName } : {}),
+  };
+}
+
+function assertParticipantBinding(state: ParticipantResumeState, metadata: DshCollabJoinedRoom): void {
+  if (state.gatewayEndpoint !== metadata.gatewayEndpoint || state.roomId !== metadata.roomId || state.memberId !== metadata.memberId) {
+    throw new Error("Participant credential record does not match its Joined room");
+  }
+}
+
+export function createDshParticipantPersistence(
+  scope: DshSettingsScope<DshCollabParticipantSettings>,
+  secrets: DshParticipantSecretPort,
+): ParticipantPersistence {
+  let cache: ParticipantResumeState[] = [];
+  let prepared = false;
+  let preparing: Promise<void> | undefined;
+  const listeners = new Set<() => void>();
+  const publish = (): void => { for (const listener of listeners) listener(); };
+  const settingsRooms = (): DshCollabJoinedRoom[] => [...(scope.getSnapshot().value?.joinedRooms ?? [])];
+  const list = (): ParticipantResumeState[] => structuredClone(cache);
+  const sameRoom = (room: JoinedRoomRef, other: JoinedRoomRef): boolean => room.gatewayEndpoint === other.gatewayEndpoint && room.roomId === other.roomId;
+  const prepare = async (): Promise<void> => {
+    if (prepared) return;
+    if (preparing) return await preparing;
+    preparing = (async () => {
+      const current = scope.getSnapshot();
+      if (current.status !== "ready") throw new Error("DSH settings are not ready");
+      const nextStates: ParticipantResumeState[] = [];
+      for (const room of settingsRooms()) {
+        const state = await secrets.load(room.credentialKey);
+        assertParticipantBinding(state, room);
+        nextStates.push(state);
+      }
+      cache = nextStates;
+      prepared = true;
+      publish();
+    })();
+    try { await preparing; } finally { preparing = undefined; }
+  };
+  return {
+    prepare,
     load: (ref) => ref ? list().find((room) => sameRoom(room, ref)) : list()[0],
     list,
-    subscribe: (listener) => scope.subscribe(listener),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      const unsubscribe = scope.subscribe(listener);
+      return () => { listeners.delete(listener); unsubscribe(); };
+    },
     save: async (state) => {
+      await prepare();
       const current = scope.getSnapshot();
       if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      const rooms = list().filter((room) => room.roomId !== state.roomId);
-      rooms.push(state);
-      if (current.value?.resume) await scope.unset("resume");
-      await scope.set("joinedRooms", rooms);
-      const saved = list().find((room) => sameRoom(room, state));
-      if (!saved || saved.credential !== state.credential || saved.memberId !== state.memberId) {
-        throw new Error("Participant resume credential was not persisted by DSH");
+      const previous = settingsRooms().find((room) => room.roomId === state.roomId);
+      const key = await secrets.save(state);
+      const rooms = settingsRooms().filter((room) => room.roomId !== state.roomId);
+      rooms.push(participantMetadata(state, key));
+      try {
+        await scope.set("joinedRooms", rooms);
+        const saved = settingsRooms().find((room) => room.roomId === state.roomId);
+        if (saved?.credentialKey !== key || saved.memberId !== state.memberId || saved.gatewayEndpoint !== state.gatewayEndpoint) {
+          throw new Error("Participant credential reference was not persisted by DSH");
+        }
+      } catch (error) {
+        await secrets.remove(key).catch(() => undefined);
+        throw error;
       }
+      cache = [...cache.filter((room) => room.roomId !== state.roomId), structuredClone(state)];
+      if (previous?.credentialKey) await secrets.remove(previous.credentialKey).catch(() => undefined);
+      publish();
     },
     remove: async (ref) => {
+      await prepare();
       const current = scope.getSnapshot();
       if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      const rooms = list().filter((room) => !sameRoom(room, ref));
-      if (current.value?.resume) await scope.unset("resume");
+      const removed = settingsRooms().find((room) => sameRoom(room, ref));
+      const rooms = settingsRooms().filter((room) => !sameRoom(room, ref));
       if (rooms.length > 0) await scope.set("joinedRooms", rooms); else await scope.unset("joinedRooms");
+      cache = cache.filter((room) => !sameRoom(room, ref));
+      if (removed?.credentialKey) await secrets.remove(removed.credentialKey);
+      publish();
+    },
+  };
+}
+
+export function createDshParticipantSecretPort(rpc: DshClientConnectionRpc): DshParticipantSecretPort {
+  return {
+    async save(state) {
+      const value = controlValue(await rpc.call("/dsh-collab", "credentials/participant/save", { state }), "Unable to save Participant credential");
+      if (typeof value.credentialKey !== "string" || !/^dsh-collab\/participant-[a-z0-9-]+$/.test(value.credentialKey)) throw new Error("Invalid Participant credential response");
+      return value.credentialKey;
+    },
+    async load(key) {
+      const value = controlValue(await rpc.call("/dsh-collab", "credentials/participant/load", { credentialKey: key }), "Unable to load Participant credential");
+      const state = decodeParticipantResumeState(value.state);
+      if (!state) throw new Error("Invalid Participant credential response");
+      return state;
+    },
+    async remove(key) {
+      controlValue(await rpc.call("/dsh-collab", "credentials/participant/delete", { credentialKey: key }), "Unable to delete Participant credential");
     },
   };
 }
@@ -422,6 +539,25 @@ export function createDshBrowserEasyTierTransport(rpc: DshClientConnectionRpc): 
   };
 }
 
+function decodeParticipantSetting(value: unknown): DshCollabJoinedRoom | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if ([candidate.gatewayEndpoint, candidate.roomId, candidate.memberId].some((field) => typeof field !== "string" || field.trim() === "")) return undefined;
+  try { normalizeGatewayEndpoint(candidate.gatewayEndpoint as string); } catch { return undefined; }
+  const credentialKey = typeof candidate.credentialKey === "string" && /^dsh-collab\/participant-[a-z0-9-]+$/.test(candidate.credentialKey)
+    ? candidate.credentialKey
+    : undefined;
+  if (!credentialKey) return undefined;
+  return {
+    gatewayEndpoint: candidate.gatewayEndpoint as string,
+    roomId: candidate.roomId as string,
+    memberId: candidate.memberId as string,
+    credentialKey,
+    ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
+    ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
+  };
+}
+
 export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: DshClientConnectionRpc): DshCollabSettingsPort {
   let gateway: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
   let ownedRooms: DshCollabOwnedRoom[] = [];
@@ -487,8 +623,14 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
       await shareHostRoom(input);
     } : undefined,
     stopSharing: stopSharing ? async (roomId: string) => {
-      await stopSharing(roomId);
-      if (base.getSnapshot().connectionMethod === "easytier") await rpc.call("/dsh-collab", "easytier/stop", {});
+      const transport = controlValue(await rpc.call("/dsh-collab", "easytier/status", {}), "Invalid EasyTier status response");
+      try {
+        await stopSharing(roomId);
+      } finally {
+        if (transport.active === true && transport.role === "owner" && transport.roomId === roomId) {
+          await rpc.call("/dsh-collab", "easytier/stop", {});
+        }
+      }
     } : undefined,
     inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
     inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),
@@ -573,7 +715,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         approvalPolicy: persisted.security?.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: persisted.security?.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: persisted.security?.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-        maxQueue: migrateLegacyMaxQueue(persisted.security?.maxQueue) ?? defaultCollabSettings.maxQueue,
+        maxQueue: persisted.security?.maxQueue ?? defaultCollabSettings.maxQueue,
         connectionMethod: persisted.connectionMethod ?? defaultCollabSettings.connectionMethod,
         easyTierSharedNode: persisted.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode,
       };
@@ -585,7 +727,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
         approvalPolicy: fallback.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
         maxMembers: fallback.maxMembers ?? defaultCollabSettings.maxMembers,
         maxMessageBytes: fallback.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-        maxQueue: migrateLegacyMaxQueue(fallback.maxQueue) ?? defaultCollabSettings.maxQueue,
+        maxQueue: fallback.maxQueue ?? defaultCollabSettings.maxQueue,
       };
     },
     subscribe: (listener) => scope.subscribe(() => { syncGateway(); listener(); }),
@@ -991,12 +1133,17 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
 function DshCollabBarPanel(props: {
   scope: CollabPanelRenderScope;
   port?: DshCollabClientPort;
+  workspacePorts?: DshCollabWorkspacePorts;
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
   t: CollabTranslate;
 }): ReactNode {
   const selection = useDshCollabRoomSelection(props.scope.sessionId);
   const snapshot = usePortSnapshot(props.port, fallbackSnapshot);
+  useEffect(() => {
+    if (!props.workspacePorts || !selection || selection.roomId !== snapshot.roomId || snapshot.connection !== "online") return;
+    void props.workspacePorts.activateSession(props.scope.sessionId, selection.roomId).catch(() => undefined);
+  }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   const memberNames = new Map((snapshot.members ?? []).map((member) => [member.memberId, member.displayName]));
@@ -1050,9 +1197,17 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
   const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings });
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
+  const participantPersistence = participantScope && connection
+    ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc))
+    : undefined;
+  const prepareParticipantPersistence = (): void => { void participantPersistence?.prepare?.().catch(() => undefined); };
+  prepareParticipantPersistence();
+  if (participantPersistence && participantScope && context.effect) {
+    context.effect(() => participantScope.subscribe(prepareParticipantPersistence), "dsh-collab: Participant credentials");
+  }
   const browserClient = existing ? undefined : createDshBrowserCollabClient({
     ...browserConfig(),
-    ...(participantScope ? { participantPersistence: createDshParticipantPersistence(participantScope) } : {}),
+    ...(participantPersistence ? { participantPersistence } : {}),
     ...(connection ? { easyTierTransport: createDshBrowserEasyTierTransport(connection.rpc) } : {}),
   });
   const client = existing ?? browserClient;
@@ -1063,8 +1218,34 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   if (settings) context.provide?.("collabSettings", settings);
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
+  const workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
+  const sessions = optionalService<DshClientSessions>(context, "sessions");
   let panelResolution = resolveBetterSidebarHost(undefined);
-  installOptionalCollabPanelHost(context, (scope) => createElement(DshCollabBarPanel, { scope, port: client, changesPort, reviewsPort, t: fallbackT }), () => fallbackT("bar.title"), (resolution) => { panelResolution = resolution; });
+  const openWorkspace = workspaces && sessions ? createDshParticipantWorkspaceOpener({
+    workspaces,
+    sessions,
+    panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
+  }) : undefined;
+  const workspacePorts = browserClient && connection ? new DshCollabWorkspacePorts({
+    rpc: connection.rpc,
+    source: browserClient,
+    ...(openWorkspace ? { openWorkspace } : {}),
+  }) : undefined;
+  if (workspacePorts) {
+    context.provide?.("collabWorkspacePorts", workspacePorts);
+    context.effect?.(() => () => { workspacePorts.dispose(); }, "dsh-collab: workspace ports");
+  }
+  installOptionalCollabPanelHost(context, (scope) => {
+    const scoped = workspacePorts?.forSession(scope.sessionId);
+    return createElement(DshCollabBarPanel, {
+      scope,
+      port: client,
+      workspacePorts,
+      changesPort: changesPort ?? scoped?.changes,
+      reviewsPort: reviewsPort ?? scoped?.reviews,
+      t: fallbackT,
+    });
+  }, () => fallbackT("bar.title"), (resolution) => { panelResolution = resolution; });
   context.slots.inject("conversation.session.header.actions", () => context.slots.register({
     name: "conversation.session.header.actions",
     id: "dsh-collab",

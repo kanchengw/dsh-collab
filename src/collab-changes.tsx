@@ -7,12 +7,13 @@ import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 export type CollabChangesWorkspaceSnapshot =
   | { kind: "owner"; latestVersionId?: string }
   | { kind: "unavailable"; latestVersionId?: string }
-  | { kind: "ready"; path: string; baseVersionId: string; latestVersionId?: string; dirtyPaths: readonly string[] };
+  | { kind: "ready"; path: string; baseVersionId: string; latestVersionId?: string; dirtyPaths: readonly string[]; linked: boolean };
 
 export interface CollabChangesSnapshot {
   roomId: string;
   role: "owner" | "participant";
   connection: "online" | "offline";
+  workspaceSharingEnabled?: boolean;
   workspace: CollabChangesWorkspaceSnapshot;
   draft?: ChangeSetDraftBundle;
   staged: readonly { changeSet: StagedChangeSet; patch?: string }[];
@@ -24,6 +25,8 @@ export interface CollabChangesPort {
   getSnapshot(): CollabChangesSnapshot;
   subscribe(listener: () => void): () => void;
   refresh(): Promise<void>;
+  openWorkspace?(): Promise<void>;
+  setWorkspaceSharing?(enabled: boolean): Promise<void>;
   sync(): Promise<void>;
   discardAndSync(): Promise<void>;
   createDraft(input: { title: string; summary: string }): Promise<void>;
@@ -35,10 +38,12 @@ export function validateCollabChangesSnapshot(snapshot: CollabChangesSnapshot): 
   if (!snapshot || typeof snapshot.roomId !== "string" || snapshot.roomId.trim() === "") throw new Error("Collab Changes room is invalid");
   if (snapshot.role !== "owner" && snapshot.role !== "participant") throw new Error("Collab Changes role is invalid");
   if (snapshot.connection !== "online" && snapshot.connection !== "offline") throw new Error("Collab Changes connection is invalid");
+  if (snapshot.workspaceSharingEnabled !== undefined && typeof snapshot.workspaceSharingEnabled !== "boolean") throw new Error("Collab Changes workspace sharing state is invalid");
   if (!snapshot.workspace || !["owner", "unavailable", "ready"].includes(snapshot.workspace.kind)) throw new Error("Collab Changes workspace is invalid");
   if ((snapshot.role === "owner") !== (snapshot.workspace.kind === "owner")) throw new Error("Collab Changes workspace does not match its role");
   if (snapshot.workspace.kind === "ready"
     && (snapshot.workspace.path.trim() === "" || snapshot.workspace.baseVersionId.trim() === ""
+      || typeof snapshot.workspace.linked !== "boolean"
       || !Array.isArray(snapshot.workspace.dirtyPaths) || snapshot.workspace.dirtyPaths.some((path) => typeof path !== "string" || path.trim() === ""))) {
     throw new Error("Collab Changes workspace is invalid");
   }
@@ -91,9 +96,17 @@ function WorkspaceCard(props: {
 }): ReactNode {
   const { workspace, role, connection } = props.snapshot;
   if (role === "owner") return <section className={css.card} aria-label={props.t("changes.workspaceTitle")}>
-    <div className={css.cardHeader}><h3>{props.t("changes.workspaceTitle")}</h3><span className={css.badge}>{props.t("changes.ownerWorkspace")}</span></div>
+    <div className={css.cardHeader}><h3>{props.t("changes.workspaceTitle")}</h3><span className={css.badge}>{props.t(props.snapshot.workspaceSharingEnabled ? "changes.sharingEnabled" : "changes.sharingDisabled")}</span></div>
     <p className={css.hint}>{props.t("changes.ownerWorkspaceHint")}</p>
     <dl className={css.versions}><div><dt>{props.t("changes.latestVersion")}</dt><dd><code>{shortId(workspace.latestVersionId)}</code></dd></div></dl>
+    <div className={css.actions}>
+      {props.port.setWorkspaceSharing ? <button type="button" className={props.snapshot.workspaceSharingEnabled ? css.danger : css.primary} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("sharing", () => props.port.setWorkspaceSharing!(!props.snapshot.workspaceSharingEnabled)); }}>
+        {props.t(props.snapshot.workspaceSharingEnabled ? "changes.disableSharing" : "changes.enableSharing")}
+      </button> : null}
+      {props.snapshot.workspaceSharingEnabled ? <button type="button" className={css.primary} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("sync", () => props.port.sync()); }}>
+        {props.t(props.busy === "sync" ? "changes.publishing" : "changes.publishWorkspace")}
+      </button> : null}
+    </div>
   </section>;
 
   if (workspace.kind === "unavailable") return <section className={css.card} aria-label={props.t("changes.workspaceTitle")}>
@@ -122,10 +135,13 @@ function WorkspaceCard(props: {
     <p className={css.hint}>{dirty
       ? props.t("changes.dirtyFiles", { count: workspace.dirtyPaths.length })
       : props.t("changes.cleanWorkspace")}</p>
-    {upstream ? <div className={css.actions}>
-      {!dirty ? <button type="button" className={css.primary} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("sync", () => props.port.sync()); }}>{props.t(props.busy === "sync" ? "changes.syncing" : "changes.syncLatest")}</button> : null}
-      {dirty ? <p className={css.warning}>{props.t("changes.upstreamDirtyHint")}</p> : null}
-      {dirty ? <button type="button" className={css.danger} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("discard", () => props.port.discardAndSync()); }}>{props.t(props.busy === "discard" ? "changes.syncing" : "changes.discardAndSync")}</button> : null}
+    {(!workspace.linked && props.port.openWorkspace) || upstream ? <div className={css.actions}>
+      {!workspace.linked && props.port.openWorkspace ? <button type="button" className={css.primary} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("open-workspace", () => props.port.openWorkspace!()); }}>
+        {props.t(props.busy === "open-workspace" ? "changes.openingWorkspace" : "changes.openWorkspace")}
+      </button> : null}
+      {upstream && !dirty ? <button type="button" className={css.primary} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("sync", () => props.port.sync()); }}>{props.t(props.busy === "sync" ? "changes.syncing" : "changes.syncLatest")}</button> : null}
+      {upstream && dirty ? <p className={css.warning}>{props.t("changes.upstreamDirtyHint")}</p> : null}
+      {upstream && dirty ? <button type="button" className={css.danger} disabled={connection === "offline" || props.busy !== undefined} onClick={() => { props.run("discard", () => props.port.discardAndSync()); }}>{props.t(props.busy === "discard" ? "changes.syncing" : "changes.discardAndSync")}</button> : null}
     </div> : null}
   </section>;
 }
@@ -217,7 +233,10 @@ export function CollabChanges(props: { port: CollabChangesPort; t?: CollabTransl
   return <section className={css.changes} aria-label={t("changes.title")} data-role={snapshot.role} data-connection={snapshot.connection}>
     <header className={css.header}>
       <div><h2>{t("changes.title")}</h2><p>{t(snapshot.role === "owner" ? "changes.ownerDescription" : "changes.description")}</p></div>
-      <span className={css.connection} role="status">{t(snapshot.connection === "online" ? "changes.online" : "changes.offline")}</span>
+      <div className={css.headerActions}>
+        <button type="button" className={css.refresh} disabled={busy !== undefined} onClick={() => { run("refresh", () => props.port.refresh()); }}>{t("changes.refresh")}</button>
+        <span className={css.connection} role="status">{t(snapshot.connection === "online" ? "changes.online" : "changes.offline")}</span>
+      </div>
     </header>
     {snapshot.connection === "offline" ? <p className={css.offline} role="status">{t("changes.offlineHint")}</p> : null}
     {error ? <div className={css.error} role="alert"><span>{error}</span><button type="button" disabled={busy !== undefined} onClick={() => { run("refresh", () => props.port.refresh()); }}>{t("changes.retry")}</button></div> : null}

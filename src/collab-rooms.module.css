@@ -78,40 +78,27 @@
   border-radius: 50%;
 }
 
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: auto;
+.panel {
+  align-self: stretch;
+  margin: -24px -24px -24px auto;
+  gap: 0;
+  width: 460px;
+  max-width: calc(100vw - 24px);
+  height: calc(100% + 48px);
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 0;
   font-family: var(--dsw-font-family);
 }
 
-.mask {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: var(--dsw-alias-bg-mask-1);
-  backdrop-filter: var(--dsw-mask-blur);
-  cursor: default;
-}
-
-.panel {
-  position: relative;
-  z-index: 1;
+.panelContents {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  width: 460px;
-  max-width: calc(100vw - 24px);
-  height: 100%;
+  min-height: 0;
+  width: 100%;
   overflow: hidden;
-  border-left: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
   color: var(--dsw-alias-label-primary);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
@@ -482,7 +469,7 @@
 
 @media (max-width: 640px) {
   .panel {
-    width: 100%;
+    width: calc(100% + 48px);
     max-width: none;
     border-left: 0;
   }

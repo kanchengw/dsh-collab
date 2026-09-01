@@ -102,7 +102,7 @@ describe("localhost HTTP adapter", () => {
         "content-type": "application/json",
         "x-request-id": "req-join",
       },
-      body: JSON.stringify({ inviteId: "invite-1", token: invite.data.token, memberId: "member-bob", displayName: "Bob" }),
+      body: JSON.stringify({ inviteId: "invite-1", token: invite.data.token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" }),
     });
     const join = await json(joinResponse);
     expect(joinResponse.status).toBe(201);
@@ -111,7 +111,7 @@ describe("localhost HTTP adapter", () => {
       requestId: "req-join",
       ok: true,
       data: {
-        member: { principalId: "invite:invite-1" },
+        member: { principalId: "invite:invite-1:member-bob" },
         event: { type: "member.joined", payload: { memberId: "member-bob", displayName: "Bob" } },
       },
     });

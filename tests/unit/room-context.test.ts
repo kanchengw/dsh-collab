@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CollabError } from "../../src/errors.js";
 import { projectRoomContext } from "../../src/room-context.js";
@@ -159,6 +160,135 @@ describe("projectRoomContext", () => {
       entries: [],
       omittedCount: 0,
     });
+  });
+
+  it("tracks the latest durable Workspace Version without spending an entry slot", () => {
+    const files: never[] = [];
+    const workspaceVersionId = "workspace-version-1";
+    const snapshot = projectRoomContext({
+      roomId: "room-1",
+      afterSeq: 0,
+      maxEntries: 1,
+      events: [
+        message(1, "before publish"),
+        event(2, "workspace-version.published", {
+          version: { workspaceVersionId, roomId: "room-1", files, createdBy: "member-host", createdAt: 1_002 },
+          manifestHash: createHash("sha256").update(JSON.stringify(files)).digest("hex"),
+          artifact: { kind: "workspace-snapshot.v1", snapshotId: workspaceVersionId, manifestHash: "a".repeat(64), totalBytes: 0 },
+        }, { actor: { memberId: "member-host", principalId: "host" } }),
+        message(3, "after publish"),
+      ],
+    });
+
+    expect(snapshot).toEqual({
+      roomId: "room-1",
+      fromSeq: 1,
+      toSeq: 3,
+      workspaceVersionId,
+      entries: [{ kind: "message", author: "member-alice", text: "after publish" }],
+      omittedCount: 1,
+    });
+  });
+
+  it("projects durable ChangeSet and Review collaboration into Agent context", () => {
+    const changeSetId = "a".repeat(64);
+    const snapshot = projectRoomContext({
+      roomId: "room-1",
+      afterSeq: 0,
+      maxEntries: 10,
+      events: [
+        event(1, "changeset.submitted", {
+          changeSetId,
+          authorId: "member-alice",
+          title: "Fix reconnect",
+          summary: "Keep room state after reconnect.",
+          submittedAt: 1_001,
+        }),
+        event(2, "changeset.review-assigned", {
+          assignmentId: "b".repeat(64),
+          changeSetId,
+          assignedBy: "member-alice",
+          reviewerId: "member-reviewer",
+          createdAt: 1_002,
+        }),
+        event(3, "changeset.finding-created", {
+          findingId: "c".repeat(64),
+          changeSetId,
+          authorId: "member-alice",
+          severity: "high",
+          location: { kind: "file", path: "src/reconnect.ts" },
+          body: "Reconnect can race.",
+          createdAt: 1_003,
+        }),
+        event(4, "changeset.review-decided", {
+          decisionId: "d".repeat(64),
+          changeSetId,
+          reviewerId: "member-alice",
+          outcome: "changes-requested",
+          note: "Add an ordering guard.",
+          createdAt: 1_004,
+        }),
+        event(5, "changeset.revision-linked", {
+          revisionLinkId: "e".repeat(64),
+          changeSetId: "f".repeat(64),
+          supersedesChangeSetId: changeSetId,
+          linkedBy: "member-alice",
+          createdAt: 1_005,
+        }),
+        event(6, "changeset.applied", {
+          version: 1,
+          applicationId: "f".repeat(64),
+          roomId: "room-1",
+          changeSetId,
+          appliedBy: "member-alice",
+          workspaceVersionId: "workspace-version-2",
+          integrationId: "integration-1",
+          createdAt: 1_006,
+        }),
+        event(7, "changeset.apply-conflicted", {
+          version: 1,
+          conflictId: "9".repeat(64),
+          roomId: "room-1",
+          changeSetId,
+          baseWorkspaceVersionId: "workspace-version-1",
+          detectedBy: "member-alice",
+          conflicts: [{ path: "src/reconnect.ts", kind: "base-changed" }],
+          createdAt: 1_007,
+        }),
+        event(8, "workspace-sharing.changed", { roomId: "room-1", enabled: false, revision: 2 }),
+      ],
+    });
+
+    expect(snapshot).toEqual({
+      roomId: "room-1",
+      fromSeq: 1,
+      toSeq: 8,
+      entries: [
+        { kind: "changeset", changeSetId, author: "member-alice", status: "submitted", summary: "Fix reconnect: Keep room state after reconnect." },
+        { kind: "review", changeSetId, author: "member-alice", decision: "Assigned reviewer member-reviewer" },
+        { kind: "review", changeSetId, author: "member-alice", decision: "[high] Reconnect can race." },
+        { kind: "review", changeSetId, author: "member-alice", decision: "changes-requested: Add an ordering guard." },
+        { kind: "changeset", changeSetId: "f".repeat(64), author: "member-alice", status: "revision", summary: `Supersedes ${changeSetId}` },
+        { kind: "changeset", changeSetId, author: "member-alice", status: "applied", summary: "Workspace workspace-version-2" },
+        { kind: "changeset", changeSetId, author: "member-alice", status: "conflicted", summary: "Conflicts: src/reconnect.ts" },
+      ],
+      omittedCount: 0,
+    });
+  });
+
+  it("rejects a collaboration payload whose actor does not match its domain author", () => {
+    expectInvalid(() => projectRoomContext({
+      roomId: "room-1",
+      afterSeq: 0,
+      maxEntries: 10,
+      events: [event(1, "changeset.review-decided", {
+        decisionId: "d".repeat(64),
+        changeSetId: "a".repeat(64),
+        reviewerId: "member-reviewer",
+        outcome: "approved",
+        createdAt: 1_001,
+      })],
+    }));
   });
 
   it("keeps the newest eligible entries and counts only budget omissions", () => {

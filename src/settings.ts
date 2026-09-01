@@ -1,7 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { COLLAB_TOKEN_TTL_OPTIONS, defaultCollabSettings, tokenTtlOptionFromMs, type CollabSettings, type DshCollabParticipantSettings, type DshCollabPersistedSettings } from "./settings-shared.js";
-import { assertEasyTierPeer, assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
+import { assertEasyTierPeer } from "./easytier-invitation.js";
 export * from "./settings-shared.js";
 
 export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.object({
@@ -34,14 +34,7 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
   easyTierSharedNode: z.string().default(defaultCollabSettings.easyTierSharedNode),
   easyTierRooms: z.array(z.object({
     roomId: z.string().min(1).required(),
-    network: z.object({
-      mode: z.const("easytier").required(),
-      version: z.const(1).required(),
-      networkName: z.string().min(1).required(),
-      networkSecret: z.string().min(1).required(),
-      ownerVirtualAddress: z.string().min(1).required(),
-      sharedNode: z.string().min(1).required(),
-    }).required(),
+    credentialKey: z.string().min(1).required().hidden(),
   })).default([]).hidden(),
 });
 
@@ -50,27 +43,10 @@ export const DSH_COLLAB_PARTICIPANT_SCHEMA: z<DshCollabParticipantSettings> = z.
     gatewayEndpoint: z.string().min(1).required(),
     roomId: z.string().min(1).required(),
     memberId: z.string().min(1).required(),
-    credential: z.string().min(1).required(),
+    credentialKey: z.string().min(1).required().hidden(),
     roomTitle: z.string().default(""),
     hostDisplayName: z.string().default(""),
-    easyTier: z.object({
-      network: z.object({
-        mode: z.const("easytier").required(),
-        version: z.const(1).required(),
-        networkName: z.string().min(1).required(),
-        networkSecret: z.string().min(1).required(),
-        ownerVirtualAddress: z.string().min(1).required(),
-        sharedNode: z.string().min(1).required(),
-      }).required(),
-      localVirtualAddress: z.string().min(1).required(),
-    }).default(undefined as unknown as NonNullable<NonNullable<DshCollabParticipantSettings["joinedRooms"]>[number]["easyTier"]>).hidden(),
   })).default([]).hidden(),
-  resume: z.object({
-    gatewayEndpoint: z.string().min(1).required(),
-    roomId: z.string().min(1).required(),
-    memberId: z.string().min(1).required(),
-    credential: z.string().min(1).required(),
-  }).default(undefined as unknown as NonNullable<DshCollabParticipantSettings["resume"]>).hidden(),
 });
 
 function validateAdvertisedEndpoint(gateway: DshCollabPersistedSettings["gateway"]): void {
@@ -99,7 +75,7 @@ export function validateDshCollabPersistedSettings(settings: DshCollabPersistedS
   for (const room of settings.easyTierRooms ?? []) {
     if (room.roomId.trim() === "" || roomIds.has(room.roomId)) throw new Error("EasyTier room is invalid");
     roomIds.add(room.roomId);
-    decodeEasyTierInvitationNetwork(room.network);
+    if (!/^dsh-collab\/owner-[a-z0-9-]+$/.test(room.credentialKey)) throw new Error("EasyTier room credential reference is invalid");
   }
   if (settings.security) {
     const security: CollabSettings = { ...defaultCollabSettings, ...settings.security, ...settings.gateway };
@@ -112,23 +88,13 @@ export function validateDshCollabParticipantSettings(settings: DshCollabParticip
   const keys = new Set<string>();
   for (const room of rooms) {
     normalizeGatewayEndpoint(room.gatewayEndpoint);
-    for (const field of ["roomId", "memberId", "credential"] as const) {
+    for (const field of ["roomId", "memberId"] as const) {
       if (room[field].trim() === "") throw new Error(field + " must not be blank");
     }
-    if (room.easyTier) {
-      decodeEasyTierInvitationNetwork(room.easyTier.network);
-      try { assertEasyTierPrivateIpv4("Participant EasyTier address", room.easyTier.localVirtualAddress); }
-      catch (error) { throw new Error("Participant EasyTier address is invalid", { cause: error }); }
-    }
+    if (!/^dsh-collab\/participant-[a-z0-9-]+$/.test(room.credentialKey)) throw new Error("joined room credential reference is invalid");
     const key = `${room.gatewayEndpoint}\n${room.roomId}`;
     if (keys.has(key)) throw new Error("joined room must be unique");
     keys.add(key);
-  }
-  if (settings.resume) {
-    normalizeGatewayEndpoint(settings.resume.gatewayEndpoint);
-    for (const field of ["roomId", "memberId", "credential"] as const) {
-      if (settings.resume[field].trim() === "") throw new Error(field + " must not be blank");
-    }
   }
 }
 

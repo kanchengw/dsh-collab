@@ -5,7 +5,6 @@ import {
   encodeCollabInvitation,
 } from "../../src/invitation.js";
 import { decodeEasyTierInvitationNetwork } from "../../src/easytier-invitation.js";
-import { COLLAB_PROTOCOL } from "../../src/protocol.js";
 
 describe("EasyTier invitation contract", () => {
   const base = {
@@ -18,9 +17,7 @@ describe("EasyTier invitation contract", () => {
     expiresAt: 100,
   };
 
-  it("uses a protocol old clients reject and keeps network credentials separate from Collab authorization", () => {
-    expect(COLLAB_INVITATION_PROTOCOL).not.toBe(COLLAB_PROTOCOL);
-
+  it("keeps EasyTier network credentials separate from Collab authorization", () => {
     const encoded = encodeCollabInvitation({
       ...base,
       network: {

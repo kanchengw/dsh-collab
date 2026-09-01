@@ -9,6 +9,7 @@ import { classifyMessage } from "./messages.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
+import { StreamTicketStore } from "./stream-tickets.js";
 import { ActiveRoomRegistry } from "./active-rooms.js";
 import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY, decodeCollaborationCapabilities } from "./protocol.js";
 import type { ChangeSetStagingService } from "./change-set-staging.js";
@@ -245,6 +246,7 @@ function copy<T>(value: T): T {
 export class CollabGateway {
   readonly dispatcher: AgentDispatcher;
   readonly tokens: RoomTokenStore;
+  readonly streamTickets: StreamTicketStore;
   readonly resumes: ResumeCredentialStore;
   private readonly now: () => number;
   private readonly maxMessageBytes: number | undefined;
@@ -253,8 +255,13 @@ export class CollabGateway {
   private readonly submissions = new Map<string, SubmissionRecord>();
   private readonly pendingSubmissions = new Set<SubmissionRecord>();
   private readonly unconfirmedRequestIds = new Set<string>();
+  private readonly options: GatewayOptions;
 
-  constructor(private readonly options: GatewayOptions) {
+  constructor(options: GatewayOptions) {
+    this.options = {
+      ...options,
+      commitCriticalState: () => options.ledger.commit(options.commitCriticalState),
+    };
     this.now = options.now ?? (() => Date.now());
     if (options.maxMessageBytes !== undefined && (!Number.isSafeInteger(options.maxMessageBytes) || options.maxMessageBytes < 1)) {
       throw invalidInput("maxMessageBytes must be positive", { maxMessageBytes: options.maxMessageBytes });
@@ -266,12 +273,13 @@ export class CollabGateway {
       tokenFactory: options.tokenFactory,
       ttlMs: options.tokenTtlMs,
     });
+    this.streamTickets = new StreamTicketStore(this.tokens);
     this.resumes = options.resumes ?? new ResumeCredentialStore(options.rooms);
     this.dispatcher = new AgentDispatcher({
       rooms: options.rooms,
       ledger: options.ledger,
       agent: options.agent,
-      ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
+      commitCriticalState: this.options.commitCriticalState,
       canDispatch: (roomId, requestId) => !this.unconfirmedRequestIds.has(requestId)
         && (options.activeRooms?.isActive(roomId) ?? true),
     });
@@ -279,6 +287,7 @@ export class CollabGateway {
 
   async handle(request: GatewayRequest): Promise<GatewayResponse> {
     try {
+      await this.options.ledger.awaitDurable();
       const url = new URL(request.path, "http://dsh-collab.local");
       const segments = url.pathname.split("/").filter(Boolean);
       if (segments.length < 4 || segments[0] !== "v1" || segments[1] !== "rooms") {
@@ -305,19 +314,20 @@ export class CollabGateway {
       }
       this.options.rooms.getRoom(roomId);
       this.options.activeRooms?.requireActive(roomId);
-      if (segments.length === 4 && resource === "workspace-sharing") return this.workspaceSharing(roomId, request);
+      if (segments.length === 4 && resource === "workspace-sharing") return await this.workspaceSharing(roomId, request);
       if (resource === "workspace-snapshots") return await this.workspaceSnapshots(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "workspace-versions") return await this.workspaceVersions(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "change-sets") return await this.changeSets(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "review-points") return await this.reviewPoints(roomId, segments.slice(4), url.searchParams, request);
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
+      if (request.method === "POST" && resource === "stream-tickets") return this.createStreamTicket(roomId, request);
       if (request.method === "POST" && resource === "invites") return this.createInvite(roomId, request);
       if (request.method === "POST" && resource === "join") return await this.join(roomId, request);
       if (request.method === "POST" && resource === "resume") return this.resume(roomId, request);
       if (request.method === "GET" && resource === "snapshot") return this.snapshot(roomId, request);
       if (request.method === "GET" && resource === "events") return this.events(roomId, url.searchParams, request);
-      if (request.method === "GET" && resource === "approvals") return this.listApprovals(roomId, request);
+      if (request.method === "GET" && resource === "approvals") return await this.listApprovals(roomId, request);
       if (request.method === "POST" && resource === "approvals") return await this.createApproval(roomId, request);
       if (request.method === "POST" && resource === "actions") return await this.action(roomId, request);
       if (request.method === "POST" && resource === "messages") return await this.message(roomId, request);
@@ -354,12 +364,15 @@ export class CollabGateway {
     };
   }
 
+  private createStreamTicket(roomId: string, request: GatewayRequest): GatewayResponse {
+    allowedFields(objectBody(request.body), []);
+    return { status: 201, body: this.streamTickets.issue({ roomId, roomToken: this.roomToken(request), now: this.now() }) };
+  }
+
   private async join(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const body = objectBody(request.body);
     const inviteId = requiredText(body.inviteId, "inviteId");
-    const requestedResumeCredential = body.resumeCredential === undefined
-      ? undefined
-      : requiredText(body.resumeCredential, "resumeCredential");
+    const requestedResumeCredential = requiredText(body.resumeCredential, "resumeCredential");
     const memberId = requiredText(body.memberId, "memberId");
     const existingMember = this.options.rooms.listMembers(roomId).some((member) => member.memberId === memberId);
     if (!existingMember) {
@@ -369,15 +382,13 @@ export class CollabGateway {
       roomId,
       inviteId,
       token: requiredText(body.token, "token"),
-      principalId: `invite:${inviteId}`,
+      principalId: `invite:${inviteId}:${memberId}`,
       memberId,
       displayName: requiredText(body.displayName, "displayName"),
       now: this.now(),
     });
+    const resumeCredential = this.resumes.issueForJoin({ roomId, memberId: member.memberId, principalId: member.principalId, credential: requestedResumeCredential, now: this.now() });
     const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
-    const resumeCredential = requestedResumeCredential === undefined
-      ? this.resumes.issue({ roomId, memberId: member.memberId, principalId: member.principalId, now: this.now() })
-      : this.resumes.issueForJoin({ roomId, memberId: member.memberId, principalId: member.principalId, credential: requestedResumeCredential, now: this.now() });
     const event = this.options.ledger.append({
       eventId: roomId + ":member.joined:" + member.memberId,
       roomId,
@@ -431,7 +442,7 @@ export class CollabGateway {
     return { status: 200, body: { room, sharing: false } };
   }
 
-  private workspaceSharing(roomId: string, request: GatewayRequest): GatewayResponse {
+  private async workspaceSharing(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const workspace = this.options.workspace!;
     const claims = this.claims(roomId, request);
     if (request.method === "GET") {
@@ -444,6 +455,7 @@ export class CollabGateway {
         principalId: claims.principalId,
         enabled: booleanField(body, "enabled"),
       });
+      await this.options.commitCriticalState?.();
       return { status: 200, body: { state } };
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
@@ -696,7 +708,7 @@ export class CollabGateway {
         room: this.options.rooms.getRoom(roomId),
         members: this.options.rooms.listMembers(roomId),
         agentQueue: this.dispatcher.queueView(roomId),
-        lastEventSeq: this.options.ledger.latestSeq(roomId),
+        lastEventSeq: this.options.ledger.latestCommittedSeq(roomId),
       },
     };
   }
@@ -705,7 +717,7 @@ export class CollabGateway {
     this.claims(roomId, request);
     const after = query.get("after") === null ? 0 : this.parseQueryInteger(query.get("after"), "after");
     const limit = query.get("limit") === null ? 100 : this.parseQueryInteger(query.get("limit"), "limit");
-    const events = this.options.ledger.readAfter(roomId, after, limit);
+    const events = this.options.ledger.readCommittedAfter(roomId, after, limit);
     return { status: 200, body: { events, nextSeq: events.at(-1)?.seq ?? after } };
   }
 
@@ -894,6 +906,8 @@ export class CollabGateway {
       const body = objectBody(request.body);
       allowedFields(body, []);
       const changeSet = await changeSets.finalize({ roomId, principalId: claims.principalId, uploadId });
+      const reviewCreated = this.options.changeSetReviews?.observeSubmitted({ changeSet, principalId: claims.principalId }) ?? false;
+      if (reviewCreated) await this.options.commitCriticalState?.();
       return { status: 201, body: { changeSet } };
     }
     const reviews = this.options.changeSetReviews;
@@ -964,7 +978,20 @@ export class CollabGateway {
         changeSetId,
         clientRequestId: requestIdField(body, "clientRequestId"),
       });
-      return { status: result.outcome === "conflicted" ? 409 : 200, body: result };
+      if (result.outcome === "conflicted") {
+        const paths = result.conflict.conflicts.map((conflict) => conflict.path).join(", ");
+        return {
+          status: 409,
+          body: {
+            error: {
+              code: "CHANGE_SET_CONFLICT",
+              message: `ChangeSet conflicts with the current Workspace: ${paths}`,
+              details: { conflict: result.conflict },
+            },
+          } satisfies ErrorBody,
+        };
+      }
+      return { status: 200, body: result };
     }
     if (changeSetId && tail.length === 2 && tail[1] === "findings" && reviews) {
       if (request.method === "GET") {
@@ -1056,11 +1083,12 @@ export class CollabGateway {
     this.options.limits?.checkQueue(roomId, roomDepth + 1);
   }
 
-  private listApprovals(roomId: string, request: GatewayRequest): GatewayResponse {
+  private async listApprovals(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
     const claims = this.claims(roomId, request);
     this.options.rooms.authorize(roomId, claims.principalId, "approval");
-    return { status: 200, body: { approvals: this.approvals.list(roomId, this.now()) } };
+    if (this.approvals.expireDue(roomId, this.now()).length > 0) await this.options.commitCriticalState?.();
+    return { status: 200, body: { approvals: this.approvals.list(roomId) } };
   }
 
   private async createApproval(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
@@ -1162,12 +1190,14 @@ export class CollabGateway {
     }
     if (action === "decideApproval") {
       if (!this.approvals || this.approvalPolicy === "disabled") throw new CollabError("ACTION_FORBIDDEN", "approvals are disabled");
+      const now = this.now();
+      if (this.approvals.expireDue(roomId, now).length > 0) await this.options.commitCriticalState?.();
       const approval = this.approvals.decide({
         approvalId: requiredText(body.approvalId, "approvalId"),
         roomId,
         principalId: claims.principalId,
         outcome: requiredText(body.outcome, "outcome") as "allowed-once" | "allowed-always" | "rejected" | "cancelled" | "unavailable",
-        now: this.now(),
+        now,
       });
       await this.options.commitCriticalState?.();
       return { status: 200, body: { approval } };
@@ -1176,11 +1206,15 @@ export class CollabGateway {
   }
 
   private claims(roomId: string, request: GatewayRequest): RoomTokenClaims {
+    return this.tokens.verify({ roomId, token: this.roomToken(request), now: this.now() });
+  }
+
+  private roomToken(request: GatewayRequest): string {
     const authorization = getHeader(request, "authorization");
     if (!authorization) throw new CollabError("AUTH_REQUIRED", "room token is required");
     const match = /^Bearer (.+)$/.exec(authorization);
     if (!match) throw new CollabError("AUTH_INVALID", "authorization must use Bearer token");
-    return this.tokens.verify({ roomId, token: match[1]!, now: this.now() });
+    return match[1]!;
   }
 
   private parseQueryInteger(value: string | null, field: string): number {

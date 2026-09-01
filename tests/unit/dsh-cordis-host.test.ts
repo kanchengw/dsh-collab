@@ -184,6 +184,7 @@ describe("Cordis Host mount", () => {
           contains: () => true,
           processPath: (target) => String(target.targetKey),
           lstat: async () => undefined,
+          stat: async () => undefined,
           readBytes: async () => new Uint8Array(),
           writeText: async () => ({}),
         },
@@ -242,18 +243,19 @@ describe("Cordis Host mount", () => {
 
   it("closes the Gateway even when the final persistence write fails", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dsh-collab-dispose-"));
-    const blocker = join(dir, "blocked");
-    await writeFile(blocker, "not a directory", "utf8");
+    const stateFile = join(dir, "state.json");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const mounted = mountDshCollabCordisHost({
         agents: { get: () => ({ followup: () => {}, steer: () => {}, cancel: () => {} }) },
       }, {
         roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host", port: 0,
-        stateFile: join(blocker, "state.json"),
+        stateFile,
       });
       if (!mounted) throw new Error("Gateway was not mounted");
       const port = await mounted.ready;
+      await rm(dir, { recursive: true, force: true });
+      await writeFile(dir, "not a directory", "utf8");
       await expect(mounted.dispose()).rejects.toBeDefined();
       expect(await canConnect(port)).toBe(false);
     } finally {
@@ -349,6 +351,89 @@ describe("Cordis Host mount", () => {
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
   });
 
+  it("registers Gateway control through the settings injection scope", () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const agents = { get: () => undefined };
+    const injected = {
+      agents,
+      settings: { register: () => ({ get: () => persisted, update: async () => {} }) },
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+    const context = {
+      agents,
+      inject: (_services: string[], callback: (scope: typeof injected) => void) => callback(injected),
+    };
+
+    apply(context, { hostId: "host", hostDisplayName: "Host", ...noPersistence });
+
+    expect(control).toBeDefined();
+  });
+
+  it("does not read an undeclared optional service through the Cordis context facade", () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const agents = { get: () => undefined };
+    const injected = new Proxy({
+      agents,
+      get: () => undefined,
+      settings: { register: () => ({ get: () => persisted, update: async () => {} }) },
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    }, {
+      get(target, property, receiver) {
+        if (property === "easyTierTransport") throw new Error('cannot get property "easyTierTransport" without inject');
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const context = {
+      agents,
+      inject: (_services: string[], callback: (scope: typeof injected) => void) => callback(injected),
+    };
+
+    expect(() => apply(context, { hostId: "host", hostDisplayName: "Host", ...noPersistence })).not.toThrow();
+    expect(control).toBeDefined();
+  });
+
+  it("exposes only dsh-collab Participant grant records through loopback credential RPC", async () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const records = new Map<string, { kind: string; payload?: unknown }>();
+    const credentials = {
+      readRecord: async (key: string) => records.get(key),
+      modifyRecord: async (key: string, mutate: (current: { kind: string; payload?: unknown } | undefined) => Promise<{ kind: string; payload?: unknown } | undefined>) => {
+        const next = await mutate(records.get(key));
+        if (next !== undefined) records.set(key, next);
+        return records.get(key);
+      },
+      deleteRecord: async (key: string) => { records.delete(key); },
+    };
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: { get: () => undefined },
+      credentials,
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async () => {} }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>, options: unknown) => { control = handler; expect(options).toEqual({ authority: "loopback" }); return async () => {}; }) } },
+    };
+    apply(context, { hostId: "host", hostDisplayName: "Host", ...noPersistence });
+    const state = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
+
+    const saved = await control!("credentials/participant/save", { state }, new AbortController().signal) as { ok: boolean; value: { credentialKey: string } };
+    expect(saved.ok).toBe(true);
+    expect(JSON.stringify([...records.values()])).toContain("resume-secret");
+    await expect(control!("credentials/participant/load", { credentialKey: saved.value.credentialKey }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { state } });
+    await expect(control!("credentials/participant/load", { credentialKey: "other-plugin/credential" }, new AbortController().signal)).resolves.toMatchObject({ ok: false });
+    records.set("dsh-collab/owner-protected", { kind: "grant", payload: { version: 1, kind: "owner-network", network: {} } });
+    await expect(control!("credentials/participant/delete", { credentialKey: "dsh-collab/owner-protected" }, new AbortController().signal)).resolves.toMatchObject({ ok: false });
+    expect(records.has("dsh-collab/owner-protected")).toBe(true);
+    await expect(control!("credentials/participant/delete", { credentialKey: saved.value.credentialKey }, new AbortController().signal)).resolves.toMatchObject({ ok: true });
+    expect(records.size).toBe(1);
+  });
+
   it("starts EasyTier only after explicit Owner control and persists one network per room", async () => {
     const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
@@ -359,6 +444,7 @@ describe("Cordis Host mount", () => {
       easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
     };
     let runtimeStatus: EasyTierRuntimeStatus = { kind: "idle" };
+    const credentialRecords = new Map<string, { kind: string; payload?: unknown }>();
     const runtime = {
       status: () => runtimeStatus,
       start: vi.fn(async () => runtimeStatus = { kind: "starting", startedAt: 1 }),
@@ -377,6 +463,15 @@ describe("Cordis Host mount", () => {
           participantVirtualAddress: () => "10.231.2.3",
         },
       }),
+      credentials: {
+        readRecord: async (key: string) => credentialRecords.get(key),
+        modifyRecord: async (key: string, mutate: (current: { kind: string; payload?: unknown } | undefined) => Promise<{ kind: string; payload?: unknown } | undefined>) => {
+          const next = await mutate(credentialRecords.get(key));
+          if (next !== undefined) credentialRecords.set(key, next);
+          return credentialRecords.get(key);
+        },
+        deleteRecord: async (key: string) => { credentialRecords.delete(key); },
+      },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
       inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({
         get: () => persisted,
@@ -393,7 +488,9 @@ describe("Cordis Host mount", () => {
 
     expect(started).toMatchObject({ ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: `ws://10.231.0.1:${String(gatewayPort)}/collab` } });
     expect(runtime.start).toHaveBeenCalledOnce();
-    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({ roomId: "room-1", network: expect.objectContaining({ networkSecret: "network-secret-room-1" }) })]);
+    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({ roomId: "room-1", credentialKey: expect.stringMatching(/^dsh-collab\/owner-/) })]);
+    expect(JSON.stringify(persisted)).not.toContain("network-secret-room-1");
+    expect(JSON.stringify([...credentialRecords.values()])).toContain("network-secret-room-1");
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(runtime.stop).toHaveBeenCalled();
   });

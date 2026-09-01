@@ -177,6 +177,38 @@ describe("ChangeSet draft and immutable diff", () => {
     expect(second.draft.createdAt).toBe(100);
   });
 
+  it("restores persisted drafts after restart with the newest draft first", async () => {
+    const fixture = await roomWorkspace({ "README.md": "old\n" });
+    let now = 99;
+    const drafts = service({ ...fixture, now: () => ++now });
+    await writeFile(join(fixture.workspace.workspacePath, "README.md"), "first\n");
+    const first = await drafts.create({ workspace: fixture.workspace, authorId: "participant-1", title: "First", summary: "First draft" });
+    await writeFile(join(fixture.workspace.workspacePath, "README.md"), "second\n");
+    const second = await drafts.create({ workspace: fixture.workspace, authorId: "participant-1", title: "Second", summary: "Second draft" });
+
+    const restored = await new ChangeSetDraftStore(fixture.workspace.draftsPath).list();
+
+    expect(restored.map(({ draft }) => draft.draftId)).toEqual([second.draft.draftId, first.draft.draftId]);
+    expect(restored.map(({ draft }) => draft.title)).toEqual(["Second", "First"]);
+  });
+
+  it("removes a submitted draft without affecting other persisted drafts", async () => {
+    const fixture = await roomWorkspace({ "README.md": "old\n" });
+    let now = 99;
+    const drafts = service({ ...fixture, now: () => ++now });
+    await writeFile(join(fixture.workspace.workspacePath, "README.md"), "first\n");
+    const first = await drafts.create({ workspace: fixture.workspace, authorId: "participant-1", title: "First", summary: "First draft" });
+    await writeFile(join(fixture.workspace.workspacePath, "README.md"), "second\n");
+    const second = await drafts.create({ workspace: fixture.workspace, authorId: "participant-1", title: "Second", summary: "Second draft" });
+    const store = new ChangeSetDraftStore(fixture.workspace.draftsPath);
+
+    await store.remove(second.draft.draftId);
+
+    await expect(store.load(second.draft.draftId)).resolves.toBeUndefined();
+    await expect(store.load(first.draft.draftId)).resolves.toEqual(first);
+    await expect(store.remove(second.draft.draftId)).resolves.toBeUndefined();
+  });
+
   it("uses manifest contents rather than local Git history and represents a modified rename as delete plus add", async () => {
     const fixture = await roomWorkspace({ "src/old.ts": "old\n" });
     await rm(join(fixture.workspace.workspacePath, "src/old.ts"));
