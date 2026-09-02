@@ -29,6 +29,12 @@ export class DshRoomProjectRegistrar {
     return operation;
   }
 
+  recordHostPrimarySession(input: { roomId: string; sessionId: string }): Promise<RoomProject> {
+    const operation = this.queue.then(() => this.recordHostPrimarySessionNow(input));
+    this.queue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
   private async registerNow(input: RegisterRoomProjectInput): Promise<RoomProject> {
     // Keep the live mapping untouched until both DSH and durable storage succeed.
     const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
@@ -45,5 +51,12 @@ export class DshRoomProjectRegistrar {
     if (wasRegistered) return committed;
     if (!project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
     return this.input.store.setNativeWorkspaceId({ roomId: committed.roomId, nativeWorkspaceId: project.nativeWorkspaceId });
+  }
+
+  private async recordHostPrimarySessionNow(input: { roomId: string; sessionId: string }): Promise<RoomProject> {
+    const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
+    staged.setHostPrimarySessionId(input);
+    await this.input.persistence.save(staged.snapshot());
+    return this.input.store.setHostPrimarySessionId(input);
   }
 }
