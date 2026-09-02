@@ -10,6 +10,7 @@ export interface RoomProject {
   roomTitle: string;
   workspacePath: string;
   nativeWorkspaceId?: string;
+  hostPrimarySessionId?: string;
 }
 
 export interface RoomProjectSnapshot {
@@ -56,8 +57,12 @@ function normalizeProject(value: unknown): RoomProject {
   const project = value as RoomProject;
   const normalized = normalizeRegistration(project);
   const nativeWorkspaceId = project?.nativeWorkspaceId;
-  if (nativeWorkspaceId === undefined) return normalized;
-  return { ...normalized, nativeWorkspaceId: requiredText(nativeWorkspaceId, "nativeWorkspaceId") };
+  const hostPrimarySessionId = project?.hostPrimarySessionId;
+  return {
+    ...normalized,
+    ...(nativeWorkspaceId === undefined ? {} : { nativeWorkspaceId: requiredText(nativeWorkspaceId, "nativeWorkspaceId") }),
+    ...(hostPrimarySessionId === undefined ? {} : { hostPrimarySessionId: requiredText(hostPrimarySessionId, "hostPrimarySessionId") }),
+  };
 }
 
 export function validateRoomProjectSnapshot(value: unknown): RoomProjectSnapshot {
@@ -69,6 +74,7 @@ export function validateRoomProjectSnapshot(value: unknown): RoomProjectSnapshot
     const roomIds = new Set<string>();
     const workspacePaths: RoomProject[] = [];
     const nativeWorkspaceIds = new Set<string>();
+    const hostPrimarySessionIds = new Set<string>();
     const projects = snapshot.projects.map((project) => {
       const normalized = normalizeProject(project);
       if (roomIds.has(normalized.roomId)) throw new Error("duplicate room");
@@ -78,9 +84,13 @@ export function validateRoomProjectSnapshot(value: unknown): RoomProjectSnapshot
       if (normalized.nativeWorkspaceId && nativeWorkspaceIds.has(normalized.nativeWorkspaceId)) {
         throw new Error("duplicate native workspace");
       }
+      if (normalized.hostPrimarySessionId && hostPrimarySessionIds.has(normalized.hostPrimarySessionId)) {
+        throw new Error("duplicate Host Primary Session");
+      }
       roomIds.add(normalized.roomId);
       workspacePaths.push(normalized);
       if (normalized.nativeWorkspaceId) nativeWorkspaceIds.add(normalized.nativeWorkspaceId);
+      if (normalized.hostPrimarySessionId) hostPrimarySessionIds.add(normalized.hostPrimarySessionId);
       return normalized;
     });
     return { version: 1, projects };
@@ -134,6 +144,22 @@ export class RoomProjectStore {
       });
     }
     project.nativeWorkspaceId = nativeWorkspaceId;
+    return copy(project);
+  }
+
+  setHostPrimarySessionId(input: { roomId: string; sessionId: string }): RoomProject {
+    const roomId = requiredText(input.roomId, "roomId");
+    const sessionId = requiredText(input.sessionId, "sessionId");
+    const project = this.projects.get(roomId);
+    if (!project) throw new CollabError("REQUEST_NOT_FOUND", "Room Project does not exist", { roomId });
+    if (project.hostPrimarySessionId && project.hostPrimarySessionId !== sessionId) {
+      throw new CollabError("REQUEST_CONFLICT", "Room Project already has a Host Primary Session", { roomId });
+    }
+    const owner = [...this.projects.values()].find((candidate) => candidate.hostPrimarySessionId === sessionId);
+    if (owner && owner.roomId !== roomId) {
+      throw new CollabError("REQUEST_CONFLICT", "Host Primary Session is already registered for another Room Project", { sessionId });
+    }
+    project.hostPrimarySessionId = sessionId;
     return copy(project);
   }
 

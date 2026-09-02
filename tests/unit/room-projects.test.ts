@@ -8,6 +8,7 @@ import {
   resolveDefaultRoomProjectFile,
   type RoomProjectSnapshot,
 } from "../../src/room-projects.js";
+import { createRoomProjectId } from "../../src/room-project-identity.js";
 
 const directories: string[] = [];
 
@@ -91,6 +92,27 @@ describe("RoomProjectStore", () => {
     expect(() => store.setNativeWorkspaceId({ roomId: "room-2", nativeWorkspaceId: "dsh-ws-1" })).toThrow("another Room Project");
   });
 
+  it("keeps an opaque room id separate from its one Host Primary Session", async () => {
+    const firstWorkspace = await workspace("primary-first");
+    const secondWorkspace = await workspace("primary-second");
+    const store = new RoomProjectStore();
+    const roomId = createRoomProjectId(() => "17d4a418-bb9c-4f80-a8ac-90c0353cb7b1");
+    store.register({ roomId, memberId: "member-owner", roomTitle: "Atlas", workspacePath: firstWorkspace });
+    store.register({ roomId: "room-2", memberId: "member-owner", roomTitle: "Borealis", workspacePath: secondWorkspace });
+
+    expect(roomId).toBe("room-17d4a418-bb9c-4f80-a8ac-90c0353cb7b1");
+    expect(roomId).not.toBe("native-session-1");
+    expect(store.setHostPrimarySessionId({ roomId, sessionId: "native-session-1" })).toMatchObject({
+      roomId,
+      hostPrimarySessionId: "native-session-1",
+    });
+    expect(store.setHostPrimarySessionId({ roomId, sessionId: "native-session-1" })).toMatchObject({
+      hostPrimarySessionId: "native-session-1",
+    });
+    expect(() => store.setHostPrimarySessionId({ roomId, sessionId: "native-session-2" })).toThrow("already has a Host Primary Session");
+    expect(() => store.setHostPrimarySessionId({ roomId: "room-2", sessionId: "native-session-1" })).toThrow("another Room Project");
+  });
+
   it("round-trips validated state and fails closed for malformed or duplicated records", async () => {
     const workspacePath = await workspace("restore");
     const store = new RoomProjectStore();
@@ -112,6 +134,7 @@ describe("RoomProjectFile", () => {
     const file = new RoomProjectFile(path);
     const store = new RoomProjectStore();
     store.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath });
+    store.setHostPrimarySessionId({ roomId: "room-1", sessionId: "native-session-1" });
 
     await file.save(store.snapshot());
 
