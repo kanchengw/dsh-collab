@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ParticipantGatewayTransport } from "./participant.js";
-import type { RoomSessionLink, RoomSessionLinkStore } from "./room-session-links.js";
+import { roomProjectForCwd } from "./dsh-room-project-sessions.js";
+import type { RoomProject, RoomProjectStore } from "./room-projects.js";
 import type { WorkUpdate } from "./types.js";
 import { validateWorkUpdate } from "./work-updates.js";
 
@@ -45,6 +46,7 @@ interface DshCollabPreToolExecution {
 
 export interface DshCollabScopedAgent {
   id: string;
+  session?: { header?: { cwd?: string } };
   ctx: {
     tools: { register(definition: DshCollabToolDefinition): () => void };
     on(
@@ -90,11 +92,10 @@ function idempotencyKey(sessionId: string, callId: string): string {
   return createHash("sha256").update(`${sessionId}\0${callId}`, "utf8").digest("hex");
 }
 
-function currentLink(links: RoomSessionLinkStore, expected: RoomSessionLink): RoomSessionLink {
-  const current = links.getBySession(expected.sessionId);
-  if (!current) throw new Error("Session is no longer linked to this Collab room");
-  if (!current.active || current.roomId !== expected.roomId || current.memberId !== expected.memberId) {
-    throw new Error("Session does not have the active Collab room link");
+function currentProject(projects: RoomProjectStore, agent: DshCollabScopedAgent, expected: RoomProject): RoomProject {
+  const current = roomProjectForCwd(projects, agent.session?.header?.cwd);
+  if (!current || current.roomId !== expected.roomId || current.memberId !== expected.memberId) {
+    throw new Error("Session is no longer in the active Collab Room Project");
   }
   return current;
 }
@@ -102,14 +103,15 @@ function currentLink(links: RoomSessionLinkStore, expected: RoomSessionLink): Ro
 function toolDefinition(input: {
   agents: DshCollabToolAgentRegistry;
   agent: DshCollabScopedAgent;
-  links: RoomSessionLinkStore;
-  link: RoomSessionLink;
+  projects: RoomProjectStore;
+  project: RoomProject;
+  sessionId: string;
   publisher: WorkUpdatePublisher;
   isDisposed(): boolean;
 }): DshCollabToolDefinition {
   return {
     name: "collab_publish_update",
-    description: "Publish a concise update about work completed in this linked DSH Session to its Collab room.",
+    description: "Publish a concise update about work completed in this Room Project DSH Session to its Collab room.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -135,20 +137,20 @@ function toolDefinition(input: {
     },
     async execute(rawArgs, execution) {
       if (input.isDisposed()) throw new Error("Collab publish tool binding is disposed");
-      if (input.agents.get(input.link.sessionId) !== input.agent) throw new Error("Linked Session live Agent has changed");
-      const link = currentLink(input.links, input.link);
+      if (input.agents.get(input.sessionId) !== input.agent) throw new Error("Room Project Session live Agent has changed");
+      const project = currentProject(input.projects, input.agent, input.project);
       const args = parseArgs(rawArgs);
       const update = await input.publisher.publish({
-        roomId: link.roomId,
-        clientRequestId: idempotencyKey(link.sessionId, execution.callId),
-        sourceSessionId: link.sessionId,
+        roomId: project.roomId,
+        clientRequestId: idempotencyKey(input.sessionId, execution.callId),
+        sourceSessionId: input.sessionId,
         summary: args.summary,
         filePaths: args.filePaths,
         ...(args.changeSetId === undefined ? {} : { changeSetId: args.changeSetId }),
         signal: execution.signal,
       });
-      if (update.roomId !== link.roomId || update.authorId !== link.memberId || update.sourceSessionId !== link.sessionId) {
-        throw new Error("Published Work Update identity does not match the Linked Session");
+      if (update.roomId !== project.roomId || update.authorId !== project.memberId || update.sourceSessionId !== input.sessionId) {
+        throw new Error("Published Work Update identity does not match the Room Project Session");
       }
       return { updateId: update.updateId, roomId: update.roomId, status: "published" };
     },
@@ -157,30 +159,29 @@ function toolDefinition(input: {
 
 export function bindCollabPublishUpdateTool(input: {
   agents: DshCollabToolAgentRegistry;
-  links: RoomSessionLinkStore;
+  projects: RoomProjectStore;
   sessionId: string;
   publisher: WorkUpdatePublisher;
 }): CollabPublishUpdateToolBinding {
-  const link = input.links.getBySession(input.sessionId);
-  if (!link) throw new Error("Session is not linked to a Collab room");
-  if (!link.active) throw new Error("Session does not have an active Collab room link");
   const agent = input.agents.get(input.sessionId);
-  if (!agent || agent.id !== input.sessionId) throw new Error("Linked Session does not have a live Agent");
+  if (!agent || agent.id !== input.sessionId) throw new Error("Room Project Session does not have a live Agent");
+  const project = roomProjectForCwd(input.projects, agent.session?.header?.cwd);
+  if (!project) throw new Error("Session is not in a Collab Room Project");
   let disposed = false;
-  const unregister = agent.ctx.tools.register(toolDefinition({ ...input, agent, link, isDisposed: () => disposed }));
+  const unregister = agent.ctx.tools.register(toolDefinition({ ...input, agent, project, isDisposed: () => disposed }));
   let removeApprovalGate: () => void;
   try {
     removeApprovalGate = agent.ctx.on("tools/pre-execute", async (execution, next) => {
       if (execution.name !== "collab_publish_update") return await next();
-      return { kind: "ask", reason: "Publish this Work Update to the linked Collab room?" };
+      return { kind: "ask", reason: "Publish this Work Update to the active Collab Room Project?" };
     });
   } catch (error) {
     unregister();
     throw error;
   }
   return {
-    roomId: link.roomId,
-    sessionId: link.sessionId,
+    roomId: project.roomId,
+    sessionId: input.sessionId,
     dispose(): void {
       if (disposed) return;
       disposed = true;

@@ -68,6 +68,7 @@ import { DEFAULT_EASYTIER_OWNER_ADDRESS, EasyTierTransportCoordinator, type Acti
 import { decodeEasyTierInvitationNetwork, type EasyTierInvitationNetwork } from "./easytier-invitation.js";
 import { DshWorkspaceControl } from "./dsh-workspace-control.js";
 import { DshCollabCredentialStore, type DshCredentialProvider } from "./dsh-credentials.js";
+import { RoomProjectFile, RoomProjectStore, resolveDefaultRoomProjectFile } from "./room-projects.js";
 import type { ParticipantResumeState } from "./dsh-browser-client.js";
 
 interface DshSettingsRegistrationContext {
@@ -207,15 +208,17 @@ function registerGatewayControl(
         }),
       })
     : undefined;
+  const roomProjectFile = config.stateFile === false
+    ? undefined
+    : new RoomProjectFile(resolveDefaultRoomProjectFile());
+  const roomProjectSnapshot = roomProjectFile?.loadSync();
+  const roomProjects = roomProjectSnapshot
+    ? RoomProjectStore.fromSnapshot(roomProjectSnapshot)
+    : new RoomProjectStore();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
     subprocess: context.subprocess,
     agents: context.agents,
-    ...(context.on ? { onSessionEvent: (listener) => context.on!("session/event", listener) } : {}),
-    ...(context.workspaceRegistry ? { nativeWorkspaces: {
-      create: (path) => context.workspaceRegistry!.create(path),
-      resolveByPath: async (path) => context.workspaceRegistry!.list().find((workspace) => workspace.path === path),
-    } } : {}),
-    ...(config.stateFile === false ? { sessionLinkFile: false as const } : {}),
+    roomProjects,
   }) : undefined;
   const saveSideTasks = (): void => {
     if (sidecar && sideTaskPersistence) void sideTaskPersistence.save(sidecar.snapshot()).catch((error: unknown) => console.warn("dsh-collab local SideTask save failed", error));

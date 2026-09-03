@@ -7,7 +7,7 @@ import {
   type PublishWorkUpdateRequest,
   type WorkUpdatePublisher,
 } from "../../src/dsh-collab-tools.js";
-import { RoomSessionLinkStore } from "../../src/room-session-links.js";
+import { RoomProjectStore } from "../../src/room-projects.js";
 import type { WorkUpdate } from "../../src/types.js";
 
 function update(overrides: Partial<WorkUpdate> = {}): WorkUpdate {
@@ -23,11 +23,11 @@ function update(overrides: Partial<WorkUpdate> = {}): WorkUpdate {
   };
 }
 
-function linkedStore(): RoomSessionLinkStore {
-  const links = new RoomSessionLinkStore();
+function roomProjects(): RoomProjectStore {
+  const projects = new RoomProjectStore();
   const workspacePath = resolve("workspace");
-  links.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath, sessionCwd: workspacePath });
-  return links;
+  projects.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath });
+  return projects;
 }
 
 function agent(id = "session-1") {
@@ -37,6 +37,7 @@ function agent(id = "session-1") {
   const removeGate = vi.fn();
   const value: DshCollabScopedAgent = {
     id,
+    session: { header: { cwd: resolve(id === "session-1" ? "workspace" : "private") } },
     ctx: {
       tools: {
         register: vi.fn((nextDefinition) => {
@@ -57,31 +58,31 @@ function execute(definition: DshCollabToolDefinition, args: unknown, callId = "c
   return definition.execute(args, { callId, signal: new AbortController().signal });
 }
 
-describe("Linked Session collab_publish_update tool", () => {
-  it("registers only on the exact linked Agent scope and asks through native DSH approval", async () => {
-    const linked = agent();
+describe("Room Project collab_publish_update tool", () => {
+  it("registers only on the exact Room Project Agent scope and asks through native DSH approval", async () => {
+    const roomSession = agent();
     const other = agent("session-2");
-    const agents = new Map([["session-1", linked.value], ["session-2", other.value]]);
+    const agents = new Map([["session-1", roomSession.value], ["session-2", other.value]]);
     const publisher: WorkUpdatePublisher = { publish: vi.fn(async () => update()) };
 
-    bindCollabPublishUpdateTool({ agents, links: linkedStore(), sessionId: "session-1", publisher });
+    bindCollabPublishUpdateTool({ agents, projects: roomProjects(), sessionId: "session-1", publisher });
 
-    expect(linked.value.ctx.tools.register).toHaveBeenCalledOnce();
+    expect(roomSession.value.ctx.tools.register).toHaveBeenCalledOnce();
     expect(other.value.ctx.tools.register).not.toHaveBeenCalled();
-    expect(linked.definition()?.name).toBe("collab_publish_update");
-    expect(linked.definition()?.parameters).toMatchObject({ additionalProperties: false });
-    expect(linked.definition()?.parameters.properties).not.toHaveProperty("roomId");
-    expect(linked.definition()?.parameters.properties).not.toHaveProperty("sourceSessionId");
-    expect(linked.definition()?.parameters.properties).not.toHaveProperty("clientRequestId");
-    await expect(linked.preExecute()?.({ name: "collab_publish_update" }, async () => ({ kind: "allow" }))).resolves.toMatchObject({ kind: "ask" });
-    await expect(linked.preExecute()?.({ name: "read" }, async () => ({ kind: "allow" }))).resolves.toEqual({ kind: "allow" });
+    expect(roomSession.definition()?.name).toBe("collab_publish_update");
+    expect(roomSession.definition()?.parameters).toMatchObject({ additionalProperties: false });
+    expect(roomSession.definition()?.parameters.properties).not.toHaveProperty("roomId");
+    expect(roomSession.definition()?.parameters.properties).not.toHaveProperty("sourceSessionId");
+    expect(roomSession.definition()?.parameters.properties).not.toHaveProperty("clientRequestId");
+    await expect(roomSession.preExecute()?.({ name: "collab_publish_update" }, async () => ({ kind: "allow" }))).resolves.toMatchObject({ kind: "ask" });
+    await expect(roomSession.preExecute()?.({ name: "read" }, async () => ({ kind: "allow" }))).resolves.toEqual({ kind: "allow" });
   });
 
   it("derives room, Session, and a stable idempotency key from the binding", async () => {
     const linked = agent();
     const calls: PublishWorkUpdateRequest[] = [];
     const publish = vi.fn(async (input: PublishWorkUpdateRequest) => { calls.push(input); return update(); });
-    bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), links: linkedStore(), sessionId: "session-1", publisher: { publish } });
+    bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", publisher: { publish } });
     const definition = linked.definition()!;
 
     const first = await execute(definition, { summary: "Implemented recovery.", filePaths: ["src/recovery.ts"] });
@@ -98,7 +99,7 @@ describe("Linked Session collab_publish_update tool", () => {
   it("rejects private, identity, and unknown tool arguments before publication", async () => {
     const linked = agent();
     const publish = vi.fn(async () => update());
-    bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), links: linkedStore(), sessionId: "session-1", publisher: { publish } });
+    bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", publisher: { publish } });
     const definition = linked.definition()!;
 
     await expect(execute(definition, { summary: "Safe", filePaths: [], roomId: "room-2" })).rejects.toThrow("arguments");
@@ -106,18 +107,18 @@ describe("Linked Session collab_publish_update tool", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it("fails closed after unlinking or exact Agent replacement", async () => {
-    const links = linkedStore();
+  it("fails closed after leaving the Room Project or exact Agent replacement", async () => {
+    const projects = roomProjects();
     const linked = agent();
     const replacement = agent();
     const agents = new Map([["session-1", linked.value]]);
     const publish = vi.fn(async () => update());
-    bindCollabPublishUpdateTool({ agents, links, sessionId: "session-1", publisher: { publish } });
+    bindCollabPublishUpdateTool({ agents, projects, sessionId: "session-1", publisher: { publish } });
     const definition = linked.definition()!;
 
-    links.unbind("session-1");
-    await expect(execute(definition, { summary: "Safe", filePaths: [] })).rejects.toThrow("linked");
-    links.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath: resolve("workspace"), sessionCwd: resolve("workspace") });
+    linked.value.session!.header!.cwd = resolve("private");
+    await expect(execute(definition, { summary: "Safe", filePaths: [] })).rejects.toThrow("Room Project");
+    linked.value.session!.header!.cwd = resolve("workspace");
     agents.set("session-1", replacement.value);
     await expect(execute(definition, { summary: "Safe", filePaths: [] })).rejects.toThrow("live Agent");
     expect(publish).not.toHaveBeenCalled();
@@ -127,7 +128,7 @@ describe("Linked Session collab_publish_update tool", () => {
     const linked = agent();
     bindCollabPublishUpdateTool({
       agents: new Map([["session-1", linked.value]]),
-      links: linkedStore(),
+      projects: roomProjects(),
       sessionId: "session-1",
       publisher: { publish: async () => update({ authorId: "member-2" }) },
     });
@@ -138,7 +139,7 @@ describe("Linked Session collab_publish_update tool", () => {
   it("unregisters both the tool and approval gate and propagates publisher failures", async () => {
     const linked = agent();
     const publisher: WorkUpdatePublisher = { publish: vi.fn(async () => { throw new Error("gateway offline"); }) };
-    const binding = bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), links: linkedStore(), sessionId: "session-1", publisher });
+    const binding = bindCollabPublishUpdateTool({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", publisher });
 
     await expect(execute(linked.definition()!, { summary: "Safe", filePaths: [] })).rejects.toThrow("gateway offline");
     binding.dispose();
@@ -147,15 +148,13 @@ describe("Linked Session collab_publish_update tool", () => {
     expect(linked.removeGate).toHaveBeenCalledOnce();
   });
 
-  it("refuses to bind a missing or inactive Linked Session", () => {
+  it("refuses to bind a missing Room Project Session", () => {
     const linked = agent();
     const agents = new Map([["session-1", linked.value]]);
     const publisher: WorkUpdatePublisher = { publish: vi.fn(async () => update()) };
-    expect(() => bindCollabPublishUpdateTool({ agents, links: new RoomSessionLinkStore(), sessionId: "session-1", publisher })).toThrow("linked");
+    expect(() => bindCollabPublishUpdateTool({ agents, projects: new RoomProjectStore(), sessionId: "session-1", publisher })).toThrow("Room Project");
 
-    const links = linkedStore();
-    links.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-2", workspacePath: resolve("workspace"), sessionCwd: resolve("workspace") });
-    expect(() => bindCollabPublishUpdateTool({ agents, links, sessionId: "session-1", publisher })).toThrow("active");
+    expect(() => bindCollabPublishUpdateTool({ agents, projects: roomProjects(), sessionId: "session-2", publisher })).toThrow("live Agent");
     expect(linked.value.ctx.tools.register).not.toHaveBeenCalled();
   });
 
@@ -165,7 +164,7 @@ describe("Linked Session collab_publish_update tool", () => {
 
     expect(() => bindCollabPublishUpdateTool({
       agents: new Map([["session-1", linked.value]]),
-      links: linkedStore(),
+      projects: roomProjects(),
       sessionId: "session-1",
       publisher: { publish: async () => update() },
     })).toThrow("scope disposed");

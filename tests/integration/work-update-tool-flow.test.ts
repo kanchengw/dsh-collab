@@ -6,7 +6,7 @@ import { CollabGateway } from "../../src/gateway.js";
 import { InviteStore } from "../../src/invites.js";
 import type { ParticipantGatewayTransport } from "../../src/participant.js";
 import { projectRoomContext } from "../../src/room-context.js";
-import { RoomSessionLinkStore } from "../../src/room-session-links.js";
+import { RoomProjectStore } from "../../src/room-projects.js";
 import { RoomStore } from "../../src/room.js";
 import { WorkUpdateService } from "../../src/work-updates.js";
 
@@ -37,17 +37,17 @@ describe("Work Update native tool vertical slice", () => {
     let definition: DshCollabToolDefinition | undefined;
     const nativeAgent: DshCollabScopedAgent = {
       id: "session-alice",
+      session: { header: { cwd: resolve("workspace") } },
       ctx: {
         tools: { register: (value) => { definition = value; return () => {}; } },
         on: () => () => {},
       },
     };
-    const links = new RoomSessionLinkStore();
-    const workspacePath = resolve("workspace");
-    links.bind({ roomId: "room-1", memberId: "member-alice", sessionId: "session-alice", workspacePath, sessionCwd: workspacePath });
+    const projects = new RoomProjectStore();
+    projects.register({ roomId: "room-1", memberId: "member-alice", roomTitle: "Room", workspacePath: nativeAgent.session!.header!.cwd! });
     bindCollabPublishUpdateTool({
       agents: new Map([["session-alice", nativeAgent]]),
-      links,
+      projects,
       sessionId: "session-alice",
       publisher: new GatewayWorkUpdatePublisher({ transport, tokenForRoom: () => token }),
     });

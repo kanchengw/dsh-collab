@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChangeSetDraftStore, type ChangeSetDraft } from "../../src/change-sets.js";
-import { DshWorkspaceControl } from "../../src/dsh-workspace-control.js";
-import { RoomSessionLinkFile, RoomSessionLinkStore } from "../../src/room-session-links.js";
+import { DshWorkspaceControl as DshWorkspaceControlImpl } from "../../src/dsh-workspace-control.js";
+import { RoomProjectStore } from "../../src/room-projects.js";
 import { RoomWorkspaceMaterializer } from "../../src/room-workspace.js";
 import { WorkspaceSnapshotStore } from "../../src/workspace-snapshot-store.js";
 import type { WorkspaceVersionRecord } from "../../src/workspace-versions.js";
@@ -13,6 +13,38 @@ import { localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+
+type ControlOptions = ConstructorParameters<typeof DshWorkspaceControlImpl>[0];
+
+function workspaceControl(options: Omit<ControlOptions, "agents" | "roomProjects"> & {
+  agents?: ControlOptions["agents"];
+  projectMemberId?: string;
+}): DshWorkspaceControlImpl {
+  const workspacePath = resolve(
+    options.roomWorkspaceRoot ?? "room-workspaces",
+    createHash("sha256").update("room-1").digest("hex"),
+    "workspace",
+  );
+  const roomProjects = new RoomProjectStore();
+  roomProjects.register({
+    roomId: "room-1",
+    memberId: options.projectMemberId ?? "member-host",
+    roomTitle: "Atlas",
+    workspacePath,
+  });
+  const agents = {
+    get: (sessionId: string) => {
+      const agent = options.agents?.get(sessionId);
+      return {
+        ...agent,
+        id: agent?.id ?? sessionId,
+        session: { ...agent?.session, header: { ...agent?.session?.header, cwd: workspacePath } },
+      };
+    },
+  };
+  const { agents: _agents, projectMemberId: _memberId, ...base } = options;
+  return new DshWorkspaceControlImpl({ ...base, agents, roomProjects });
+}
 
 function sha256(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -110,9 +142,9 @@ describe("DshWorkspaceControl", () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-submit-confirmed-"));
     roots.push(root);
     const fixture = await participantDraftFixture(root);
-    const control = new DshWorkspaceControl({
+    const control = workspaceControl({
       subprocess: localDshSubprocess(), roomWorkspaceRoot: fixture.workspaceRoot, artifactRoot: fixture.artifactRoot,
-      fetch: participantSubmitFetch(fixture, false), sessionLinkFile: false,
+      fetch: participantSubmitFetch(fixture, false), projectMemberId: "member-participant",
     });
 
     const result = await control.handle("workspace/changes/submit", participantPayload());
@@ -126,9 +158,9 @@ describe("DshWorkspaceControl", () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-submit-unconfirmed-"));
     roots.push(root);
     const fixture = await participantDraftFixture(root);
-    const control = new DshWorkspaceControl({
+    const control = workspaceControl({
       subprocess: localDshSubprocess(), roomWorkspaceRoot: fixture.workspaceRoot, artifactRoot: fixture.artifactRoot,
-      fetch: participantSubmitFetch(fixture, true), sessionLinkFile: false,
+      fetch: participantSubmitFetch(fixture, true), projectMemberId: "member-participant",
     });
 
     await expect(control.handle("workspace/changes/submit", participantPayload())).rejects.toThrow("projection unavailable");
@@ -153,8 +185,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -191,8 +223,8 @@ describe("DshWorkspaceControl", () => {
       }
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -243,8 +275,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -289,8 +321,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -341,8 +373,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -378,8 +410,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       throw new Error(`unexpected request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
     const payload = {
       sessionId: "session-owner",
@@ -411,9 +443,9 @@ describe("DshWorkspaceControl", () => {
       throw new Error(`unexpected request: ${url}`);
     });
     const agent = { session: { events: [], header: { cwd: root, seedLength: 0 } }, inject: () => { throw new Error("context inbox busy"); } };
-    const control = new DshWorkspaceControl({
+    const control = workspaceControl({
       subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
-      agents: { get: () => agent }, onSessionEvent: () => () => {}, sessionLinkFile: false,
+      agents: { get: () => agent },
     });
 
     await expect(control.handle("workspace/reviews/assign", {
@@ -462,8 +494,8 @@ describe("DshWorkspaceControl", () => {
       if (url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [{ review, changeSet }] } }) };
       throw new Error(`unexpected eager request: ${url}`);
     });
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch, sessionLinkFile: false,
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(), roomWorkspaceRoot: join(root, "rooms"), artifactRoot: join(root, "artifacts"), fetch,
     });
 
     const result = await control.handle("workspace/refresh", {
@@ -478,20 +510,18 @@ describe("DshWorkspaceControl", () => {
     await control.dispose();
   });
 
-  it("binds Room Context without loading or mutating workspace projections", async () => {
+  it("does not inject legacy raw Room Context", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-context-"));
     roots.push(root);
     const inject = vi.fn();
     const fetch = vi.fn(async () => { throw new Error("context sync must not call the remote workspace API"); });
     const agent = { session: { events: [], header: { cwd: root, seedLength: 0 } }, inject };
-    const control = new DshWorkspaceControl({
+    const control = workspaceControl({
       subprocess: localDshSubprocess(),
       roomWorkspaceRoot: join(root, "rooms"),
       artifactRoot: join(root, "artifacts"),
       fetch,
       agents: { get: () => agent },
-      onSessionEvent: () => () => {},
-      sessionLinkFile: false,
     });
 
     const result = await control.handle("workspace/context-sync", {
@@ -510,134 +540,7 @@ describe("DshWorkspaceControl", () => {
 
     expect(result).toEqual({ synced: true });
     expect(fetch).not.toHaveBeenCalled();
-    expect(inject).toHaveBeenCalledOnce();
-    await control.dispose();
-  });
-
-  it("rebinds a participant Room Workspace Session to the current member after rejoining the same room", async () => {
-    const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-rejoin-"));
-    roots.push(root);
-    const workspaceRoot = join(root, "rooms");
-    const artifactRoot = join(root, "artifacts");
-    const artifacts = new WorkspaceSnapshotStore(artifactRoot);
-    const manifestHash = sha256(JSON.stringify([]));
-    const record: WorkspaceVersionRecord = {
-      version: { workspaceVersionId: "base-1", roomId: "room-1", headOid: "a".repeat(40), files: [], createdBy: "member-host", createdAt: 10 },
-      manifestHash,
-      artifact: { kind: "workspace-snapshot.v1", snapshotId: "base-1", manifestHash, totalBytes: 0 },
-    };
-    await artifacts.save({
-      snapshotId: "base-1", roomId: "room-1", hostSessionId: "session-owner", roomEventSeq: 1,
-      headOid: "a".repeat(40), manifestHash, files: [], createdAt: 10,
-    }, new Map());
-    const workspace = await new RoomWorkspaceMaterializer({ root: workspaceRoot, artifacts }).materialize({ roomId: "room-1", record });
-    const linkPath = join(root, "session-links.json");
-    const links = new RoomSessionLinkStore();
-    const linkedWorkspacePath = await realpath(workspace.workspacePath);
-    links.bind({
-      roomId: "room-1", memberId: "member-old", sessionId: "session-participant",
-      workspacePath: linkedWorkspacePath, sessionCwd: linkedWorkspacePath,
-    });
-    links.advanceCursor("session-participant", 9);
-    await new RoomSessionLinkFile(linkPath).save(links.snapshot());
-
-    const inject = vi.fn();
-    const attachSession = vi.fn(async () => undefined);
-    const agent = { session: { events: [], header: { cwd: workspace.workspacePath, seedLength: 0 } }, inject };
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(), roomWorkspaceRoot: workspaceRoot, artifactRoot,
-      agents: { get: () => agent },
-      onSessionEvent: () => () => {},
-      nativeWorkspaces: {
-        create: async (path) => ({ id: "workspace-room-1", path, attachSession, detachSession: async () => undefined }),
-        resolveByPath: async () => undefined,
-      },
-      fetch: async () => { throw new Error("context sync must not call the remote workspace API"); },
-      sessionLinkFile: linkPath,
-    });
-
-    await control.handle("workspace/context-sync", {
-      sessionId: "session-participant",
-      room: {
-        roomId: "room-1", memberId: "member-current", role: "participant", connection: "online",
-        members: [{ memberId: "member-current", displayName: "Participant" }],
-        roomEvents: [{
-          eventId: "message:1", roomId: "room-1", seq: 1, type: "human.message", createdAt: 5,
-          actor: { memberId: "member-host", principalId: "principal-host" },
-          payload: { kind: "human", visibility: "room", messageId: "message-1", roomId: "room-1", authorMemberId: "member-host", text: "Current context" },
-        }],
-      },
-      remote: { gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomToken: "room-token" },
-      action: {},
-    });
-    await control.dispose();
-
-    expect(attachSession).toHaveBeenCalledWith("session-participant");
-    expect(inject).toHaveBeenCalledOnce();
-    await expect(new RoomSessionLinkFile(linkPath).load()).resolves.toMatchObject({
-      links: [{ roomId: "room-1", memberId: "member-current", sessionId: "session-participant", lastInjectedRoomSeq: 0, active: true }],
-    });
-  });
-
-  it("delivers events that arrived behind a pending Room Context after its durable claim", async () => {
-    const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-context-catchup-"));
-    roots.push(root);
-    let sessionListener: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
-    let sessionSeq = 0;
-    const sessionEvents: Array<{ seq: number; type: string; data: unknown }> = [];
-    const injected: unknown[] = [];
-    const agent = {
-      id: "session-owner",
-      session: { events: sessionEvents, header: { cwd: root, seedLength: 0 } },
-      inject(message: unknown) {
-        injected.push(message);
-        const event = { seq: sessionSeq++, type: "agent/inbox/spliced", data: { target: "next-step", start: 0, inserted: [message] } };
-        sessionEvents.push(event);
-        sessionListener?.({ id: "session-owner" }, event);
-      },
-    };
-    const control = new DshWorkspaceControl({
-      subprocess: localDshSubprocess(),
-      roomWorkspaceRoot: join(root, "rooms"),
-      artifactRoot: join(root, "artifacts"),
-      fetch: async () => { throw new Error("context sync must not call the remote workspace API"); },
-      agents: { get: () => agent },
-      onSessionEvent: (listener) => { sessionListener = listener; return () => { sessionListener = undefined; }; },
-      sessionLinkFile: false,
-    });
-    const roomEvent = (seq: number, text: string) => ({
-      eventId: `message:${seq}`, roomId: "room-1", seq, type: "human.message" as const, createdAt: seq,
-      actor: { memberId: "member-host", principalId: "principal-host" },
-      payload: { kind: "human", visibility: "room", messageId: `message-${seq}`, roomId: "room-1", authorMemberId: "member-host", text },
-    });
-    const request = (roomEvents: ReturnType<typeof roomEvent>[]) => ({
-      sessionId: "session-owner",
-      room: {
-        roomId: "room-1", memberId: "member-host", role: "host" as const, connection: "online" as const,
-        members: [{ memberId: "member-host", displayName: "Host" }], roomEvents,
-      },
-      remote: { gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomToken: "room-token" },
-      action: {},
-    });
-
-    await control.handle("workspace/context-sync", request([roomEvent(1, "First")]));
-    await expect(control.handle("workspace/context-sync", request([roomEvent(1, "First"), roomEvent(2, "Second")])))
-      .rejects.toThrow("pending");
-    expect(injected).toHaveLength(1);
-
-    const acknowledgement = {
-      seq: sessionSeq++, type: "agent/inbox/spliced", data: { target: "next-step", start: 0, removedCount: 1, inserted: [] },
-    };
-    sessionEvents.push(acknowledgement);
-    sessionListener?.({ id: "session-owner" }, acknowledgement);
-
-    await vi.waitFor(() => expect(injected).toHaveLength(2));
-    const delivered = injected[1] as { content: Array<{ text: string }> };
-    expect(JSON.parse(delivered.content[0]!.text)).toMatchObject({
-      fromSeq: 2,
-      toSeq: 2,
-      entries: [{ kind: "message", text: "Second" }],
-    });
+    expect(inject).not.toHaveBeenCalled();
     await control.dispose();
   });
 
@@ -662,14 +565,12 @@ describe("DshWorkspaceControl", () => {
       if (_url.includes("change-sets/reviews")) return { status: 200, json: async () => ({ data: { items: [] } }) };
       return { status: 200, json: async () => ({ data: { record, snapshot: { files: [] } } }) };
     });
-    const control = new DshWorkspaceControl({
+    const control = workspaceControl({
       subprocess: localDshSubprocess(),
       roomWorkspaceRoot: join(root, "rooms"),
       artifactRoot: join(root, "artifacts"),
       fetch,
       agents: { get: () => agent },
-      onSessionEvent: () => () => {},
-      sessionLinkFile: false,
     });
 
     const result = await control.handle("workspace/changes/sync", {
@@ -688,6 +589,6 @@ describe("DshWorkspaceControl", () => {
 
     expect("changes" in result && result.changes).toMatchObject({ role: "owner", workspace: { kind: "owner", latestVersionId: "snapshot-1" } });
     expect(fetch.mock.calls.filter(([, init]) => init.method === "POST")).toHaveLength(1);
-    expect(inject).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: "plugin", plugin: "dsh-collab" } }));
+    expect(inject).not.toHaveBeenCalled();
   });
 });

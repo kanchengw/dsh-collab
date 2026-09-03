@@ -44,6 +44,16 @@ function sameAssociation(association: RoomProjectSessionAssociation, project: Ro
     && association.workspacePath === project.workspacePath;
 }
 
+/** Resolves a local Room Project only when a native Session reports its exact workspace path. */
+export function roomProjectForCwd(projects: RoomProjectStore, cwd: string | undefined): RoomProject | undefined {
+  if (!cwd) return undefined;
+  try {
+    return projects.getByWorkspacePath(cwd);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Associates only native Sessions whose cwd exactly matches a local Room Workspace. */
 export class DshRoomProjectSessionObserver {
   private readonly associations = new Map<string, RoomProjectSessionAssociation>();
@@ -115,12 +125,7 @@ export class DshRoomProjectSessionObserver {
   }
 
   private projectFor(cwd: string | undefined): RoomProject | undefined {
-    if (!cwd) return undefined;
-    try {
-      return this.input.projects.getByWorkspacePath(cwd);
-    } catch {
-      return undefined;
-    }
+    return roomProjectForCwd(this.input.projects, cwd);
   }
 
   private remove(sessionId: string): void {

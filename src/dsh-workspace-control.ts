@@ -6,9 +6,7 @@ import type { CollabReviewItem, CollabReviewsSnapshot } from "./collab-reviews.j
 import type { ChangeSetReview, ChangeSetReviewFinding, ChangeSetReviewFindingPage, ChangeSetReviewPage } from "./change-set-reviews.js";
 import { ChangeSetDraftService, ChangeSetDraftStore } from "./change-sets.js";
 import { CHANGE_SET_CAPABILITY, WORKSPACE_VERSION_CAPABILITY } from "./collaboration-types.js";
-import { ensureRoomWorkspaceGitBaseline } from "./dsh-room-workspace.js";
-import { DshRoomWorkspaceBindingService, type DshNativeWorkspaceRegistry } from "./dsh-room-workspace.js";
-import { bindDshNativeAgentContext, type DshNativeAgentSessionEventListener } from "./dsh-native-agent-context.js";
+import { roomProjectForCwd } from "./dsh-room-project-sessions.js";
 import { bindCollabPublishUpdateTool, GatewayWorkUpdatePublisher, type CollabPublishUpdateToolBinding, type DshCollabToolAgentRegistry } from "./dsh-collab-tools.js";
 import { gatewayHttpUrl } from "./endpoint-policy.js";
 import type { ParticipantGatewayTransport } from "./participant.js";
@@ -16,9 +14,7 @@ import { resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSnapshotDir }
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 import { findRoomWorkspaceChangedPaths, RoomWorkspaceMaterializer } from "./room-workspace.js";
 import { RoomWorkspaceSyncService } from "./room-workspace-sync.js";
-import { projectRoomContext } from "./room-context.js";
-import { RoomContextDeliveryCoordinator } from "./room-context-delivery.js";
-import { resolveDefaultRoomSessionLinkFile, RoomSessionLinkFile, RoomSessionLinkStore } from "./room-session-links.js";
+import type { RoomProject, RoomProjectStore } from "./room-projects.js";
 import type { RoomEvent } from "./types.js";
 import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import { WorkspaceVersionClient } from "./workspace-version-transport.js";
@@ -44,8 +40,6 @@ export interface DshWorkspaceControlRequest {
   remote: { gatewayEndpoint: string; roomToken: string };
   action: Record<string, unknown>;
 }
-
-type RoomContextSyncRequest = Pick<DshWorkspaceControlRequest, "sessionId" | "room">;
 
 interface PendingRequest {
   clientRequestId: string;
@@ -128,10 +122,6 @@ export class DshWorkspaceControl {
   private readonly fetcher: NodeFetch;
   private readonly selectedChanges = new Map<string, string>();
   private readonly selectedReviews = new Map<string, string>();
-  private readonly links: RoomSessionLinkStore;
-  private readonly linkFile?: RoomSessionLinkFile;
-  private readonly contextDeliveries = new Map<string, RoomContextDeliveryCoordinator>();
-  private readonly latestContextRequests = new Map<string, RoomContextSyncRequest>();
   private readonly updateTools = new Map<string, CollabPublishUpdateToolBinding>();
   private readonly roomAccess = new Map<string, { gatewayEndpoint: string; roomToken: string }>();
   private readonly pendingRequestIds = new Map<string, PendingRequest>();
@@ -141,19 +131,14 @@ export class DshWorkspaceControl {
     roomWorkspaceRoot?: string;
     artifactRoot?: string;
     fetch?: NodeFetch;
-    agents?: { get(sessionId: string): { id?: string; ctx?: unknown; session?: { events: readonly { seq: number; type: string; data: unknown }[]; header?: { cwd?: string; seedLength?: number } }; inject?(message: unknown): void } | undefined };
-    onSessionEvent?: (listener: DshNativeAgentSessionEventListener) => () => void;
-    nativeWorkspaces?: DshNativeWorkspaceRegistry;
-    sessionLinkFile?: string | false;
+    agents: { get(sessionId: string): { id?: string; ctx?: unknown; session?: { header?: { cwd?: string } } } | undefined };
+    roomProjects: RoomProjectStore;
   }) {
     this.artifacts = new WorkspaceSnapshotStore(options.artifactRoot ?? resolveDefaultCollabSnapshotDir());
     this.materializer = new RoomWorkspaceMaterializer({ root: options.roomWorkspaceRoot ?? resolveDefaultCollabRoomWorkspaceDir(), artifacts: this.artifacts });
     this.syncService = new RoomWorkspaceSyncService({ roomWorkspaces: this.materializer, artifacts: this.artifacts, subprocess: options.subprocess });
     this.fetcher = options.fetch ?? (globalThis.fetch as unknown as NodeFetch);
     if (!this.fetcher) throw new Error("fetch is unavailable");
-    this.linkFile = options.sessionLinkFile === false ? undefined : new RoomSessionLinkFile(options.sessionLinkFile ?? resolveDefaultRoomSessionLinkFile());
-    const snapshot = this.linkFile?.loadSync();
-    this.links = snapshot ? RoomSessionLinkStore.fromSnapshot(snapshot) : new RoomSessionLinkStore();
   }
 
   async handle(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<
@@ -161,9 +146,9 @@ export class DshWorkspaceControl {
     | { changes: CollabChangesSnapshot; reviews: CollabReviewsSnapshot }
   > {
     const request = controlRequest(payload);
+    const project = this.requireProject(request);
     this.roomAccess.set(request.room.roomId, request.remote);
     if (endpoint === "workspace/context-sync") {
-      await this.syncContext(request);
       return { synced: true };
     }
     const transport = remoteTransport(request.remote.gatewayEndpoint, this.fetcher);
@@ -171,10 +156,10 @@ export class DshWorkspaceControl {
     try {
       switch (endpoint) {
         case "workspace/refresh": break;
-        case "workspace/changes/sync": lease = await this.sync(request, transport, false, signal); break;
-        case "workspace/changes/discard-sync": lease = await this.sync(request, transport, true, signal); break;
-        case "workspace/changes/create-draft": await this.createDraft(request); break;
-        case "workspace/changes/submit": lease = await this.submitDraft(request, transport, signal); break;
+        case "workspace/changes/sync": lease = await this.sync(request, project, transport, false, signal); break;
+        case "workspace/changes/discard-sync": lease = await this.sync(request, project, transport, true, signal); break;
+        case "workspace/changes/create-draft": await this.createDraft(request, project); break;
+        case "workspace/changes/submit": lease = await this.submitDraft(request, project, transport, signal); break;
         case "workspace/changes/select": this.selectedChanges.set(request.room.roomId, hashId(request.action.changeSetId, "changeSetId")); break;
         case "workspace/reviews/select": this.selectedReviews.set(request.room.roomId, hashId(request.action.changeSetId, "changeSetId")); break;
         case "workspace/reviews/assign": lease = await this.reviewAction(request, transport, "PUT", "reviewer", {
@@ -189,8 +174,7 @@ export class DshWorkspaceControl {
         case "workspace/reviews/apply": lease = await this.reviewAction(request, transport, "POST", "apply", {}, signal); break;
         default: throw new Error(`Unknown dsh-collab workspace endpoint: ${endpoint}`);
       }
-      await this.syncContext(request).catch(() => undefined);
-      const projection = await this.project(request, transport, signal);
+      const projection = await this.project(request, project, transport, signal);
       await lease?.onConfirmed?.(projection);
       if (lease) this.finishRequest(lease, true);
       return projection;
@@ -202,16 +186,12 @@ export class DshWorkspaceControl {
 
   async dispose(): Promise<void> {
     for (const binding of this.updateTools.values()) binding.dispose();
-    for (const delivery of this.contextDeliveries.values()) delivery.dispose();
     this.updateTools.clear();
-    this.contextDeliveries.clear();
-    this.latestContextRequests.clear();
     this.roomAccess.clear();
     this.pendingRequestIds.clear();
-    await this.linkFile?.flush();
   }
 
-  private async sync(request: DshWorkspaceControlRequest, transport: ParticipantGatewayTransport, discard: boolean, signal?: AbortSignal): Promise<RequestLease<void> | undefined> {
+  private async sync(request: DshWorkspaceControlRequest, project: RoomProject, transport: ParticipantGatewayTransport, discard: boolean, signal?: AbortSignal): Promise<RequestLease<void> | undefined> {
     if (request.room.role === "host") {
       const latest = await this.latest(request, transport, signal);
       const parentVersionId = latest?.version.workspaceVersionId;
@@ -236,27 +216,21 @@ export class DshWorkspaceControl {
         body(response, "Workspace Version publication");
       });
     }
+    const workspace = await this.requireWorkspace(request, project);
     const downloaded = await new WorkspaceVersionClient({ transport, artifacts: this.artifacts }).downloadLatest({
       roomId: request.room.roomId,
       token: request.remote.roomToken,
       ...(signal ? { signal } : {}),
     });
-    const current = await this.materializer.open(request.room.roomId);
-    if (!current) {
-      const workspace = await this.materializer.materialize({ roomId: request.room.roomId, record: downloaded.record });
-      await ensureRoomWorkspaceGitBaseline(workspace, this.options.subprocess);
-      return;
-    }
     const result = discard
       ? await this.syncService.discardAndSync({ roomId: request.room.roomId, target: downloaded.record })
       : await this.syncService.sync({ roomId: request.room.roomId, target: downloaded.record });
     if (result.status === "blocked") throw new Error("Room Workspace has local changes; create a ChangeSet or explicitly discard them");
   }
 
-  private async createDraft(request: DshWorkspaceControlRequest): Promise<void> {
+  private async createDraft(request: DshWorkspaceControlRequest, project: RoomProject): Promise<void> {
     if (request.room.role !== "participant") throw new Error("Only a Participant creates a local ChangeSet draft");
-    const workspace = await this.materializer.open(request.room.roomId);
-    if (!workspace) throw new Error("Download the Room Workspace first");
+    const workspace = await this.requireWorkspace(request, project);
     await new ChangeSetDraftService({ artifacts: this.artifacts, subprocess: this.options.subprocess }).create({
       workspace,
       authorId: request.room.memberId,
@@ -265,9 +239,8 @@ export class DshWorkspaceControl {
     });
   }
 
-  private async submitDraft(request: DshWorkspaceControlRequest, transport: ParticipantGatewayTransport, signal?: AbortSignal): Promise<RequestLease<StagedChangeSet>> {
-    const workspace = await this.materializer.open(request.room.roomId);
-    if (!workspace) throw new Error("Download the Room Workspace first");
+  private async submitDraft(request: DshWorkspaceControlRequest, project: RoomProject, transport: ParticipantGatewayTransport, signal?: AbortSignal): Promise<RequestLease<StagedChangeSet>> {
+    const workspace = await this.requireWorkspace(request, project);
     const store = new ChangeSetDraftStore(workspace.draftsPath);
     const draft = (await store.list())[0];
     if (!draft) throw new Error("Create a ChangeSet draft first");
@@ -348,9 +321,9 @@ export class DshWorkspaceControl {
     }
   }
 
-  private async project(request: DshWorkspaceControlRequest, transport: ParticipantGatewayTransport, signal?: AbortSignal): Promise<{ changes: CollabChangesSnapshot; reviews: CollabReviewsSnapshot }> {
+  private async project(request: DshWorkspaceControlRequest, project: RoomProject, transport: ParticipantGatewayTransport, signal?: AbortSignal): Promise<{ changes: CollabChangesSnapshot; reviews: CollabReviewsSnapshot }> {
     const latest = await this.latest(request, transport, signal);
-    const workspace = request.room.role === "participant" ? await this.materializer.open(request.room.roomId) : undefined;
+    const workspace = request.room.role === "participant" ? await this.openProjectWorkspace(request, project) : undefined;
     const draft = workspace ? (await new ChangeSetDraftStore(workspace.draftsPath).list())[0] : undefined;
     const reviewPage = body<ChangeSetReviewPage>(await transport.request({
       method: "GET",
@@ -394,8 +367,7 @@ export class DshWorkspaceControl {
               baseVersionId: workspace.record.version.workspaceVersionId,
               ...(latestVersionId ? { latestVersionId } : {}),
               dirtyPaths: await findRoomWorkspaceChangedPaths(workspace),
-              linked: this.links.getBySession(request.sessionId)?.active === true
-                && this.links.getBySession(request.sessionId)?.roomId === request.room.roomId,
+              linked: true,
             }
           : { kind: "unavailable", ...(latestVersionId ? { latestVersionId } : {}) },
       ...(draft ? { draft } : {}),
@@ -426,96 +398,32 @@ export class DshWorkspaceControl {
     return validateWorkspaceVersionRecord(body<{ record: unknown }>(response, "Workspace Version lookup").record);
   }
 
-  private async syncContext(request: RoomContextSyncRequest): Promise<void> {
-    this.latestContextRequests.set(request.sessionId, structuredClone(request));
-    const agent = this.options.agents?.get(request.sessionId);
-    const cwd = agent?.session?.header?.cwd;
-    if (!agent?.inject || !cwd || !this.options.onSessionEvent) return;
-    const participantBindings = request.room.role === "participant" && this.options.nativeWorkspaces
-      ? new DshRoomWorkspaceBindingService({
-          agents: this.options.agents!,
-          nativeWorkspaces: this.options.nativeWorkspaces,
-          subprocess: this.options.subprocess,
-          roomWorkspaces: this.materializer,
-          links: this.links,
-        })
-      : undefined;
-
-    let link = this.links.getBySession(request.sessionId);
-    if (!link) {
-      if (request.room.role === "host") {
-        link = this.links.bind({
-          roomId: request.room.roomId,
-          memberId: request.room.memberId,
-          sessionId: request.sessionId,
-          workspacePath: cwd,
-          sessionCwd: cwd,
-        });
-      } else {
-        if (!participantBindings) return;
-        const workspace = await this.materializer.open(request.room.roomId);
-        if (!workspace) return;
-        try {
-          link = await participantBindings.bind({ roomId: request.room.roomId, memberId: request.room.memberId, sessionId: request.sessionId });
-        } catch (error) {
-          if (error instanceof Error && /cwd does not match/i.test(error.message)) return;
-          throw error;
-        }
-      }
-      await this.linkFile?.save(this.links.snapshot());
+  private requireProject(request: DshWorkspaceControlRequest): RoomProject {
+    const cwd = this.options.agents.get(request.sessionId)?.session?.header?.cwd;
+    const project = roomProjectForCwd(this.options.roomProjects, cwd);
+    if (!project) throw new Error("Session is not in a registered Collab Room Project");
+    if (project.roomId !== request.room.roomId || project.memberId !== request.room.memberId) {
+      throw new Error("Session Room Project does not match the requested Collab room");
     }
-    if (link.roomId === request.room.roomId && link.memberId !== request.room.memberId && participantBindings) {
-      try {
-        link = await participantBindings.rebindMember({
-          roomId: request.room.roomId,
-          memberId: request.room.memberId,
-          sessionId: request.sessionId,
-        });
-      } catch (error) {
-        if (error instanceof Error && /cwd does not match/i.test(error.message)) return;
-        throw error;
-      }
-      this.contextDeliveries.get(request.sessionId)?.dispose();
-      this.contextDeliveries.delete(request.sessionId);
-      this.updateTools.get(request.sessionId)?.dispose();
-      this.updateTools.delete(request.sessionId);
-      await this.linkFile?.save(this.links.snapshot());
-    }
-    if (!link.active || link.roomId !== request.room.roomId || link.memberId !== request.room.memberId) return;
-    this.bindUpdateTool(request.sessionId, link.roomId);
-
-    let delivery = this.contextDeliveries.get(request.sessionId);
-    if (!delivery) {
-      const boundAgent = { id: request.sessionId, session: agent.session!, inject: (message: unknown) => { agent.inject!(message); } };
-      const registry = {
-        get: (sessionId: string) => {
-          const value = this.options.agents?.get(sessionId);
-          return sessionId === request.sessionId && value === agent ? boundAgent : undefined;
-        },
-      };
-      const coordinator = new RoomContextDeliveryCoordinator({
-        links: this.links,
-        binding: bindDshNativeAgentContext({ agents: registry as Parameters<typeof bindDshNativeAgentContext>[0]["agents"], onSessionEvent: this.options.onSessionEvent, sessionId: request.sessionId }),
-        onCursorAdvanced: () => {
-          void this.linkFile?.save(this.links.snapshot()).catch(() => undefined);
-          queueMicrotask(() => {
-            if (this.contextDeliveries.get(request.sessionId) !== coordinator) return;
-            const latest = this.latestContextRequests.get(request.sessionId);
-            if (latest) void this.syncContext(latest).catch(() => undefined);
-          });
-        },
-      });
-      delivery = coordinator;
-      this.contextDeliveries.set(request.sessionId, coordinator);
-    }
-    const current = this.links.getBySession(request.sessionId)!;
-    const events = request.room.roomEvents.filter((event) => event.seq > current.lastInjectedRoomSeq);
-    const snapshot = projectRoomContext({ roomId: request.room.roomId, afterSeq: current.lastInjectedRoomSeq, events, maxEntries: 50 });
-    if (snapshot) delivery.deliver(snapshot);
+    this.bindUpdateTool(request.sessionId, project);
+    return project;
   }
 
-  private bindUpdateTool(sessionId: string, roomId: string): void {
-    if (this.updateTools.has(sessionId) || !this.options.agents) return;
+  private async openProjectWorkspace(request: DshWorkspaceControlRequest, project: RoomProject) {
+    const workspace = await this.materializer.open(request.room.roomId);
+    const registered = workspace && roomProjectForCwd(this.options.roomProjects, workspace.workspacePath);
+    if (!registered || registered.roomId !== project.roomId || registered.memberId !== project.memberId) return undefined;
+    return workspace;
+  }
+
+  private async requireWorkspace(request: DshWorkspaceControlRequest, project: RoomProject) {
+    const workspace = await this.openProjectWorkspace(request, project);
+    if (!workspace) throw new Error("The registered Collab Room Project workspace is unavailable");
+    return workspace;
+  }
+
+  private bindUpdateTool(sessionId: string, project: RoomProject): void {
+    if (this.updateTools.has(sessionId)) return;
     const candidate = this.options.agents.get(sessionId) as { id?: unknown; ctx?: { tools?: { register?: unknown }; on?: unknown } } | undefined;
     if (candidate?.id !== sessionId || typeof candidate.ctx?.tools?.register !== "function" || typeof candidate.ctx.on !== "function") return;
     const transport: ParticipantGatewayTransport = {
@@ -527,7 +435,7 @@ export class DshWorkspaceControl {
     };
     const binding = bindCollabPublishUpdateTool({
       agents: this.options.agents as unknown as DshCollabToolAgentRegistry,
-      links: this.links,
+      projects: this.options.roomProjects,
       sessionId,
       publisher: new GatewayWorkUpdatePublisher({ transport, tokenForRoom: (targetRoomId) => this.roomAccess.get(targetRoomId)?.roomToken }),
     });
