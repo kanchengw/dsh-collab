@@ -25,6 +25,9 @@ import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from 
 
 interface DshClientWorkspaces {
   create(input: { path: string }): Promise<{ workspaceId: string }>;
+}
+
+interface DshClientWorkspaceNavigation {
   connectWorkspace(workspaceId: string): Promise<string>;
 }
 
@@ -34,6 +37,7 @@ interface DshClientSessions {
 
 export function createDshParticipantWorkspaceOpener(input: {
   workspaces: DshClientWorkspaces;
+  workspaceNavigation: DshClientWorkspaceNavigation;
   sessions: DshClientSessions;
   panelHost(): CollabPanelHost | undefined;
 }): (room: OpenParticipantRoomWorkspaceInput) => Promise<void> {
@@ -41,7 +45,7 @@ export function createDshParticipantWorkspaceOpener(input: {
     const panelHost = input.panelHost();
     if (!panelHost) throw new Error("Collab Bar is unavailable");
     const workspace = await input.workspaces.create({ path: room.path });
-    const sessionId = await input.workspaces.connectWorkspace(workspace.workspaceId);
+    const sessionId = await input.workspaceNavigation.connectWorkspace(workspace.workspaceId);
     input.sessions.open(sessionId);
     openDshCollabRoom({
       kind: "joined",
@@ -1256,10 +1260,12 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
   const workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
+  const workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   const sessions = optionalService<DshClientSessions>(context, "sessions");
   let panelResolution = resolveBetterSidebarHost(undefined);
-  const openWorkspace = workspaces && sessions ? createDshParticipantWorkspaceOpener({
+  const openWorkspace = workspaces && workspaceNavigation && sessions ? createDshParticipantWorkspaceOpener({
     workspaces,
+    workspaceNavigation,
     sessions,
     panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
   }) : undefined;

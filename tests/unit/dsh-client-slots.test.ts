@@ -482,8 +482,8 @@ describe("real DSH client slot adapter", () => {
     const opener = createDshParticipantWorkspaceOpener({
       workspaces: {
         create: async () => { order.push("create-workspace"); return { workspaceId: "workspace-room" }; },
-        connectWorkspace: async () => { order.push("connect-workspace"); return "session-room"; },
       },
+      workspaceNavigation: { connectWorkspace: async () => { order.push("connect-workspace"); return "session-room"; } },
       sessions: { open: () => { order.push("open-session"); } },
       panelHost: () => ({
         register: () => () => {},

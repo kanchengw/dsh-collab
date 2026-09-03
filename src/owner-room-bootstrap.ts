@@ -3,7 +3,7 @@ import type { RoomProject } from "./room-projects.js";
 import { RoomWorkspaceMaterializer, type RoomWorkspace } from "./room-workspace.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionRecord } from "./workspace-versions.js";
 
-export interface DshRoomProjectConnectionService {
+export interface DshRoomProjectNavigationService {
   connectWorkspace(workspaceId: string): Promise<string>;
 }
 
@@ -17,7 +17,7 @@ export class OwnerRoomWorkspaceBootstrapper {
   constructor(private readonly options: {
     materializer: RoomWorkspaceMaterializer;
     registrar: DshRoomProjectRegistrar;
-    workspaces: DshRoomProjectConnectionService;
+    workspaceNavigation: DshRoomProjectNavigationService;
   }) {}
 
   async create(input: {
@@ -41,7 +41,7 @@ export class OwnerRoomWorkspaceBootstrapper {
     if (project.hostPrimarySessionId) return { project, workspace };
     if (!project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
 
-    const sessionId = await this.options.workspaces.connectWorkspace(project.nativeWorkspaceId);
+    const sessionId = await this.options.workspaceNavigation.connectWorkspace(project.nativeWorkspaceId);
     return {
       project: await this.options.registrar.recordHostPrimarySession({ roomId, sessionId }),
       workspace,

@@ -96,7 +96,7 @@ async function bootstrapFixture(input: { connectWorkspace(): Promise<string> }) 
     bootstrap: (artifacts: WorkspaceSnapshotStore) => new OwnerRoomWorkspaceBootstrapper({
       materializer: new RoomWorkspaceMaterializer({ root, artifacts }),
       registrar,
-      workspaces: input,
+      workspaceNavigation: input,
     }),
     dshCalls,
     snapshots,
