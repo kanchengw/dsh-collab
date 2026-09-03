@@ -203,7 +203,7 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   };
 
   return (
-    <Modal open={open} onClose={() => { setDshCollabRoomsOpen(false); }} title={t("rooms.title")} closeLabel={t("rooms.close")} headless className={css.panel}>
+    <Modal open={open} onClose={() => { setDshCollabRoomsOpen(false); }} title={t("rooms.title")} headless className={css.panel}>
       <section ref={panelRef} className={css.panelContents} aria-labelledby="collab-rooms-title" onKeyDown={trapFocus} data-collab-rooms-panel="true">
         <header className={css.panelHeader}>
           <div><h2 id="collab-rooms-title">{t("rooms.title")}</h2><p>{t("rooms.description")}</p></div>

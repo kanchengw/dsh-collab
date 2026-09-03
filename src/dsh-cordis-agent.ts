@@ -16,7 +16,13 @@ export interface DshCordisAgent {
   cancel(cause: { kind: "user" }, options: { keepInbox: boolean }): Promise<void> | void;
   whenIdle?(): Promise<void>;
   inject?(message: DshContextMessage): void;
-  session?: { readonly events: readonly DshCordisSessionEvent[]; readonly header?: { readonly cwd?: string } };
+  session?: {
+    readonly header?: { readonly cwd?: string };
+    /** DSH 0.1.2 exposes the durable event log through this method. */
+    readonly snapshotEvents?: () => readonly DshCordisSessionEvent[];
+    /** Test-only legacy shape; real DSH sessions use snapshotEvents(). */
+    readonly events?: readonly DshCordisSessionEvent[];
+  };
 }
 
 export interface DshContextMessage {
@@ -78,6 +84,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function sessionEvents(agent: DshCordisAgent): readonly DshCordisSessionEvent[] {
+  return agent.session?.snapshotEvents?.() ?? agent.session?.events ?? [];
+}
+
 function assistantOutput(events: readonly DshCordisSessionEvent[], baseline: number, messageId: string): AgentDeliveryResult | undefined {
   const userIndex = events.findIndex((event, index) => index >= baseline && event.type === "user/message" && record(event.data)?.id === messageId);
   if (userIndex < 0) return undefined;
@@ -137,7 +147,7 @@ export function createDshCordisSessionService(input: {
     const message = userMessage(delivery.text);
     pending.set(delivery.requestId, {
       agent,
-      baseline: agent.session?.events.length ?? 0,
+      baseline: sessionEvents(agent).length,
       messageId: message.id,
       roomId: delivery.roomId,
       sessionId: delivery.sessionId,
@@ -166,7 +176,7 @@ export function createDshCordisSessionService(input: {
         const agent = liveAgent(input.agents, request.sessionId);
         await agent.whenIdle?.();
         if (!delivery || delivery.agent !== agent || !agent.session) return undefined;
-        return assistantOutput(agent.session.events, delivery.baseline, delivery.messageId);
+        return assistantOutput(sessionEvents(agent), delivery.baseline, delivery.messageId);
       } finally {
         pending.delete(request.requestId);
       }

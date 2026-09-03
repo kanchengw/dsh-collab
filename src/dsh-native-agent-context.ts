@@ -13,8 +13,14 @@ export interface DshNativeAgentSessionEvent {
 export interface DshNativeAgentContextAgent {
   readonly id: string;
   readonly session: {
-    readonly events: readonly DshNativeAgentSessionEvent[];
-    readonly header?: { readonly seedLength?: number };
+    /** DSH 0.1.2 exposes the durable event log through this method. */
+    readonly snapshotEvents?: () => readonly DshNativeAgentSessionEvent[];
+    /** Test-only legacy shape retained for narrow fakes. */
+    readonly events?: readonly DshNativeAgentSessionEvent[];
+    /** Fork-inherited prefix length moved from the header into Session state. */
+    readonly inheritedEventCount?: number;
+    /** Legacy test seam; real DSH no longer stores seedLength in the header. */
+    readonly header?: unknown;
   };
   inject(message: DshNativeAgentContextMessage): void;
 }
@@ -136,6 +142,16 @@ function contextMessage(messageId: string, text: string): DshNativeAgentContextM
   };
 }
 
+function sessionEvents(agent: DshNativeAgentContextAgent): readonly DshNativeAgentSessionEvent[] {
+  return agent.session.snapshotEvents?.() ?? agent.session.events ?? [];
+}
+
+function legacySeedLength(header: unknown): number {
+  if (header === null || typeof header !== "object") return 0;
+  const value = (header as { readonly seedLength?: unknown }).seedLength;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
 /** Bind room-context delivery to one exact live DSH Agent without waking it. */
 export function bindDshNativeAgentContext(input: {
   agents: DshNativeAgentContextRegistry;
@@ -147,8 +163,8 @@ export function bindDshNativeAgentContext(input: {
     throw new CollabError("ACTION_FORBIDDEN", "Linked DSH Agent is not live", { sessionId: input.sessionId });
   }
   const projection = new DurableInboxProjection(
-    agent.session.events,
-    agent.session.header?.seedLength ?? 0,
+    sessionEvents(agent),
+    agent.session.inheritedEventCount ?? legacySeedLength(agent.session.header),
   );
   const deliveryByMessageId = new Map<string, string>();
   const claimedListeners = new Set<(acknowledgement: DshNativeAgentContextAcknowledgement) => void>();

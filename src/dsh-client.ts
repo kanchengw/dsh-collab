@@ -1,5 +1,5 @@
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { MarkdownText, MessageText } from "@deepseek-ai/dsh-client-ui-primitives";
+import { MarkdownText, MessageText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
@@ -873,6 +873,13 @@ function timelineLabel(item: TimelineItem, t: CollabTranslate): string {
   return t("room.message");
 }
 
+function markdownLabels(t: CollabTranslate): MarkdownLabels {
+  return {
+    code: { copyLabel: t("markdown.copy"), copiedLabel: t("markdown.copied") },
+    footnotes: t("markdown.footnotes"),
+  };
+}
+
 function DshCollabTimeline(props: {
   items: readonly TimelineItem[];
   workUpdates?: readonly CollabActivityItem[];
@@ -928,7 +935,7 @@ function DshCollabTimeline(props: {
       createElement("div", { className: roomCss.messageContent },
         createElement("div", { className: roomCss.messageMeta }, createElement("strong", null, author), status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null),
         createElement("div", { className: roomCss.text }, item.kind === "agent"
-          ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true })
+          ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true, labels: markdownLabels(props.t) })
           : createElement(MessageText, { text: timelineLabel(item, props.t) })),
       ));
     }),
