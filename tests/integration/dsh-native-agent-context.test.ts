@@ -36,12 +36,21 @@ class FakeSessionEvents {
 }
 
 class FakeNativeAgent {
-  readonly inbox = { nextStep: [] as DshNativeAgentContextMessage[] };
+  readonly inbox = {
+    nextStep: [] as DshNativeAgentContextMessage[],
+    remove: (messageId: DshNativeAgentContextMessage["id"]): boolean => {
+      const index = this.inbox.nextStep.findIndex((message) => message.id === messageId);
+      if (index < 0) return false;
+      this.cancelAt(index);
+      return true;
+    },
+  };
   readonly session: {
     events: DshNativeAgentSessionEvent[];
     header: { seedLength?: number };
   };
   status: "idle" | "running" = "idle";
+  safeToInject = true;
   readonly injected: DshNativeAgentContextMessage[] = [];
 
   constructor(
@@ -68,13 +77,11 @@ class FakeNativeAgent {
   }
 
   cancelNextStep(): void {
-    this.splice({
-      target: "next-step",
-      start: 0,
-      removedCount: this.inbox.nextStep.length,
-      inserted: [],
-      outcome: "canceled",
-    });
+    this.cancelAt(0, this.inbox.nextStep.length);
+  }
+
+  private cancelAt(start: number, removedCount = 1): void {
+    this.splice({ target: "next-step", start, removedCount, inserted: [], outcome: "canceled" });
   }
 
   private splice(data: {
@@ -121,6 +128,7 @@ function harness(input: {
   const binding = bindDshNativeAgentContext({
     agents: { get: (id) => agents.get(id) },
     onSessionEvent: (listener) => bus.on(listener),
+    isSafeToInject: () => agent.safeToInject,
     sessionId,
   });
   return { agent, agents, binding, bus, sessionId };
@@ -145,6 +153,26 @@ describe("DSH native Agent context bridge", () => {
       content: [{ type: "text", text: "Team context" }],
       source: { kind: "plugin", plugin: "dsh-collab" },
     }]);
+  });
+
+  it("does not treat public idle status as a safe delivery boundary", () => {
+    const { agent, binding } = harness();
+    agent.status = "idle";
+    agent.safeToInject = false;
+
+    expect(() => binding.deliver({ deliveryId: "room-1:maintenance", text: "Do not inject" }))
+      .toThrow("safe");
+    expect(agent.injected).toEqual([]);
+  });
+
+  it("cancels a still-pending context through the native inbox remove seam", () => {
+    const { agent, binding } = harness();
+    const first = binding.deliver({ deliveryId: "room-1:7", text: "First" });
+
+    expect(binding.cancel(first.deliveryId)).toBe(true);
+    expect(binding.inspect(first.deliveryId)).toBe("missing");
+    expect(agent.inbox.nextStep).toEqual([]);
+    expect(binding.cancel(first.deliveryId)).toBe(false);
   });
 
   it("deduplicates a delivery while its stable message is pending", () => {
@@ -243,6 +271,7 @@ describe("DSH native Agent context bridge", () => {
     const bus = new FakeSessionEvents();
     expect(() => bindDshNativeAgentContext({
       agents: { get: () => undefined },
+      isSafeToInject: () => false,
       onSessionEvent: (listener) => bus.on(listener),
       sessionId: "missing",
     })).toThrow("not live");

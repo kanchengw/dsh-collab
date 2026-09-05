@@ -23,6 +23,9 @@ export interface DshNativeAgentContextAgent {
     readonly header?: unknown;
   };
   inject(message: DshNativeAgentContextMessage): void;
+  readonly inbox?: {
+    remove(messageId: DshNativeAgentContextMessage["id"]): boolean;
+  };
 }
 
 export interface DshNativeAgentContextRegistry {
@@ -35,6 +38,7 @@ export type DshNativeAgentSessionEventListener = (
 ) => void;
 
 export type DshNativeAgentContextState = "missing" | "pending" | "claimed";
+export type DshNativeAgentContextObservation = DshNativeAgentContextState | "answered";
 
 export interface DshNativeAgentContextAcknowledgement {
   deliveryId: string;
@@ -44,11 +48,13 @@ export interface DshNativeAgentContextAcknowledgement {
 
 export interface DshNativeAgentContextBinding {
   readonly sessionId: string;
+  isSafeToInject(): boolean;
   deliver(input: { deliveryId: string; text: string }): {
     deliveryId: string;
     messageId: string;
     state: "injected" | "pending" | "claimed";
   };
+  cancel(deliveryId: string): boolean;
   inspect(deliveryId: string): DshNativeAgentContextState;
   onClaimed(listener: (acknowledgement: DshNativeAgentContextAcknowledgement) => void): () => void;
   dispose(): void;
@@ -155,6 +161,7 @@ function legacySeedLength(header: unknown): number {
 /** Bind room-context delivery to one exact live DSH Agent without waking it. */
 export function bindDshNativeAgentContext(input: {
   agents: DshNativeAgentContextRegistry;
+  isSafeToInject: () => boolean;
   onSessionEvent(listener: DshNativeAgentSessionEventListener): () => void;
   sessionId: string;
 }): DshNativeAgentContextBinding {
@@ -194,14 +201,29 @@ export function bindDshNativeAgentContext(input: {
 
   return {
     sessionId: input.sessionId,
+    isSafeToInject() {
+      assertLive();
+      return input.isSafeToInject();
+    },
     deliver({ deliveryId, text }) {
       assertLive();
       if (text === "") throw invalidInput("context text is required");
       const messageId = identify(deliveryId);
       const state = projection.state(messageId);
       if (state !== "missing") return { deliveryId, messageId, state };
+      if (!input.isSafeToInject()) {
+        throw new CollabError("REQUEST_CONFLICT", "DSH Agent is not at a safe context delivery boundary", {
+          sessionId: input.sessionId,
+        });
+      }
       agent.inject(contextMessage(messageId, text));
       return { deliveryId, messageId, state: "injected" };
+    },
+    cancel(deliveryId) {
+      assertLive();
+      const messageId = identify(deliveryId);
+      if (projection.state(messageId) !== "pending") return false;
+      return agent.inbox?.remove(messageId as DshNativeAgentContextMessage["id"]) ?? false;
     },
     inspect(deliveryId) {
       assertLive();

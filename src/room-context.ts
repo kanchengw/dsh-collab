@@ -31,9 +31,10 @@ const MAX_ACTIVE_WORK_UPDATES = 8;
 const MAX_CONTEXT_CHANGESETS = 16;
 
 export interface RoomContextSummary {
-  kind: "deterministic";
+  kind: "deterministic" | "semantic";
   text: string;
   sourceSeq: number;
+  disclosure?: "room-public-only";
 }
 
 export interface RoomContextDecision {
@@ -343,13 +344,18 @@ function validateRoomContextState(value: unknown, expectedRoomId?: string): Room
 
   const currentSummary = candidate.currentSummary === undefined ? undefined : (() => {
     const summary = stateRecord(candidate.currentSummary, "currentSummary");
-    if (summary.kind !== "deterministic") throw invalidInput("currentSummary kind is invalid");
+    if (summary.kind !== "deterministic" && summary.kind !== "semantic") throw invalidInput("currentSummary kind is invalid");
     const sourceSeq = safeSequence(summary.sourceSeq, "currentSummary.sourceSeq");
     if (sourceSeq > appliedThroughSeq) throw invalidInput("currentSummary sourceSeq is ahead of appliedThroughSeq");
     return {
-      kind: "deterministic" as const,
+      kind: summary.kind as RoomContextSummary["kind"],
       text: requiredText(summary.text, "currentSummary.text"),
       sourceSeq,
+      ...(summary.kind === "semantic"
+        ? summary.disclosure === "room-public-only"
+          ? { disclosure: "room-public-only" as const }
+          : invalidInput("semantic currentSummary disclosure is invalid")
+        : {}),
     };
   })();
 

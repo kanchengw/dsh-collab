@@ -79,6 +79,28 @@ export class RoomSummaryError extends Error {
   }
 }
 
+/** Applies a completed summary only to the exact Room Context revision it read. */
+export function applyRoomSummary(context: RoomContextState, result: RoomSummaryResult): RoomContextState {
+  if (result.roomId !== context.roomId) {
+    throw new RoomSummaryError("FAILED", "Room summary belongs to another room");
+  }
+  if (result.sourceSeq < context.appliedThroughSeq) {
+    throw new RoomSummaryError("STALE_RESULT", "Room summary revision is stale");
+  }
+  if (result.sourceSeq !== context.appliedThroughSeq || result.disclosure.sourceSeq !== result.sourceSeq) {
+    throw new RoomSummaryError("FAILED", "Room summary revision is not bound to the current Room Context");
+  }
+  return structuredClone({
+    ...context,
+    currentSummary: {
+      kind: "semantic" as const,
+      text: result.text,
+      sourceSeq: result.sourceSeq,
+      disclosure: "room-public-only" as const,
+    },
+  });
+}
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve(value: T): void;

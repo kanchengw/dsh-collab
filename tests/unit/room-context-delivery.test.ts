@@ -5,7 +5,11 @@ import type {
   DshNativeAgentContextBinding,
   DshNativeAgentContextState,
 } from "../../src/dsh-native-agent-context.js";
-import { RoomContextDeliveryCoordinator } from "../../src/room-context-delivery.js";
+import {
+  formatRoomContextSnapshot,
+  RoomContextDeliveryCoordinator,
+  RoomContextDeliveryService,
+} from "../../src/room-context-delivery.js";
 import type { RoomContextSnapshot } from "../../src/room-context.js";
 import { RoomSessionLinkStore } from "../../src/room-session-links.js";
 
@@ -14,6 +18,7 @@ class FakeContextBinding implements DshNativeAgentContextBinding {
   private readonly listeners = new Set<(ack: DshNativeAgentContextAcknowledgement) => void>();
   readonly injections: Array<{ deliveryId: string; text: string }> = [];
   failNextDelivery = false;
+  safeToInject = true;
   disposed = false;
 
   constructor(readonly sessionId: string) {}
@@ -47,8 +52,14 @@ class FakeContextBinding implements DshNativeAgentContextBinding {
     for (const listener of this.listeners) listener(acknowledgement);
   }
 
-  cancel(deliveryId: string): void {
+  cancel(deliveryId: string): boolean {
+    if (this.states.get(deliveryId) !== "pending") return false;
     this.states.set(deliveryId, "missing");
+    return true;
+  }
+
+  isSafeToInject(): boolean {
+    return this.safeToInject;
   }
 
   restoreClaimed(deliveryId: string): void {
@@ -146,13 +157,50 @@ describe("RoomContextDeliveryCoordinator", () => {
     const first = delivery.deliver(snapshot(1, 2));
 
     expect(delivery.deliver(snapshot(1, 2))).toEqual({ ...first, state: "pending" });
-    expect(() => delivery.deliver(snapshot(1, 3))).toThrow("already pending");
-    expect(binding.injections).toHaveLength(1);
-    expect(links.getBySession("session-1")?.lastInjectedRoomSeq).toBe(0);
-
-    binding.cancel(first.deliveryId);
     expect(delivery.deliver(snapshot(1, 3)).state).toBe("injected");
     expect(binding.injections).toHaveLength(2);
+    expect(links.getBySession("session-1")?.lastInjectedRoomSeq).toBe(0);
+
+    expect(binding.inspect(first.deliveryId)).toBe("missing");
+  });
+
+  it("does not advance the cursor when a packet is claimed but not answered", () => {
+    const { binding, delivery, links } = harness();
+    const first = delivery.deliver(snapshot());
+
+    binding.claim(first.deliveryId);
+
+    expect(delivery.status(first.deliveryId)).toBe("claimed");
+    expect(links.getBySession("session-1")?.lastInjectedRoomSeq).toBe(2);
+    expect(delivery.status(first.deliveryId)).not.toBe("answered");
+  });
+
+  it("coalesces only while the older packet is still pending", () => {
+    const { binding, delivery } = harness();
+    const first = delivery.deliver(snapshot(1, 2));
+
+    delivery.deliver(snapshot(1, 3));
+
+    expect(binding.inspect(first.deliveryId)).toBe("missing");
+    expect(binding.injections.map(({ deliveryId }) => deliveryId)).toEqual([
+      "room-context:room-1:1:2",
+      "room-context:room-1:1:3",
+    ]);
+  });
+
+  it("fails closed when the native bridge has no safe idle gate", () => {
+    const { binding, delivery } = harness();
+    binding.safeToInject = false;
+
+    expect(() => delivery.deliver(snapshot())).toThrow("safe");
+    expect(binding.injections).toEqual([]);
+  });
+
+  it("keeps the injected packet structurally bounded", () => {
+    const huge = snapshot();
+    huge.entries = [{ kind: "message", author: "member-2", text: "x".repeat(40_000) }];
+
+    expect(() => deliverySnapshot(huge)).toThrow("bounded");
   });
 
   it("rejects a sequence gap or wrong room before calling the native bridge", () => {
@@ -205,4 +253,46 @@ describe("RoomContextDeliveryCoordinator", () => {
     expect(binding.disposed).toBe(true);
     expect(() => delivery.deliver(snapshot())).toThrow("disposed");
   });
+
+  it("fans out one revision using independent per-Session cursors", () => {
+    const links = new RoomSessionLinkStore();
+    const workspacePath = resolve("room-workspace");
+    links.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath, sessionCwd: workspacePath });
+    links.bind({ roomId: "room-1", memberId: "member-2", sessionId: "session-2", workspacePath, sessionCwd: workspacePath });
+    links.advanceCursor("session-2", 2);
+    const bindings = new Map([
+      ["session-1", new FakeContextBinding("session-1")],
+      ["session-2", new FakeContextBinding("session-2")],
+    ]);
+    const service = new RoomContextDeliveryService({
+      links,
+      bind: (sessionId) => bindings.get(sessionId),
+    });
+
+    const results = service.deliver({
+      roomId: "room-1",
+      toSeq: 4,
+      createSnapshot: ({ roomId, fromSeq, toSeq }) => ({
+        roomId,
+        fromSeq,
+        toSeq,
+        entries: [{ kind: "message", author: "member-1", text: `${fromSeq}-${toSeq}` }],
+        omittedCount: 0,
+      }),
+    });
+
+    expect(results.map(({ deliveryId }) => deliveryId)).toEqual([
+      "room-context:room-1:1:4",
+      "room-context:room-1:3:4",
+    ]);
+    expect(JSON.parse(bindings.get("session-1")!.injections[0]!.text).fromSeq).toBe(1);
+    expect(JSON.parse(bindings.get("session-2")!.injections[0]!.text).fromSeq).toBe(3);
+    expect(links.getBySession("session-1")?.lastInjectedRoomSeq).toBe(0);
+    expect(links.getBySession("session-2")?.lastInjectedRoomSeq).toBe(2);
+  });
 });
+
+function deliverySnapshot(value: RoomContextSnapshot): string {
+  // This indirection makes the RED expectation compile before the U10 export exists.
+  return (formatRoomContextSnapshot as (snapshot: RoomContextSnapshot) => string)(value);
+}

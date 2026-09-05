@@ -1,8 +1,13 @@
 import { CollabError, invalidInput } from "./errors.js";
-import type { DshNativeAgentContextBinding } from "./dsh-native-agent-context.js";
+import type {
+  DshNativeAgentContextBinding,
+  DshNativeAgentContextObservation,
+} from "./dsh-native-agent-context.js";
 import type { RoomContextSnapshot } from "./room-context.js";
 import { RoomSessionLinkStore } from "./room-session-links.js";
 import type { RoomSessionLink } from "./room-session-links.js";
+
+const MAX_ROOM_CONTEXT_PACKET_BYTES = 32 * 1024;
 
 export interface RoomContextDeliveryResult {
   deliveryId: string;
@@ -10,6 +15,8 @@ export interface RoomContextDeliveryResult {
   toSeq: number;
   state: "injected" | "pending" | "claimed";
 }
+
+export type RoomContextDeliveryObservation = DshNativeAgentContextObservation;
 
 interface PendingDelivery {
   deliveryId: string;
@@ -45,12 +52,19 @@ function deliveryResult(
 }
 
 export function formatRoomContextSnapshot(snapshot: RoomContextSnapshot): string {
-  return JSON.stringify({ kind: "dsh-collab.room-context", ...snapshot });
+  const text = JSON.stringify({ kind: "dsh-collab.room-context", ...snapshot });
+  if (new TextEncoder().encode(text).byteLength > MAX_ROOM_CONTEXT_PACKET_BYTES) {
+    throw invalidInput("Room Context packet is not structurally bounded", {
+      maxBytes: MAX_ROOM_CONTEXT_PACKET_BYTES,
+    });
+  }
+  return text;
 }
 
 /** Delivers one contiguous Room Context range to one exact linked native Session. */
 export class RoomContextDeliveryCoordinator {
   private pending?: PendingDelivery;
+  private readonly answered = new Set<string>();
   private readonly removeClaimedListener: () => void;
   private disposed = false;
 
@@ -99,14 +113,32 @@ export class RoomContextDeliveryCoordinator {
       });
     }
     if (this.pending && this.pending.deliveryId !== nextDelivery.deliveryId) {
-      throw new CollabError("REQUEST_CONFLICT", "Another Room Context range is already pending", {
-        pendingDeliveryId: this.pending.deliveryId,
-      });
+      const pendingState = this.input.binding.inspect(this.pending.deliveryId);
+      if (pendingState === "pending") {
+        if (!this.input.binding.cancel(this.pending.deliveryId)) {
+          throw new CollabError("REQUEST_CONFLICT", "Another Room Context range is already pending", {
+            pendingDeliveryId: this.pending.deliveryId,
+          });
+        }
+        this.pending = undefined;
+      } else {
+        this.reconcilePending();
+        if (this.pending) {
+          throw new CollabError("REQUEST_CONFLICT", "Another Room Context range is already pending", {
+            pendingDeliveryId: this.pending.deliveryId,
+          });
+        }
+      }
     }
 
     this.pending = nextDelivery;
     let result: ReturnType<DshNativeAgentContextBinding["deliver"]>;
     try {
+      if (!this.input.binding.isSafeToInject()) {
+        throw new CollabError("REQUEST_CONFLICT", "DSH Agent is not at a safe context delivery boundary", {
+          sessionId: this.input.binding.sessionId,
+        });
+      }
       result = this.input.binding.deliver({
         deliveryId: nextDelivery.deliveryId,
         text: formatRoomContextSnapshot(snapshot),
@@ -123,8 +155,22 @@ export class RoomContextDeliveryCoordinator {
     if (this.disposed) return;
     this.disposed = true;
     this.pending = undefined;
+    this.answered.clear();
     this.removeClaimedListener();
     this.input.binding.dispose();
+  }
+
+  status(deliveryId: string): RoomContextDeliveryObservation {
+    if (this.answered.has(deliveryId)) return "answered";
+    return this.input.binding.inspect(deliveryId);
+  }
+
+  /** Records an observed model answer without changing the durable Room cursor. */
+  markAnswered(deliveryId: string): boolean {
+    const state = this.input.binding.inspect(deliveryId);
+    if (state !== "claimed") return false;
+    this.answered.add(deliveryId);
+    return true;
   }
 
   private activeLink() {
@@ -151,5 +197,61 @@ export class RoomContextDeliveryCoordinator {
     if (link.lastInjectedRoomSeq !== delivery.fromSeq - 1) return;
     const advanced = this.input.links.advanceCursor(link.sessionId, delivery.toSeq);
     this.input.onCursorAdvanced?.(advanced);
+  }
+}
+
+export interface RoomContextDeliveryServiceInput {
+  links: RoomSessionLinkStore;
+  bind(sessionId: string): DshNativeAgentContextBinding | undefined;
+  onCursorAdvanced?: (link: RoomSessionLink) => void;
+}
+
+export interface RoomContextDeliveryBatchInput {
+  roomId: string;
+  toSeq: number;
+  createSnapshot(input: { roomId: string; fromSeq: number; toSeq: number }): RoomContextSnapshot;
+}
+
+/** Fans one bounded Room Context revision out to each linked native Session. */
+export class RoomContextDeliveryService {
+  private readonly coordinators = new Map<string, RoomContextDeliveryCoordinator>();
+
+  constructor(private readonly input: RoomContextDeliveryServiceInput) {}
+
+  deliver(input: RoomContextDeliveryBatchInput): RoomContextDeliveryResult[] {
+    if (!Number.isSafeInteger(input.toSeq) || input.toSeq < 1) {
+      throw invalidInput("Room Context batch revision is invalid", { toSeq: input.toSeq });
+    }
+    const results: RoomContextDeliveryResult[] = [];
+    for (const link of this.input.links.list()) {
+      if (!link.active || link.roomId !== input.roomId || link.lastInjectedRoomSeq >= input.toSeq) continue;
+      const coordinator = this.coordinator(link.sessionId);
+      const snapshot = input.createSnapshot({
+        roomId: input.roomId,
+        fromSeq: link.lastInjectedRoomSeq + 1,
+        toSeq: input.toSeq,
+      });
+      results.push(coordinator.deliver(snapshot));
+    }
+    return results;
+  }
+
+  dispose(): void {
+    for (const coordinator of this.coordinators.values()) coordinator.dispose();
+    this.coordinators.clear();
+  }
+
+  private coordinator(sessionId: string): RoomContextDeliveryCoordinator {
+    const existing = this.coordinators.get(sessionId);
+    if (existing) return existing;
+    const binding = this.input.bind(sessionId);
+    if (!binding) throw new CollabError("ACTION_FORBIDDEN", "Linked DSH Agent is not live", { sessionId });
+    const coordinator = new RoomContextDeliveryCoordinator({
+      links: this.input.links,
+      binding,
+      onCursorAdvanced: this.input.onCursorAdvanced,
+    });
+    this.coordinators.set(sessionId, coordinator);
+    return coordinator;
   }
 }

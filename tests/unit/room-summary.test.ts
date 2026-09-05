@@ -3,6 +3,7 @@ import type { RoomContextState } from "../../src/room-context.js";
 import {
   RoomSummaryError,
   RoomSummaryService,
+  applyRoomSummary,
   createDshRoomSummaryService,
   type RoomSummaryLlmPort,
   type RoomSummaryLlmStreamChunk,
@@ -172,5 +173,24 @@ describe("RoomSummaryService", () => {
       agentDefaultModel: { currentSelection: () => ({ provider: "deepseek", model: "model" }) },
     });
     expect(service).toBeInstanceOf(RoomSummaryService);
+  });
+
+  it("applies only a revision-bound semantic summary to Room Context state", () => {
+    const state = context();
+    const result = {
+      roomId: "room-1",
+      sourceSeq: 7,
+      text: "The room is coordinating a reconnect fix.",
+      route: { provider: "deepseek", model: "model" },
+      disclosure: { kind: "room-public-only" as const, sourceSeq: 7 },
+    };
+
+    expect(applyRoomSummary(state, result).currentSummary).toEqual({
+      kind: "semantic",
+      text: result.text,
+      sourceSeq: 7,
+      disclosure: "room-public-only",
+    });
+    expect(() => applyRoomSummary(state, { ...result, sourceSeq: 6 })).toThrow("stale");
   });
 });
