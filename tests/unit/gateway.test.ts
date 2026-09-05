@@ -153,7 +153,36 @@ describe("CollabGateway route contract", () => {
     expect(rooms.listMembers("session-new")).toHaveLength(1);
   });
 
-  it("rejects Participant, unowned, mismatched and invalid Host share requests", async () => {
+  it("keeps opaque Room identity independent from the owned Host Session", async () => {
+    const { gateway } = setup();
+
+    const created = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-opaque/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-native", title: "  Release room  " },
+    });
+
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({
+      room: { roomId: "room-opaque", hostSessionId: "session-native", title: "Release room" },
+    });
+  });
+
+  it("rejects a Host Session that the current DSH runtime does not own", async () => {
+    const { gateway } = setup();
+
+    const rejected = await request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-opaque/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-missing", title: "Release room" },
+    });
+
+    expect(rejected).toMatchObject({ status: 403, body: { error: { code: "ACTION_FORBIDDEN" } } });
+  });
+
+  it("rejects Participant, unowned and invalid Host share requests", async () => {
     const { gateway } = setup();
     const send = (auth: string | undefined, roomId: string, hostSessionId: string, title: string) => request(gateway, {
       method: "POST",
@@ -165,7 +194,6 @@ describe("CollabGateway route contract", () => {
     await expect(send(undefined, "session-new", "session-new", "Room")).resolves.toMatchObject({ status: 401 });
     await expect(send("alice", "session-new", "session-new", "Room")).resolves.toMatchObject({ status: 403 });
     await expect(send("host", "session-missing", "session-missing", "Room")).resolves.toMatchObject({ status: 403 });
-    await expect(send("host", "session-new", "session-other", "Room")).resolves.toMatchObject({ status: 422 });
     await expect(send("host", "session-new", "session-new", "   ")).resolves.toMatchObject({ status: 422 });
     await expect(send("host", "session-new", "session-new", "x".repeat(81))).resolves.toMatchObject({ status: 422 });
   });

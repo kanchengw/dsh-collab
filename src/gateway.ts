@@ -408,7 +408,6 @@ export class CollabGateway {
     }
     const body = objectBody(request.body);
     const hostSessionId = requiredText(body.hostSessionId, "hostSessionId");
-    if (roomId !== hostSessionId) throw invalidInput("roomId must match hostSessionId", { roomId, hostSessionId });
     const title = requiredText(body.title, "title");
     if (title.length > MAX_ROOM_TITLE_LENGTH) throw invalidInput(`title must be at most ${String(MAX_ROOM_TITLE_LENGTH)} characters`, { field: "title" });
     if (!this.options.ownsHostSession || !(await this.options.ownsHostSession(hostSessionId))) {

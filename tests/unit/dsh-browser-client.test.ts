@@ -575,8 +575,8 @@ describe("browser Gateway client", () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
     const fetch: BrowserFetch = async (url, init) => {
       requests.push({ url, init });
-      if (url.endsWith("/host") && init?.method === "POST") return response({ room: { roomId: "session-current", title: "Room" }, member: { memberId: "host", role: "host" }, roomToken: "token" });
-      if (url.endsWith("/snapshot")) return response({ room: { roomId: "session-current", title: "Room" }, members: [], lastEventSeq: 0 });
+      if (url.endsWith("/host") && init?.method === "POST") return response({ room: { roomId: "room-current", title: "Room" }, member: { memberId: "host", role: "host" }, roomToken: "token" });
+      if (url.endsWith("/snapshot")) return response({ room: { roomId: "room-current", title: "Room" }, members: [], lastEventSeq: 0 });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       return response({ sharing: false });
     };
@@ -589,10 +589,10 @@ describe("browser Gateway client", () => {
       close(): void { this.readyState = 3; }
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket });
-    await client.shareHostRoom({ sessionId: "session-current", title: "Room" });
-    await client.stopSharing("session-current");
+    await client.shareHostRoom({ roomId: "room-current", hostSessionId: "session-current", title: "Room" });
+    await client.stopSharing("room-current");
 
-    expect(requests.at(-1)).toMatchObject({ url: "http://127.0.0.1:4310/collab/v1/rooms/session-current/host", init: { method: "DELETE" } });
+    expect(requests.at(-1)).toMatchObject({ url: "http://127.0.0.1:4310/collab/v1/rooms/room-current/host", init: { method: "DELETE" } });
     expect(client.getSnapshot()).toMatchObject({ connection: "offline" });
   });
 
@@ -601,11 +601,11 @@ describe("browser Gateway client", () => {
     const fetch: BrowserFetch = async (url, init) => {
       requests.push({ url, init });
       if (url.endsWith("/host")) return response({
-        room: { roomId: "session-current", title: "Release room", hostDisplayName: "Host" },
+        room: { roomId: "room-opaque", title: "Release room", hostDisplayName: "Host" },
         member: { memberId: "member-host", role: "host" },
         roomToken: "host-token",
       });
-      return response({ room: { roomId: "session-current", title: "Release room" }, members: [], lastEventSeq: 0 });
+      return response({ room: { roomId: "room-opaque", title: "Release room" }, members: [], lastEventSeq: 0 });
     };
     const WebSocket = class implements BrowserSocket {
       readyState = 1;
@@ -619,11 +619,11 @@ describe("browser Gateway client", () => {
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "dsh-room", fetch, WebSocket });
 
-    await client.shareHostRoom({ sessionId: "session-current", title: "  Release room  " });
+    await client.shareHostRoom({ roomId: "room-opaque", hostSessionId: "session-current", title: "  Release room  " });
 
-    expect(requests[0]?.url).toBe("http://127.0.0.1:4310/collab/v1/rooms/session-current/host");
+    expect(requests[0]?.url).toBe("http://127.0.0.1:4310/collab/v1/rooms/room-opaque/host");
     expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ hostSessionId: "session-current", title: "Release room" });
-    expect(client.getSnapshot()).toMatchObject({ roomId: "session-current", roomTitle: "Release room", role: "host", connection: "online" });
+    expect(client.getSnapshot()).toMatchObject({ roomId: "room-opaque", roomTitle: "Release room", role: "host", connection: "online" });
     client.dispose();
   });
 
@@ -636,7 +636,7 @@ describe("browser Gateway client", () => {
         member: { memberId: "member-host", role: "host" },
         roomToken: "host-token",
       });
-      if (url.endsWith("/session-denied/host")) return response({}, 403);
+      if (url.endsWith("/room-denied/host")) return response({}, 403);
       if (url.endsWith("/room-1/snapshot")) return response({ room: { roomId: "room-1", title: "Current room" }, members: [], lastEventSeq: 0 });
       if (url.endsWith("/room-1/invites")) return response({ invite: { inviteId: "invite-1", roomId: "room-1", expiresAt: 100 }, token: "invite-secret" }, 201);
       throw new Error(`unexpected request ${url}`);
@@ -654,7 +654,7 @@ describe("browser Gateway client", () => {
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
 
-    await expect(client.shareHostRoom({ sessionId: "session-denied", title: "Denied" })).rejects.toThrow("403");
+    await expect(client.shareHostRoom({ roomId: "room-denied", hostSessionId: "session-denied", title: "Denied" })).rejects.toThrow("403");
     await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
 
     expect(requests.at(-1)).toBe("http://127.0.0.1:4310/collab/v1/rooms/room-1/invites");

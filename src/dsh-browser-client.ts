@@ -93,7 +93,7 @@ export interface DshBrowserInviteInput {
 
 export interface DshBrowserSettingsPort extends DshCollabSettingsPort {
   bootstrap(roomId?: string): Promise<void>;
-  shareHostRoom(input: { sessionId: string; title: string }): Promise<void>;
+  shareHostRoom(input: { roomId: string; hostSessionId: string; title: string }): Promise<void>;
   stopSharing(roomId: string): Promise<void>;
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }>;
@@ -563,14 +563,16 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     await this.connect({ base: this.hostBase, roomId: nextRoomId, data });
   }
 
-  async shareHostRoom(input: { sessionId: string; title: string }): Promise<void> {
-    const sessionId = input.sessionId.trim();
+  async shareHostRoom(input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {
+    const roomId = input.roomId.trim();
+    const hostSessionId = input.hostSessionId.trim();
     const title = input.title.trim();
-    if (sessionId === "") throw new Error("sessionId must not be blank");
+    if (roomId === "") throw new Error("roomId must not be blank");
+    if (hostSessionId === "") throw new Error("hostSessionId must not be blank");
     if (title === "") throw new Error("Room name must not be blank");
     if (title.length > 80) throw new Error("Room name must be at most 80 characters");
-    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(sessionId)}/host`, { hostSessionId: sessionId, title }, false, this.hostBase)), sessionId);
-    await this.connect({ base: this.hostBase, roomId: sessionId, data });
+    const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/host`, { hostSessionId, title }, false, this.hostBase)), roomId);
+    await this.connect({ base: this.hostBase, roomId, data });
   }
 
   async stopSharing(roomId: string): Promise<void> {
@@ -1255,7 +1257,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   subscribeRoom(listener: () => void): () => void { return this.client.subscribe(listener); }
   async save(): Promise<void> {}
   bootstrap(roomId?: string): Promise<void> { return this.client.bootstrap(roomId); }
-  shareHostRoom(input: { sessionId: string; title: string }): Promise<void> { return this.client.shareHostRoom(input); }
+  shareHostRoom(input: { roomId: string; hostSessionId: string; title: string }): Promise<void> { return this.client.shareHostRoom(input); }
   stopSharing(roomId: string): Promise<void> { return this.client.stopSharing(roomId); }
   join(input: DshBrowserJoinInput, roomId?: string): Promise<void> { return this.client.join(input, roomId); }
   createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> { return this.client.createInvite(input, roomId); }

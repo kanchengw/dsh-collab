@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSessionAction, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import type { ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import type { DshCollabJoinedRoom } from "../../src/settings-shared.js";
@@ -276,36 +276,16 @@ describe("real DSH client slot adapter", () => {
 
       async save(): Promise<void> {}
 
-      async shareHostRoom(input: { sessionId: string }): Promise<void> {
-        this.shared.push(input.sessionId);
+      async shareHostRoom(input: { roomId: string; hostSessionId: string }): Promise<void> {
+        this.shared.push(`${input.roomId}:${input.hostSessionId}`);
       }
     }
     const base = new BrowserSettings();
     const port = createDshGatewayControlPort(base, { call: vi.fn() });
 
-    await port.shareHostRoom?.({ sessionId: "session-current", title: "Current" });
+    await port.shareHostRoom?.({ roomId: "room-current", hostSessionId: "session-current", title: "Current" });
 
-    expect(base.shared).toEqual(["session-current"]);
-  });
-
-  it("keeps the native Host conversation to one composer with a header-only Collab action", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabSessionAction, { sessionId: "room-1", defaultRoomName: "Release", fallback: snapshot }));
-
-    expect(html).toContain('data-collab-session-action="true"');
-    expect(html).toContain("Open Collab room");
-    expect(html).not.toContain("textarea");
-    expect(html).not.toContain('data-collab-room-ui="true"');
-  });
-
-  it("opens a draft Owner room from the native session header without adding another composer", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabSessionAction, {
-      sessionId: "session-current",
-      defaultRoomName: "Release planning",
-      fallback: { ...snapshot, roomId: "", role: "participant", connection: "offline" },
-    }));
-
-    expect(html).toContain("Share as Collab room");
-    expect(html).not.toContain("textarea");
+    expect(base.shared).toEqual(["room-current:session-current"]);
   });
 
   it("keeps Settings configuration-only", () => {
@@ -344,12 +324,11 @@ describe("real DSH client slot adapter", () => {
     };
     applyDshCollabClient(context as DshCollabClientContext);
     expect(registrations).toEqual([
-      { name: "conversation.session.header.actions", options: expect.objectContaining({ id: "dsh-collab", order: 30, locale: "dsh-collab" }) },
       { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20, locale: "dsh-collab" }) },
       { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10, locale: "dsh-collab" }) },
       { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab", locale: "dsh-collab" }) },
     ]);
-    expect(context.slots.inject).toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
+    expect(context.slots.inject).not.toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("sidebar.footer.action", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("shell.overlay", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("settings.plugin.item", expect.any(Function));
@@ -398,10 +377,10 @@ describe("real DSH client slot adapter", () => {
     const port = createDshGatewayControlPort(base, rpc);
     await port.refreshGateway?.();
 
-    await port.shareHostRoom?.({ sessionId: "room-1", title: "Release" });
+    await port.shareHostRoom?.({ roomId: "room-1", hostSessionId: "session-native", title: "Release" });
 
     expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/owner/start", { roomId: "room-1", gatewayPort: 4310 });
-    expect(shareHostRoom).toHaveBeenCalledWith({ sessionId: "room-1", title: "Release" });
+    expect(shareHostRoom).toHaveBeenCalledWith({ roomId: "room-1", hostSessionId: "session-native", title: "Release" });
   });
 
   it("stops the active EasyTier Owner transport even after settings switch to LAN", async () => {

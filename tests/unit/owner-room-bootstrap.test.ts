@@ -75,7 +75,10 @@ async function initialVersionFixture(roomId = "room-atlas"): Promise<{
   };
 }
 
-async function bootstrapFixture(input: { connectWorkspace(): Promise<string> }) {
+async function bootstrapFixture(input: {
+  connectWorkspace(): Promise<string>;
+  openSession(sessionId: string): void;
+}) {
   const root = await mkdtemp(join(tmpdir(), "dsh-collab-owner-workspace-"));
   roots.push(root);
   const store = new RoomProjectStore();
@@ -96,7 +99,10 @@ async function bootstrapFixture(input: { connectWorkspace(): Promise<string> }) 
     bootstrap: (artifacts: WorkspaceSnapshotStore) => new OwnerRoomWorkspaceBootstrapper({
       materializer: new RoomWorkspaceMaterializer({ root, artifacts }),
       registrar,
-      workspaceNavigation: input,
+      workspaceNavigation: {
+        connectWorkspace: input.connectWorkspace,
+        sessions: { open: input.openSession },
+      },
     }),
     dshCalls,
     snapshots,
@@ -113,6 +119,7 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
         calls.push("connect");
         return "host-primary-session";
       },
+      openSession: (sessionId) => calls.push("open:" + sessionId),
     });
 
     const created = await fixture.bootstrap(initial.artifacts).create({
@@ -128,7 +135,7 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
       ["create", { path: created.workspace.workspacePath }],
       ["rename", "dsh-workspace-atlas", "Atlas"],
     ]);
-    expect(calls).toEqual(["connect"]);
+    expect(calls).toEqual(["connect", "open:host-primary-session"]);
     expect(created.project).toMatchObject({
       roomId: "room-atlas",
       nativeWorkspaceId: "dsh-workspace-atlas",
@@ -141,6 +148,7 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
     const initial = await initialVersionFixture();
     const fixture = await bootstrapFixture({
       connectWorkspace: async () => { throw new Error("DSH connect unavailable"); },
+      openSession: (sessionId) => { throw new Error("unexpected open: " + sessionId); },
     });
 
     await expect(fixture.bootstrap(initial.artifacts).create({
@@ -159,7 +167,10 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
 
   it("rejects an initial version from another room before creating files or native DSH state", async () => {
     const initial = await initialVersionFixture("room-other");
-    const fixture = await bootstrapFixture({ connectWorkspace: async () => "host-primary-session" });
+    const fixture = await bootstrapFixture({
+      connectWorkspace: async () => "host-primary-session",
+      openSession: () => { throw new Error("unexpected open"); },
+    });
 
     await expect(fixture.bootstrap(initial.artifacts).create({
       roomId: "room-atlas",

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { DshCollabRoomsPanel, setDshCollabRoomsOpen } from "../../src/collab-rooms.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
-import { applyDshCollabClient, DshCollabSessionAction, type DshCollabClientContext, type DshCollabSettingsPort } from "../../src/dsh-client.js";
+import { applyDshCollabClient, type DshCollabClientContext, type DshCollabSettingsPort } from "../../src/dsh-client.js";
 import { COLLAB_LOCALE_NAMESPACE, en, zh, type CollabTranslate } from "../../src/locales.js";
 
 vi.mock("@deepseek-ai/dsh-client-ui-primitives", async () => {
@@ -55,7 +55,7 @@ describe("dsh-collab locale dictionaries", () => {
     } as DshCollabClientContext);
 
     expect(registerLocale).toHaveBeenCalledWith(COLLAB_LOCALE_NAMESPACE, { zh, en });
-    expect(registrations).toHaveLength(4);
+    expect(registrations).toHaveLength(3);
     expect(registrations.every(({ options }) => options.locale === COLLAB_LOCALE_NAMESPACE)).toBe(true);
     const launcher = registrations.find(({ options }) => options.name === "sidebar.footer.action");
     expect(renderToStaticMarkup(launcher!.component({ wide: true, t }))).toContain("协作房间");
@@ -73,21 +73,14 @@ describe("dsh-collab locale dictionaries", () => {
     expect(html).toContain("局域网设置");
   });
 
-  it("renders Collab Rooms and session sharing controls in Simplified Chinese", () => {
+  it("renders Collab Rooms in Simplified Chinese", () => {
     setDshCollabRoomsOpen(true);
     const rooms = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port, t }));
     setDshCollabRoomsOpen(false);
-    const action = renderToStaticMarkup(createElement(DshCollabSessionAction, {
-      sessionId: "session-current",
-      defaultRoomName: "Release planning",
-      fallback: { roomId: "", roomTitle: "", hostDisplayName: "", role: "participant", connection: "offline", onlineCount: 0, canSteer: false },
-      t,
-    }));
 
     expect(rooms).toContain("协作房间");
     expect(rooms).toContain("我创建的房间");
     expect(rooms).toContain("我加入的房间");
     expect(rooms).not.toContain("启动网关");
-    expect(action).toContain("共享为协作房间");
   });
 });

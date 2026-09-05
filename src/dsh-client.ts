@@ -3,7 +3,7 @@ import { MarkdownText, MessageText, type MarkdownLabels } from "@deepseek-ai/dsh
 import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, shareDshCollabOwnedRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
+import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type CollabConnectionMethod, type DshCollabJoinedRoom, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
@@ -116,7 +116,7 @@ export interface DshCollabSettingsPort {
   subscribe?(listener: () => void): () => void;
   save(input: { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string; connectionMethod?: CollabConnectionMethod; easyTierSharedNode?: string } & Partial<DshCollabSecuritySettings>): Promise<void>;
   bootstrap?(roomId?: string): Promise<void>;
-  shareHostRoom?(input: { sessionId: string; title: string }): Promise<void>;
+  shareHostRoom?(input: { roomId: string; hostSessionId: string; title: string }): Promise<void>;
   stopSharing?(roomId: string): Promise<void>;
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string; network?: CollabInvitationNetwork }, roomId?: string): Promise<{ invitation: string }>;
@@ -613,10 +613,10 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
       const active = await startEasyTierOwner(roomId);
       return createInvite({ ...input, gatewayEndpoint: active.gatewayEndpoint, network: active.network }, roomId);
     } : undefined,
-    shareHostRoom: shareHostRoom ? async (input: { sessionId: string; title: string }) => {
+    shareHostRoom: shareHostRoom ? async (input: { roomId: string; hostSessionId: string; title: string }) => {
       if (base.getSnapshot().connectionMethod === "easytier") {
         try {
-          await startEasyTierOwner(input.sessionId);
+          await startEasyTierOwner(input.roomId);
           await shareHostRoom(input);
         } catch (error) {
           await rpc.call("/dsh-collab", "easytier/stop", {}).catch(() => undefined);
@@ -1129,47 +1129,6 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
 }
 
 /** Small session-header action; the native conversation keeps its own single composer. */
-export function DshCollabSessionAction(props: {
-  sessionId: string;
-  defaultRoomName: string;
-  port?: DshCollabClientPort;
-  fallback?: DshCollabClientSnapshot;
-  t?: CollabTranslate;
-  panelHost?: CollabPanelHost;
-  settingsPort?: DshCollabSettingsPort;
-}): ReactNode {
-  const t = props.t ?? defaultCollabTranslate;
-  const snapshot = usePortSnapshot(props.port, props.fallback ?? fallbackSnapshot);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const hosted = snapshot.role === "host" && snapshot.roomId === props.sessionId && snapshot.connection !== "offline";
-  const roomTitle = hosted ? snapshot.roomTitle : props.defaultRoomName;
-  const activate = async (): Promise<void> => {
-    if (!hosted) {
-      if (!props.settingsPort) return;
-      setBusy(true);
-      setError(undefined);
-      try {
-        await shareDshCollabOwnedRoom(props.settingsPort, { sessionId: props.sessionId, title: roomTitle });
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : t("rooms.actionError"));
-        return;
-      } finally {
-        setBusy(false);
-      }
-    }
-    openDshCollabRoom({ kind: "owned", roomId: props.sessionId, hostSessionId: props.sessionId, roomTitle }, props.panelHost);
-  };
-  return createElement("button", {
-    type: "button",
-    className: roomCss.sessionAction,
-    "data-collab-session-action": true,
-    disabled: busy || !props.panelHost || (!hosted && !props.settingsPort?.shareHostRoom),
-    ...(error ? { title: error } : {}),
-    onClick: () => { void activate(); },
-  }, t(hosted ? "share.openRoom" : busy ? "share.sharing" : "share.asRoom"));
-}
-
 function optionalService<T>(context: DshCollabClientContext, name: string): T | undefined {
   try { return context.get?.<T>(name); } catch { return undefined; }
 }
@@ -1289,17 +1248,6 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
       t: fallbackT,
     });
   }, () => fallbackT("bar.title"), (resolution) => { panelResolution = resolution; });
-  context.slots.inject("conversation.session.header.actions", () => context.slots.register({
-    name: "conversation.session.header.actions",
-    id: "dsh-collab",
-    order: 30,
-    locale: COLLAB_LOCALE_NAMESPACE,
-  }, (props) => {
-    const sessionId = String(props.sessionId ?? "");
-    const useSessions = props.useSessions as undefined | (<T>(selector: (state: { byId: Record<string, { displayTitle: string }> }) => T) => T);
-    const defaultRoomName = useSessions ? useSessions((state) => state.byId[sessionId]?.displayTitle ?? sessionId) : sessionId;
-    return createElement(DshCollabSessionAction, { key: sessionId, sessionId, defaultRoomName, port: client, settingsPort: settings, panelHost: panelResolution.kind === "ready" ? panelResolution.host : undefined, t: translationFor(props) });
-  }));
   context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
     port: settings,

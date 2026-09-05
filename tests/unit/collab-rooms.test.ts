@@ -155,14 +155,14 @@ describe("Collab Rooms navigation", () => {
     actions.startGateway = vi.fn(async () => { order.push("gateway"); return { status: "running" as const, port: 4310 }; });
     actions.shareHostRoom = vi.fn(async () => { order.push("room"); });
 
-    await shareDshCollabOwnedRoom(actions, { sessionId: "session-current", title: "Release planning" });
+    await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
 
     expect(order).toEqual(["gateway", "room"]);
-    expect(actions.shareHostRoom).toHaveBeenCalledWith({ sessionId: "session-current", title: "Release planning" });
+    expect(actions.shareHostRoom).toHaveBeenCalledWith({ roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
 
     order.length = 0;
     actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
-    await shareDshCollabOwnedRoom(actions, { sessionId: "session-current", title: "Release planning" });
+    await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
     expect(order).toEqual(["room"]);
   });
 

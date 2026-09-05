@@ -41,7 +41,7 @@ export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: 
   openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title }, panelHost);
 }
 
-export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { sessionId: string; title: string }): Promise<void> {
+export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {
   if (!port.shareHostRoom) throw new Error("Owner room sharing is unavailable");
   if (port.getGatewaySnapshot?.().status !== "running") await port.startGateway?.();
   await port.shareHostRoom(input);
@@ -178,7 +178,7 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
   };
   const startSharing = async (room: DshCollabOwnedRoom): Promise<void> => {
     if (!port?.shareHostRoom) throw new Error(t("owned.unavailable"));
-    await shareDshCollabOwnedRoom(port, { sessionId: room.hostSessionId, title: room.title });
+    await shareDshCollabOwnedRoom(port, { roomId: room.roomId, hostSessionId: room.hostSessionId, title: room.title });
   };
   const join = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();

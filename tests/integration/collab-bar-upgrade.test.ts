@@ -26,7 +26,6 @@ describe("Collab Bar production composition", () => {
     applyDshCollabClient(context as unknown as DshCollabClientContext);
 
     expect(registrations).toEqual([
-      { name: "conversation.session.header.actions", id: "dsh-collab", key: undefined },
       { name: "sidebar.footer.action", id: "dsh-collab", key: undefined },
       { name: "shell.overlay", id: "dsh-collab-rooms", key: undefined },
       { name: "settings.plugin.item", id: undefined, key: "dsh-collab" },
