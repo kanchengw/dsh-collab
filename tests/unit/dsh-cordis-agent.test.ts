@@ -181,6 +181,156 @@ describe("real DSH Cordis Agent bridge", () => {
     await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-output" })).resolves.toEqual({ text: "COLLAB_AGENT_OUTPUT" });
   });
 
+  it("does not attribute a later Host turn to the matching request", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "user/message", data: message },
+          { seq: 1, type: "assistant/message", data: { message: { content: [{ type: "text", text: "FIRST" }] } } },
+          { seq: 2, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } },
+          { seq: 3, type: "user/message", data: { ...message, id: "later-message" } },
+          { seq: 4, type: "assistant/message", data: { message: { content: [{ type: "text", text: "LATER" }] } } },
+          { seq: 5, type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-output", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-output" })).resolves.toEqual({ text: "FIRST" });
+  });
+
+  it("fails closed when the matching request never reaches a terminal turn", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "user/message", data: message },
+          { seq: 1, type: "assistant/message", data: { message: { content: [{ type: "text", text: "PARTIAL" }] } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-open", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-open" })).resolves.toEqual({
+      error: "Host Agent request did not reach a terminal turn",
+    });
+  });
+
+  it("reports a request cancelled in the Host inbox before execution", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [message] } },
+          { seq: 1, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [], outcome: "canceled" } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-cancelled", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-cancelled" })).resolves.toEqual({
+      error: "Host Agent request was cancelled before execution",
+    });
+  });
+
+  it("reports a claimed request blocked before DSH records its user message", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [message] } },
+          { seq: 1, type: "turn/start", data: { turn: 1 } },
+          { seq: 2, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [] } },
+          { seq: 3, type: "turn/end", data: { turn: 1, reason: { kind: "blocked" } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-blocked", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-blocked" })).resolves.toEqual({
+      error: "Host Agent request was blocked before execution",
+    });
+  });
+
+  it("reports an externally aborted matching Host turn instead of completing it", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "user/message", data: message },
+          { seq: 1, type: "turn/end", data: { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-aborted", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-aborted" })).resolves.toEqual({
+      error: "Host Agent request was cancelled",
+    });
+  });
+
+  it("reports an interrupted matching Host turn instead of completing it", async () => {
+    const events: Array<{ seq: number; type: string; data: unknown }> = [];
+    const agent = {
+      session: { snapshotEvents: () => events },
+      followup(message: DshUserMessage) {
+        events.push(
+          { seq: 0, type: "user/message", data: message },
+          { seq: 1, type: "turn/end", data: { turn: 1, reason: { kind: "interrupted" } } },
+        );
+      },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({ agents: { get: () => agent } });
+
+    await service.followup({ requestId: "request-interrupted", sessionId: "session-1", text: "reply once" });
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-interrupted" })).resolves.toEqual({
+      error: "Host Agent request was interrupted",
+    });
+  });
+
+  it("fails closed if the live Host Agent is replaced before completion", async () => {
+    const original = {
+      session: { events: [] },
+      followup() {}, steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const replacement = {
+      session: { events: [] },
+      followup() {}, steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    let live = original;
+    const service = createDshCordisSessionService({ agents: { get: () => live } });
+
+    await service.followup({ requestId: "request-replaced", sessionId: "session-1", text: "reply once" });
+    live = replacement;
+
+    await expect(service.whenIdle?.({ sessionId: "session-1", requestId: "request-replaced" })).resolves.toEqual({
+      error: "Host Agent changed before request completion",
+    });
+  });
+
   it("returns a safe failure when the matching Host turn ends in error", async () => {
     const events: Array<{ seq: number; type: string; data: unknown }> = [];
     const agent = {

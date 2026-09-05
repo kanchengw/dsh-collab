@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
+import { DshRequestEventTracker, replayDshRequestEvents } from "./dsh-request-events.js";
 import { CollabError } from "./errors.js";
 import type { DshSessionService } from "./dsh-host.js";
 import type { AgentDeliveryResult, AgentOutputFrame } from "./types.js";
@@ -51,8 +52,7 @@ interface PendingDelivery {
   messageId: string;
   roomId?: string;
   sessionId: string;
-  started: boolean;
-  finished: boolean;
+  tracker: DshRequestEventTracker;
   committedText: string;
   attempt?: { id: string; text: string };
 }
@@ -89,29 +89,6 @@ function sessionEvents(agent: DshCordisAgent): readonly DshCordisSessionEvent[] 
   return agent.session?.snapshotEvents?.() ?? agent.session?.events ?? [];
 }
 
-function assistantOutput(events: readonly DshCordisSessionEvent[], baseline: number, messageId: string): AgentDeliveryResult | undefined {
-  const userIndex = events.findIndex((event, index) => index >= baseline && event.type === "user/message" && record(event.data)?.id === messageId);
-  if (userIndex < 0) return undefined;
-  const relativeEnd = events.slice(userIndex + 1).findIndex((event) => event.type === "turn/end");
-  const endIndex = relativeEnd < 0 ? events.length : userIndex + 1 + relativeEnd;
-  const reason = relativeEnd < 0 ? undefined : record(record(events[endIndex]?.data)?.reason);
-  if (reason?.kind === "error") {
-    const code = record(reason.error)?.code;
-    return { error: typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? `Host Agent failed: ${code}` : "Host Agent request failed" };
-  }
-  const parts: string[] = [];
-  for (const event of events.slice(userIndex + 1, endIndex)) {
-    if (event.type !== "assistant/message") continue;
-    const content = record(record(event.data)?.message)?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      const candidate = record(block);
-      if (candidate?.type === "text" && typeof candidate.text === "string" && candidate.text !== "") parts.push(candidate.text);
-    }
-  }
-  return parts.length === 0 ? undefined : { text: parts.join("\n\n") };
-}
-
 /** Adapt the public DSH `ctx.agents` service to the collab HostAgentPort seam. */
 export function createDshCordisSessionService(input: {
   agents: DshCordisAgentRegistry;
@@ -128,18 +105,12 @@ export function createDshCordisSessionService(input: {
   const unsubscribeSessionEvents = input.onSessionEvent?.((session, event) => {
     for (const [requestId, delivery] of pending) {
       if (delivery.sessionId !== session.id) continue;
-      if (event.type === "user/message" && record(event.data)?.id === delivery.messageId) {
-        delivery.started = true;
-        continue;
-      }
-      if (delivery.started && event.type === "turn/end") {
-        delivery.finished = true;
-      }
+      delivery.tracker.apply(event);
     }
   });
   const unsubscribeAssistantStream = input.onAssistantStream?.(({ agent, frame }) => {
     for (const [requestId, delivery] of pending) {
-      if (delivery.agent !== agent || !delivery.started || delivery.finished) continue;
+      if (delivery.agent !== agent || !delivery.tracker.started || delivery.tracker.isTerminal) continue;
       if (frame.type === "start") {
         delivery.attempt = { id: frame.attemptId, text: "" };
         continue;
@@ -172,8 +143,7 @@ export function createDshCordisSessionService(input: {
       messageId: message.id,
       roomId: delivery.roomId,
       sessionId: delivery.sessionId,
-      started: false,
-      finished: false,
+      tracker: new DshRequestEventTracker(message.id),
       committedText: "",
     });
     try {
@@ -194,10 +164,14 @@ export function createDshCordisSessionService(input: {
     async whenIdle(request): Promise<AgentDeliveryResult | undefined> {
       const delivery = pending.get(request.requestId);
       try {
-        const agent = liveAgent(input.agents, request.sessionId);
+        const agent = input.agents.get(request.sessionId);
+        if (!agent) return { error: "Host Agent changed before request completion" };
         await agent.whenIdle?.();
-        if (!delivery || delivery.agent !== agent || !agent.session) return undefined;
-        return assistantOutput(sessionEvents(agent), delivery.baseline, delivery.messageId);
+        if (!delivery) return undefined;
+        if (delivery.agent !== agent) return { error: "Host Agent changed before request completion" };
+        if (!agent.session) return { error: "Host Agent session is unavailable" };
+        replayDshRequestEvents(delivery.tracker, sessionEvents(agent), delivery.baseline);
+        return delivery.tracker.result("Host Agent");
       } finally {
         pending.delete(request.requestId);
       }

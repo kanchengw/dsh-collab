@@ -146,6 +146,22 @@ describe("DSH local Agent session adapter", () => {
     expect(frames).toEqual([{ kind: "failed", error: "Local Agent failed: MODEL_UNAVAILABLE" }]);
   });
 
+  it("fails a local request claimed by a blocked DSH turn before user-message append", async () => {
+    const runtime = harness();
+    const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-blocked" });
+    const { sessionId } = await port.start({ prompt: "Review" });
+    const frames: LocalAgentFrame[] = [];
+    port.subscribe(sessionId, (frame) => { frames.push(frame); });
+    const message = runtime.messages[0];
+
+    runtime.emit(sessionId, { seq: 1, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [message] } });
+    runtime.emit(sessionId, { seq: 2, type: "turn/start", data: { turn: 1 } });
+    runtime.emit(sessionId, { seq: 3, type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [] } });
+    runtime.emit(sessionId, { seq: 4, type: "turn/end", data: { turn: 1, reason: { kind: "blocked" } } });
+
+    expect(frames).toEqual([{ kind: "failed", error: "Local Agent request was blocked before execution" }]);
+  });
+
   it("removes abandoned attempt text before completing with retry output", async () => {
     const runtime = harness();
     const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-retry" });

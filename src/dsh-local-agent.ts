@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ModelSelection, ModelSelectionRef } from "@deepseek-ai/dsh-agent";
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
+import { DshRequestEventTracker } from "./dsh-request-events.js";
 
 export type LocalAgentFrame =
   | { kind: "output"; text: string }
@@ -78,10 +79,10 @@ interface LocalSession {
   handle: DshLocalAgentHandle;
   listeners: Set<(frame: LocalAgentFrame) => void>;
   messageId: string;
+  tracker: DshRequestEventTracker;
   committedOutput: string;
   output: string;
   removeEvents: () => void;
-  started: boolean;
   terminal: boolean;
   terminalFrame?: Exclude<LocalAgentFrame, { kind: "output" }>;
   attempt?: { id: string; text: string };
@@ -110,13 +111,6 @@ function userMessage(prompt: string): DshLocalAgentMessage {
     content: [{ type: "text", text: prompt }],
     source: { kind: "user" },
   };
-}
-
-function localAgentError(reason: Record<string, unknown>): string {
-  const code = record(reason.error)?.code;
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)
-    ? `Local Agent failed: ${code}`
-    : "Local Agent request failed";
 }
 
 /** Adapt DSH's public Agent registry, preset, and session-event services to local SideTasks. */
@@ -162,29 +156,25 @@ export function createDshLocalAgentSessionPort(
         handle,
         listeners: new Set(),
         messageId: message.id,
+        tracker: new DshRequestEventTracker(message.id),
         committedOutput: "",
         output: "",
         removeEvents: () => {},
-        started: false,
         terminal: false,
       };
       sessions.set(sessionId, session);
       const removeSessionEvents = context.on("session/event", (subject, event) => {
         if (subject.id !== sessionId || session.terminal) return;
-        if (event.type === "user/message" && record(event.data)?.id === session.messageId) {
-          session.started = true;
-          return;
-        }
-        if (!session.started || !session.acceptingOutput) return;
-        if (event.type !== "turn/end") return;
+        session.tracker.apply(event);
+        if (!session.tracker.isTerminal || !session.acceptingOutput) return;
         session.terminal = true;
-        const reason = record(record(event.data)?.reason);
-        if (reason?.kind === "aborted") append(session, { kind: "cancelled" });
-        else if (reason?.kind === "error") append(session, { kind: "failed", error: localAgentError(reason) });
-        else append(session, { kind: "completed", text: session.output });
+        const result = session.tracker.result("Local Agent");
+        if (session.tracker.terminalKind === "aborted" || session.tracker.terminalKind === "canceled") append(session, { kind: "cancelled" });
+        else if (result?.error) append(session, { kind: "failed", error: result.error });
+        else append(session, { kind: "completed", text: result?.text ?? session.output });
       });
       const removeAssistantStream = context.on("agent/assistant-stream", ({ agent, frame }) => {
-        if (agent !== session.handle.agent || !session.started || !session.acceptingOutput || session.terminal) return;
+        if (agent !== session.handle.agent || !session.tracker.started || !session.acceptingOutput || session.terminal) return;
         if (frame.type === "start") {
           session.attempt = { id: frame.attemptId, text: "" };
           return;
