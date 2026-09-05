@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDshRoomProjectSessionList,
   DshRoomProjectSessionObserver,
   formatInitialRoomProjectContext,
   type DshRoomProjectSessionListSnapshot,
 } from "../../src/dsh-room-project-sessions.js";
+import { CollabError } from "../../src/errors.js";
 import { RoomProjectStore } from "../../src/room-projects.js";
 
 class FakeSessionList {
@@ -130,5 +132,73 @@ describe("DshRoomProjectSessionObserver", () => {
 
     expect(observer.get("room-session")).toMatchObject({ initialContextDelivered: true });
     expect(deliveries).toEqual(["room-session:room-project-context:room-1:member-1:room-session"]);
+  });
+
+  it("does not inject while the native Agent is outside the safe delivery boundary", () => {
+    const sessions = new FakeSessionList(sessionList([{ id: "room-session", cwd: "C:\\rooms\\atlas" }]));
+    const deliveries: string[] = [];
+    let safe = false;
+    const observer = new DshRoomProjectSessionObserver({
+      projects: roomProjects(),
+      sessions,
+      bind: () => ({
+        isSafeToInject: () => safe,
+        deliver: (input) => {
+          deliveries.push(input.deliveryId);
+          return { ...input, messageId: "message-1", state: "injected" as const };
+        },
+      }),
+    });
+
+    observer.start();
+    expect(observer.get("room-session")).toMatchObject({ initialContextDelivered: false });
+    expect(deliveries).toEqual([]);
+
+    safe = true;
+    observer.reconcile();
+
+    expect(observer.get("room-session")).toMatchObject({ initialContextDelivered: true });
+    expect(deliveries).toEqual(["room-project-context:room-1:member-1:room-session"]);
+  });
+
+  it("keeps initial context pending when the native boundary is lost after the safety check", () => {
+    const sessions = new FakeSessionList(sessionList([{ id: "room-session", cwd: "C:\\rooms\\atlas" }]));
+    const observer = new DshRoomProjectSessionObserver({
+      projects: roomProjects(),
+      sessions,
+      bind: () => ({
+        isSafeToInject: () => true,
+        deliver: () => {
+          throw new CollabError("REQUEST_CONFLICT", "busy");
+        },
+      }),
+    });
+
+    expect(() => observer.start()).not.toThrow();
+    expect(observer.get("room-session")).toMatchObject({ initialContextDelivered: false });
+  });
+
+  it("projects live DSH Agents into the Session list and refreshes on lifecycle events", () => {
+    const listeners = new Set<() => void>();
+    const agents = new Map<string, { id: string; session?: { header?: { cwd?: string } } }>();
+    const sessions = createDshRoomProjectSessionList({
+      list: () => [...agents.values()],
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+    });
+    const observed: string[] = [];
+    const unsubscribe = sessions.subscribe(() => { observed.push("changed"); });
+
+    agents.set("room-session", { id: "room-session", session: { header: { cwd: "C:\\rooms\\atlas" } } });
+    for (const listener of listeners) listener();
+
+    expect(sessions.getSnapshot()).toEqual({
+      ids: ["room-session"],
+      byId: { "room-session": { id: "room-session", cwd: "C:\\rooms\\atlas" } },
+    });
+    expect(observed).toEqual(["changed"]);
+    unsubscribe();
   });
 });

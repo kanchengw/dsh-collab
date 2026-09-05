@@ -10,6 +10,9 @@ import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { supportsDshCanonicalWorkspace } from "./canonical-workspace.js";
 import type { RoomSummaryLlmPort } from "./room-summary.js";
+import { bindDshNativeAgentContext, type DshNativeAgentContextAgent, type DshNativeAgentContextRegistry } from "./dsh-native-agent-context.js";
+import { createDshRoomProjectSessionList, DshRoomProjectSessionObserver } from "./dsh-room-project-sessions.js";
+import type { RoomProjectStore } from "./room-projects.js";
 
 export interface DshCordisHostContext {
   agents: DshCordisAgentRegistry;
@@ -18,9 +21,65 @@ export interface DshCordisHostContext {
   subprocess?: DshRepositorySubprocess;
   on?: {
     (event: "agent/created", listener: (payload: { agent: { id: string } }) => void): () => void;
+    (event: "agent/disposed", listener: (payload: { agent: { id: string } }) => void): () => void;
+    (event: "agent/status", listener: (payload: { agent: { id: string }; status: "idle" | "running" }) => void): () => void;
     (event: "agent/assistant-stream", listener: (payload: DshAssistantStreamPayload<object>) => void): () => void;
     (event: "session/event", listener: DshCordisSessionEventListener): () => void;
   };
+}
+
+/** Connects live DSH Agent lifecycle to persisted Room Project associations. */
+export function createDshRoomProjectSessionObserver(input: {
+  context: DshCordisHostContext;
+  projects: RoomProjectStore;
+}): DshRoomProjectSessionObserver {
+  const nativeAgents = new Map<string, { source: NonNullable<ReturnType<DshCordisHostContext["agents"]["get"]>>; agent: DshNativeAgentContextAgent }>();
+  const registry: DshNativeAgentContextRegistry = {
+    get(sessionId) {
+      const source = input.context.agents.get(sessionId);
+      if (!source?.inject || !source.session) return undefined;
+      const cached = nativeAgents.get(sessionId);
+      if (cached?.source === source) return cached.agent;
+      const agent: DshNativeAgentContextAgent = {
+        id: sessionId,
+        session: source.session,
+        ...(source.status ? { status: source.status } : {}),
+        ...(source.runMaintenance ? { runMaintenance: (task) => source.runMaintenance!(task) } : {}),
+        inject(message) { source.inject?.(message as never); },
+        ...(source.inbox ? { inbox: source.inbox } : {}),
+      };
+      nativeAgents.set(sessionId, { source, agent });
+      return agent;
+    },
+  };
+  const onLifecycle = (listener: () => void): (() => void) => {
+    if (!input.context.on) return () => {};
+    const disposers = [
+      input.context.on("agent/created", listener as (payload: { agent: { id: string } }) => void),
+      input.context.on("agent/disposed", listener as (payload: { agent: { id: string } }) => void),
+      input.context.on("agent/status", listener as (payload: { agent: { id: string }; status: "idle" | "running" }) => void),
+    ];
+    return () => { for (const dispose of disposers) dispose(); };
+  };
+  const sessions = createDshRoomProjectSessionList({
+    list: () => (input.context.agents.list?.() ?? []).filter((agent): agent is NonNullable<typeof agent> & { id: string } => typeof agent.id === "string"),
+    subscribe: onLifecycle,
+  });
+  return new DshRoomProjectSessionObserver({
+    projects: input.projects,
+    sessions,
+    bind: (sessionId) => {
+      if (!input.context.on) return undefined;
+      const source = input.context.agents.get(sessionId);
+      if (!source?.inject || !source.session || !source.runMaintenance || source.status !== "idle") return undefined;
+      return bindDshNativeAgentContext({
+        agents: registry,
+        isSafeToInject: () => input.context.agents.get(sessionId)?.status === "idle",
+        onSessionEvent: (listener) => input.context.on!("session/event", listener),
+        sessionId,
+      });
+    },
+  });
 }
 
 export type DshCordisHostConfig = Omit<DshCollabHostRuntimeOptions, "sessions" | "hostSessionId" | "workspaceSnapshots" | "changeSetSubprocess" | "canonicalFiles" | "integrationJournalRoot"> & {

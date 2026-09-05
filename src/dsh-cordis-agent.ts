@@ -13,11 +13,15 @@ export interface DshUserMessage {
 }
 
 export interface DshCordisAgent {
+  readonly id?: string;
+  readonly status?: "idle" | "running";
   followup(message: DshUserMessage): Promise<void> | void;
   steer(message: DshUserMessage): Promise<void> | void;
   cancel(cause: { kind: "user" }, options: { keepInbox: boolean }): Promise<void> | void;
   whenIdle?(): Promise<void>;
+  runMaintenance?<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;
   inject?(message: DshContextMessage): void;
+  inbox?: { remove(messageId: string): boolean };
   session?: {
     readonly header?: { readonly cwd?: string };
     /** DSH 0.1.2 exposes the durable event log through this method. */
@@ -42,6 +46,7 @@ export interface DshCordisSessionEvent {
 
 export interface DshCordisAgentRegistry {
   get(sessionId: string): DshCordisAgent | undefined;
+  list?(): readonly DshCordisAgent[];
 }
 
 export type DshCordisSessionEventListener = (session: { id: string }, event: DshCordisSessionEvent) => void;

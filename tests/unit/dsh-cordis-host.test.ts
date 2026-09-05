@@ -4,10 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
+import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, EasyTierTransportCoordinator, HostSnapshotFile, type DshCollabPersistedSettings, type EasyTierRuntimeStatus } from "../../src/index.js";
 import { RoomStore } from "../../src/room.js";
+import { RoomProjectStore } from "../../src/room-projects.js";
 import { localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
 
 async function freeTcpPort(): Promise<number> {
@@ -41,6 +42,57 @@ async function waitUntilListening(port: number): Promise<void> {
 
 describe("Cordis Host mount", () => {
   const noPersistence = { stateFile: false as const };
+
+  it("wires live Room Project Sessions to native Agent context with fail-closed safety", () => {
+    const projects = new RoomProjectStore();
+    projects.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: "C:\\rooms\\atlas" });
+    let status: "idle" | "running" = "running";
+    const runMaintenanceSpy = vi.fn();
+    const agent = {
+      id: "room-session",
+      session: { header: { cwd: "C:\\rooms\\atlas" }, snapshotEvents: () => [] },
+      get status() { return status; },
+      runMaintenance: <T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+        runMaintenanceSpy();
+        return task(new AbortController().signal);
+      },
+      inject: vi.fn(),
+      inbox: { remove: vi.fn(() => true) },
+      followup: vi.fn(),
+      steer: vi.fn(),
+      cancel: vi.fn(),
+    };
+    const listeners = new Map<string, (payload: never) => void>();
+    let live = true;
+    const context = {
+      agents: {
+        get: (sessionId: string) => sessionId === agent.id ? agent : undefined,
+        list: () => live ? [agent] : [],
+      },
+      on: ((event: string, listener: (payload: never) => void) => {
+        listeners.set(event, listener);
+        return () => { listeners.delete(event); };
+      }) as unknown as Parameters<typeof createDshRoomProjectSessionObserver>[0]["context"]["on"],
+    };
+
+    const observer = createDshRoomProjectSessionObserver({ context, projects });
+    observer.start();
+
+    expect(agent.inject).not.toHaveBeenCalled();
+    expect(observer.get(agent.id)).toMatchObject({ initialContextDelivered: false });
+
+    status = "idle";
+    listeners.get("agent/status")?.({ agent, status: "idle" } as never);
+    expect(agent.inject).toHaveBeenCalledTimes(1);
+    expect(runMaintenanceSpy).toHaveBeenCalledTimes(1);
+
+    const disposed = listeners.get("agent/disposed");
+    expect(disposed).toBeDefined();
+    live = false;
+    disposed?.({ agent } as never);
+    expect(observer.get(agent.id)).toBeUndefined();
+    observer.dispose();
+  });
   it("accepts only loopback Host or an identity asserted by an explicitly trusted proxy", () => {
     const options = {
       hostPrincipalId: "host",

@@ -22,6 +22,8 @@ export interface DshNativeAgentContextAgent {
     /** Legacy test seam; real DSH no longer stores seedLength in the header. */
     readonly header?: unknown;
   };
+  readonly status?: "idle" | "running";
+  runMaintenance?<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;
   inject(message: DshNativeAgentContextMessage): void;
   readonly inbox?: {
     remove(messageId: DshNativeAgentContextMessage["id"]): boolean;
@@ -216,7 +218,19 @@ export function bindDshNativeAgentContext(input: {
           sessionId: input.sessionId,
         });
       }
-      agent.inject(contextMessage(messageId, text));
+      const message = contextMessage(messageId, text);
+      if (agent.runMaintenance) {
+        try {
+          const maintenance = agent.runMaintenance(async () => { agent.inject(message); });
+          void maintenance.catch(() => undefined);
+        } catch {
+          throw new CollabError("REQUEST_CONFLICT", "DSH Agent is not at a safe context delivery boundary", {
+            sessionId: input.sessionId,
+          });
+        }
+      } else {
+        agent.inject(message);
+      }
       return { deliveryId, messageId, state: "injected" };
     },
     cancel(deliveryId) {

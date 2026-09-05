@@ -51,6 +51,7 @@ class FakeNativeAgent {
   };
   status: "idle" | "running" = "idle";
   safeToInject = true;
+  runMaintenance?: <T>(task: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   readonly injected: DshNativeAgentContextMessage[] = [];
 
   constructor(
@@ -153,6 +154,32 @@ describe("DSH native Agent context bridge", () => {
       content: [{ type: "text", text: "Team context" }],
       source: { kind: "plugin", plugin: "dsh-collab" },
     }]);
+  });
+
+  it("uses the native maintenance boundary for the instantaneous injection", async () => {
+    const { agent, binding } = harness();
+    let maintenanceCalls = 0;
+    agent.runMaintenance = async <T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+      maintenanceCalls += 1;
+      return task(new AbortController().signal);
+    };
+
+    const result = binding.deliver({ deliveryId: "room-1:maintenance", text: "Team context" });
+
+    expect(result.state).toBe("injected");
+    expect(maintenanceCalls).toBe(1);
+    expect(agent.injected).toHaveLength(1);
+  });
+
+  it("fails closed when the native maintenance boundary rejects synchronously", () => {
+    const { agent, binding } = harness();
+    agent.runMaintenance = () => {
+      throw new Error("agent is busy");
+    };
+
+    expect(() => binding.deliver({ deliveryId: "room-1:busy", text: "Team context" }))
+      .toThrow("DSH Agent is not at a safe context delivery boundary");
+    expect(agent.injected).toHaveLength(0);
   });
 
   it("does not treat public idle status as a safe delivery boundary", () => {

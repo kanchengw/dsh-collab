@@ -53,7 +53,7 @@ export * from "./dsh-workspace-control.js";
 export * from "./dsh-credentials.js";
 export * from "./room-summary.js";
 
-import { mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
+import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
@@ -221,6 +221,8 @@ function registerGatewayControl(
   const roomProjects = roomProjectSnapshot
     ? RoomProjectStore.fromSnapshot(roomProjectSnapshot)
     : new RoomProjectStore();
+  const roomProjectObserver = createDshRoomProjectSessionObserver({ context, projects: roomProjects });
+  roomProjectObserver.start();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
     subprocess: context.subprocess,
     agents: context.agents,
@@ -416,6 +418,7 @@ function registerGatewayControl(
   }, { authority: "loopback" });
   context.effect?.(() => async () => {
     await removeControl();
+    roomProjectObserver.dispose();
     await Promise.all([stop(), sidecar?.dispose(), workspaceControl?.dispose()]);
     unsubscribeSideTasks?.();
     await sideTaskPersistence?.flush();

@@ -1,4 +1,5 @@
 import type { DshNativeAgentContextBinding } from "./dsh-native-agent-context.js";
+import { CollabError } from "./errors.js";
 import type { RoomProject } from "./room-projects.js";
 import { RoomProjectStore } from "./room-projects.js";
 
@@ -12,7 +13,33 @@ export interface DshRoomProjectSessionList {
   subscribe(listener: () => void): () => void;
 }
 
+export interface DshRoomProjectSessionAgent {
+  readonly id: string;
+  readonly session?: { readonly header?: { readonly cwd?: string } };
+}
+
+/** Projects the live DSH Agent registry into the Session-list seam used by the observer. */
+export function createDshRoomProjectSessionList(input: {
+  list(): readonly DshRoomProjectSessionAgent[];
+  subscribe(listener: () => void): () => void;
+}): DshRoomProjectSessionList {
+  return {
+    getSnapshot() {
+      const agents = input.list();
+      return {
+        ids: agents.map((agent) => agent.id),
+        byId: Object.fromEntries(agents.map((agent) => [agent.id, {
+          id: agent.id,
+          ...(agent.session?.header?.cwd ? { cwd: agent.session.header.cwd } : {}),
+        }])),
+      };
+    },
+    subscribe: input.subscribe,
+  };
+}
+
 export type DshRoomProjectContextBinding = Pick<DshNativeAgentContextBinding, "deliver">
+  & Partial<Pick<DshNativeAgentContextBinding, "isSafeToInject">>
   & Partial<Pick<DshNativeAgentContextBinding, "dispose">>;
 
 export interface RoomProjectSessionAssociation {
@@ -98,10 +125,16 @@ export class DshRoomProjectSessionObserver {
       const binding = this.bindings.get(sessionId) ?? this.input.bind(sessionId);
       if (!binding) continue;
       this.bindings.set(sessionId, binding);
-      binding.deliver({
-        deliveryId: deliveryId(project, sessionId),
-        text: formatInitialRoomProjectContext(project),
-      });
+      if (binding.isSafeToInject && !binding.isSafeToInject()) continue;
+      try {
+        binding.deliver({
+          deliveryId: deliveryId(project, sessionId),
+          text: formatInitialRoomProjectContext(project),
+        });
+      } catch (error) {
+        if (error instanceof CollabError && error.code === "REQUEST_CONFLICT") continue;
+        throw error;
+      }
       association.initialContextDelivered = true;
     }
     for (const sessionId of this.associations.keys()) {
