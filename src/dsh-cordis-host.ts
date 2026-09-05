@@ -9,9 +9,11 @@ import { createDshWorkspaceFilePort, WorkspaceSnapshotCapture, type DshWorkspace
 import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { supportsDshCanonicalWorkspace } from "./canonical-workspace.js";
+import type { RoomSummaryLlmPort } from "./room-summary.js";
 
 export interface DshCordisHostContext {
   agents: DshCordisAgentRegistry;
+  llm?: RoomSummaryLlmPort;
   fs?: DshWorkspaceFileSystem;
   subprocess?: DshRepositorySubprocess;
   on?: {
