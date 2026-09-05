@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CollabError } from "../../src/errors.js";
-import { projectRoomContext } from "../../src/room-context.js";
+import {
+  projectRoomContext,
+  reduceRoomContext,
+  restoreRoomContextState,
+  type RoomContextState,
+} from "../../src/room-context.js";
 import type { RoomEvent, RoomEventType } from "../../src/types.js";
 
 function event(
@@ -329,5 +334,129 @@ describe("projectRoomContext", () => {
       maxEntries: 0,
       events: [],
     }));
+  });
+});
+
+function emptyContextState(): RoomContextState {
+  return {
+    version: 1,
+    roomId: "room-1",
+    appliedThroughSeq: 0,
+    currentSummary: undefined,
+    decisions: [],
+    activeWorkUpdates: [],
+    changeSets: [],
+    currentWorkspaceVersion: undefined,
+  };
+}
+
+describe("reduceRoomContext", () => {
+  it("reduces durable events into a deterministic structured state", () => {
+    const updateId = "b".repeat(64);
+    const changeSetId = "c".repeat(64);
+    const workspaceVersionId = "workspace-version-1";
+    const files = [{ path: "src/reconnect.ts", contentHash: "d".repeat(64), size: 12, mode: "text" as const }];
+    const manifestHash = createHash("sha256").update(JSON.stringify(files)).digest("hex");
+    const state = reduceRoomContext(emptyContextState(), [
+      event(1, "work-update.published", {
+        updateId,
+        roomId: "room-1",
+        authorId: "member-alice",
+        sourceSessionId: "session-1",
+        summary: "Reconnect handling is guarded.",
+        filePaths: ["src/reconnect.ts"],
+        createdAt: 1_001,
+      }),
+      event(2, "changeset.submitted", {
+        changeSetId,
+        authorId: "member-alice",
+        title: "Reconnect guard",
+        summary: "Keep room state after reconnect.",
+        submittedAt: 1_002,
+        createdAt: 1_002,
+      }),
+      event(3, "changeset.review-decided", {
+        decisionId: "e".repeat(64),
+        changeSetId,
+        reviewerId: "member-alice",
+        outcome: "approved",
+        note: "Ready to apply.",
+        createdAt: 1_003,
+      }),
+      event(4, "workspace-version.published", {
+        version: {
+          workspaceVersionId,
+          roomId: "room-1",
+          files,
+          createdBy: "member-alice",
+          createdAt: 1_004,
+        },
+        manifestHash,
+        artifact: { kind: "workspace-snapshot.v1", snapshotId: workspaceVersionId, manifestHash, totalBytes: 12 },
+      }),
+    ]);
+
+    expect(state).toEqual({
+      version: 1,
+      roomId: "room-1",
+      appliedThroughSeq: 4,
+      currentSummary: { kind: "deterministic", text: "Workspace Version workspace-version-1: 1 file, 12 bytes", sourceSeq: 4 },
+      decisions: [{ decisionId: "e".repeat(64), changeSetId, reviewerId: "member-alice", outcome: "approved", note: "Ready to apply.", seq: 3 }],
+      activeWorkUpdates: [{ updateId, author: "member-alice", summary: "Reconnect handling is guarded.", refs: ["src/reconnect.ts"], seq: 1 }],
+      changeSets: [{
+        changeSetId,
+        author: "member-alice",
+        status: "approved",
+        summary: "Reconnect guard: Keep room state after reconnect.",
+        reviewerId: "member-alice",
+        findingCount: 0,
+        seq: 3,
+      }],
+      currentWorkspaceVersion: {
+        workspaceVersionId,
+        createdBy: "member-alice",
+        createdAt: 1_004,
+        changeSummary: { fileCount: 1, totalBytes: 12 },
+        seq: 4,
+      },
+    });
+  });
+
+  it("is idempotent for an already applied event and rejects gaps or foreign events", () => {
+    const first = event(1, "work-update.published", {
+      updateId: "f".repeat(64),
+      roomId: "room-1",
+      authorId: "member-alice",
+      sourceSessionId: "session-1",
+      summary: "One update",
+      filePaths: [],
+      createdAt: 1_001,
+    });
+    const state = reduceRoomContext(emptyContextState(), [first]);
+
+    expect(reduceRoomContext(state, [first])).toEqual(state);
+    expectInvalid(() => reduceRoomContext(state, [event(3, "member.joined", { memberId: "member-bob" })]));
+    expectInvalid(() => reduceRoomContext(state, [event(2, "member.joined", { memberId: "member-bob" }, { roomId: "room-2" })]));
+  });
+
+  it("restores only versioned, room-consistent state and bounds retained collections", () => {
+    let state = emptyContextState();
+    for (let seq = 1; seq <= 10; seq += 1) {
+      state = reduceRoomContext(state, [event(seq, "work-update.published", {
+        updateId: seq.toString(16).padStart(64, "0"),
+        roomId: "room-1",
+        authorId: "member-alice",
+        sourceSessionId: "session-1",
+        summary: `Update ${seq}`,
+        filePaths: [],
+        createdAt: 1_000 + seq,
+      })]);
+    }
+
+    expect(state.activeWorkUpdates).toHaveLength(8);
+    expect(restoreRoomContextState(JSON.parse(JSON.stringify(state)), "room-1")).toEqual(state);
+    expectInvalid(() => restoreRoomContextState({ ...state, version: 2 }, "room-1"));
+    expectInvalid(() => restoreRoomContextState({ ...state, roomId: "room-2" }, "room-1"));
+    expectInvalid(() => restoreRoomContextState({ ...state, appliedThroughSeq: 1.5 }, "room-1"));
   });
 });
