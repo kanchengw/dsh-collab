@@ -52,7 +52,7 @@ describe("Collab Bar", () => {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },
       selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "Release planning" },
       roomSnapshot: snapshot(),
-      discussion: createElement(DshCollabDock, { port: roomPort(snapshot()), showHeader: false, showQueue: false }),
+      discussion: createElement(DshCollabDock, { port: roomPort(snapshot()), showHeader: false }),
     }));
 
     expect(html).toContain('data-collab-bar="true"');
@@ -63,8 +63,9 @@ describe("Collab Bar", () => {
     expect(html).toContain(">Changes<");
     expect(html).toContain(">Reviews<");
     expect(html).toContain("Ready for review");
-    expect(html.match(/name="collab-text"/g)).toHaveLength(1);
-    expect(html.match(/<textarea/g)).toHaveLength(1);
+    expect(html).not.toContain('name="collab-text"');
+    expect(html).not.toContain('data-collab-agent-queue="true"');
+    expect(html).not.toContain("<textarea");
     expect(html).not.toContain('data-collab-surface="room"');
     expect(html).not.toContain('data-collab-room-overlay="true"');
     expect(html).not.toContain("Agent message queue");
@@ -80,16 +81,16 @@ describe("Collab Bar", () => {
     };
     const matching = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-a", visible: true }, selection, roomSnapshot: snapshot({ role: "participant" }),
-      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ role: "participant" })), showHeader: false, showQueue: false }),
+      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ role: "participant" })), showHeader: false }),
     }));
     const other = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-b", visible: true }, selection, roomSnapshot: snapshot({ role: "participant" }),
-      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ role: "participant" })), showHeader: false, showQueue: false }),
+      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ role: "participant" })), showHeader: false }),
     }));
 
-    expect(matching).toContain('name="collab-text"');
+    expect(matching).toContain("Ready for review");
     expect(other).toContain("Open a Collab room for this Session");
-    expect(other).not.toContain('name="collab-text"');
+    expect(other).not.toContain('data-collab-timeline="true"');
   });
 
   it("provides complete Chinese navigation and honest unavailable states", () => {
@@ -97,7 +98,7 @@ describe("Collab Bar", () => {
       scope: { sessionId: "session-owner", visible: true },
       selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "发布计划" },
       roomSnapshot: snapshot({ roomTitle: "发布计划" }),
-      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ roomTitle: "发布计划" })), showHeader: false, showQueue: false, t }),
+      discussion: createElement(DshCollabDock, { port: roomPort(snapshot({ roomTitle: "发布计划" })), showHeader: false, t }),
       initialTab: "changes",
       t,
     }));
@@ -123,7 +124,6 @@ describe("Collab Bar", () => {
       discussion: createElement(DshCollabDock, {
         port: roomPort(discussionSnapshot),
         showHeader: false,
-        showQueue: false,
         workUpdates: [
         { eventId: "update-1", seq: 2, createdAt: 2, kind: "work-update", authorId: "member-alice", summary: "Reconnect is covered", filePaths: ["src/reconnect.ts"] },
         ],
@@ -153,7 +153,7 @@ describe("Collab Bar", () => {
     for (const [current, key, expected] of cases) expect(nextCollabBarTab(current, key)).toBe(expected);
   });
 
-  it("uses an in-flow narrow layout that cannot cover the native composer", () => {
+  it("uses an in-flow narrow room timeline without a duplicate composer", () => {
     const barCss = readFileSync(resolve(process.cwd(), "src/collab-bar.module.css"), "utf8");
     const roomCss = readFileSync(resolve(process.cwd(), "src/collab-room.module.css"), "utf8");
     expect(barCss).toMatch(/@media\s*\(max-width:\s*48rem\)/);
@@ -162,7 +162,8 @@ describe("Collab Bar", () => {
     expect(barCss).toContain("min-width: 0");
     expect(roomCss).toMatch(/\.dock\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s);
     expect(roomCss).toMatch(/\.timeline\s*\{[^}]*flex:\s*1/s);
-    expect(roomCss).toMatch(/\.composer\s*\{[^}]*flex:\s*none/s);
+    expect(roomCss).not.toMatch(/\.composer\s*\{/);
+    expect(roomCss).not.toMatch(/\.queue\s*\{/);
     expect(roomCss).not.toContain("width: min(900px");
   });
 });

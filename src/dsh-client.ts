@@ -1,6 +1,6 @@
-import { createElement, useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createElement, useEffect, useState, type ReactNode } from "react";
 import { MarkdownText, MessageText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
-import { composerKeyAction, composerTargetForGesture, composerTargetForText, insertAgentMention, shouldSuggestAgentMention, type ComposerTarget, type TimelineItem } from "./ui.js";
+import { type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
@@ -12,7 +12,6 @@ import type { RepositoryDiff, RepositoryInspection } from "./repository-inspecto
 import roomCss from "./collab-room.module.css";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
 import type { AgentQueueItem, RoomEvent } from "./types.js";
-import { MAX_CONTEXT_REFS } from "./messages.js";
 import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
 import { CollabBarView } from "./collab-bar.js";
 import { projectCollabActivity, type CollabActivityItem } from "./collab-activity.js";
@@ -889,8 +888,6 @@ function DshCollabTimeline(props: {
   workUpdates?: readonly CollabActivityItem[];
   members: readonly { memberId: string; displayName: string }[];
   currentMemberId?: string;
-  referencedEventIds: ReadonlySet<string>;
-  onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => void;
   t: CollabTranslate;
 }): ReactNode {
   const rows = [
@@ -932,8 +929,6 @@ function DshCollabTimeline(props: {
         "data-state": item.state,
         "data-streaming": item.streaming ? "true" : undefined,
         "data-context-event-id": item.contextEventId,
-        "data-referenced": item.contextEventId && props.referencedEventIds.has(item.contextEventId) ? "true" : undefined,
-        onContextMenu: item.contextEventId && item.text ? (event: ReactMouseEvent<HTMLElement>) => { props.onContextMenu(item, event); } : undefined,
       },
       createElement("span", { className: roomCss.avatar, "aria-hidden": "true" }, item.kind === "agent" ? "AI" : initials(author)),
       createElement("div", { className: roomCss.messageContent },
@@ -946,136 +941,12 @@ function DshCollabTimeline(props: {
   );
 }
 
-function DshAgentQueueTable(props: {
-  items: readonly AgentQueueItem[];
-  members: readonly { memberId: string; displayName: string }[];
-  memberId?: string;
-  role: DshCollabClientSnapshot["role"];
-  port?: DshCollabClientPort;
-  t: CollabTranslate;
-}): ReactNode {
-  const [editingId, setEditingId] = useState<string>();
-  const [draft, setDraft] = useState("");
-  const [busyId, setBusyId] = useState<string>();
-  const [error, setError] = useState<string>();
-  const nameFor = (memberId: string): string => props.members.find((member) => member.memberId === memberId)?.displayName ?? memberId;
-  const beginEdit = (item: AgentQueueItem): void => { setEditingId(item.requestId); setDraft(item.text); setError(undefined); };
-  const saveEdit = async (requestId: string): Promise<void> => {
-    if (!props.port?.editAgentRequest || draft.trim() === "") return;
-    setBusyId(requestId);
-    setError(undefined);
-    try {
-      await props.port.editAgentRequest(requestId, draft.trim());
-      setEditingId(undefined);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : props.t("queue.editError"));
-    } finally {
-      setBusyId(undefined);
-    }
-  };
-  const withdraw = async (requestId: string): Promise<void> => {
-    if (!props.port?.withdrawAgentRequest) return;
-    setBusyId(requestId);
-    setError(undefined);
-    try {
-      await props.port.withdrawAgentRequest(requestId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : props.t("queue.withdrawError"));
-    } finally {
-      setBusyId(undefined);
-    }
-  };
-  return createElement("section", { className: roomCss.queue, "data-collab-agent-queue": true, "aria-labelledby": "collab-agent-queue-title" },
-    createElement("div", { className: roomCss.queueHeader }, createElement("h3", { id: "collab-agent-queue-title" }, props.t("queue.title"))),
-    props.items.length === 0
-      ? createElement("p", { className: roomCss.queueEmpty }, props.t("queue.empty"))
-      : createElement("div", { className: roomCss.queueScroller }, createElement("table", { className: roomCss.queueTable },
-        createElement("thead", null, createElement("tr", null,
-          createElement("th", { scope: "col" }, props.t("queue.position")),
-          createElement("th", { scope: "col" }, props.t("queue.author")),
-          createElement("th", { scope: "col" }, props.t("queue.message")),
-          createElement("th", { scope: "col" }, props.t("queue.status")),
-          createElement("th", { scope: "col" }, props.t("queue.priority")),
-          createElement("th", { scope: "col" }, ""),
-        )),
-        createElement("tbody", null, props.items.map((item) => {
-          const canManage = item.status === "queued" && (props.role === "host" || item.authorMemberId === props.memberId);
-          const editing = editingId === item.requestId;
-          return createElement("tr", { key: item.requestId, "data-request-id": item.requestId, "data-status": item.status },
-            createElement("td", { className: roomCss.queuePosition }, String(item.position)),
-            createElement("td", null, nameFor(item.authorMemberId)),
-            createElement("td", { className: roomCss.queueMessage }, editing
-              ? createElement("textarea", { className: roomCss.queueEditor, value: draft, rows: 2, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value) })
-              : item.text),
-            createElement("td", null, agentStatusLabel(item.status, props.t)),
-            createElement("td", null, props.t(item.priority === "host" ? "queue.hostPriority" : "queue.participantPriority")),
-            createElement("td", { className: roomCss.queueActions }, canManage && (editing
-              ? [
-                createElement("button", { key: "save", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined || draft.trim() === "", onClick: () => { void saveEdit(item.requestId); } }, props.t("queue.save")),
-                createElement("button", { key: "cancel", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, onClick: () => { setEditingId(undefined); setError(undefined); } }, props.t("queue.cancelEdit")),
-              ]
-              : [
-                createElement("button", { key: "edit", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, "aria-label": props.t("queue.editAria"), onClick: () => { beginEdit(item); } }, props.t("queue.edit")),
-                createElement("button", { key: "withdraw", type: "button", className: roomCss.queueAction, disabled: busyId !== undefined, "aria-label": props.t("queue.withdrawAria"), onClick: () => { void withdraw(item.requestId); } }, props.t("queue.withdraw")),
-              ])),
-          );
-        })),
-      )),
-    error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,
-  );
-}
-
-/** Shared timeline and composer rendered inside the Collab room surface. */
-export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; showQueue?: boolean; workUpdates?: readonly CollabActivityItem[]; t?: CollabTranslate }): ReactNode {
+/** Read-only room timeline; the native DSH Session owns the composer and Agent queue. */
+export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: DshCollabClientSnapshot; showHeader?: boolean; workUpdates?: readonly CollabActivityItem[]; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const fallback = props.fallback ?? fallbackSnapshot;
   const snapshot = usePortSnapshot(props.port, fallback);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string>();
-  const [contextRefs, setContextRefs] = useState<string[]>([]);
-  const [contextMenu, setContextMenu] = useState<{ item: TimelineItem; x: number; y: number }>();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const timeline = snapshot.timeline ?? [];
-  const referencedItems = contextRefs.map((eventId) => timeline.find((item) => item.contextEventId === eventId)).filter((item): item is TimelineItem => item !== undefined);
-  const agentBusy = (snapshot.agentQueue ?? []).some((item) => item.status === "running") || timeline.some((item) => item.kind === "agent" && item.streaming === true);
-  const addContextRef = (item: TimelineItem): void => {
-    const eventId = item.contextEventId;
-    setContextMenu(undefined);
-    if (!eventId || contextRefs.includes(eventId)) return;
-    if (contextRefs.length >= MAX_CONTEXT_REFS) {
-      setError(t("composer.quoteLimit", { count: MAX_CONTEXT_REFS }));
-      return;
-    }
-    setError(undefined);
-    setContextRefs([...contextRefs, eventId]);
-    textareaRef.current?.focus();
-  };
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!props.port || draft.trim() === "") return;
-    try {
-      setError(undefined);
-      const text = draft.trim();
-      const target = composerTargetForText(text);
-      await props.port.send({ text, target, ...(target === "dsh" && contextRefs.length > 0 ? { contextRefs: [...contextRefs] } : {}) });
-      setDraft("");
-      setContextRefs([]);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("composer.sendError"));
-    }
-  };
-  const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    const action = composerKeyAction({
-      key: event.key,
-      shiftKey: event.shiftKey,
-      isComposing: event.nativeEvent.isComposing,
-      keyCode: event.nativeEvent.keyCode,
-      repeat: event.repeat,
-    });
-    if (action === "native" && !(event.key === "Enter" && event.shiftKey && composerTargetForGesture(draft, agentBusy, true) === "dsh-steer")) return;
-    event.preventDefault();
-    if (action === "submit" || (event.key === "Enter" && event.shiftKey && composerTargetForGesture(draft, agentBusy, true) === "dsh-steer")) event.currentTarget.form?.requestSubmit();
-  };
   return createElement("section", { className: roomCss.dock, "data-collab-room-ui": true, "data-collab-mode": snapshot.role, "data-connection": snapshot.connection, "aria-label": t("room.aria") },
     props.showHeader === false ? null : createElement("div", { className: roomCss.header },
       createElement("strong", { className: roomCss.title }, snapshot.roomTitle),
@@ -1088,43 +959,8 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       workUpdates: props.workUpdates,
       members: snapshot.members ?? [],
       currentMemberId: snapshot.memberId,
-      referencedEventIds: new Set(contextRefs),
-      onContextMenu: (item: TimelineItem, event: ReactMouseEvent<HTMLElement>) => {
-        event.preventDefault();
-        setContextMenu({ item, x: event.clientX, y: event.clientY });
-      },
       t,
     }),
-    contextMenu ? createElement("div", { className: roomCss.contextMenu, role: "menu", style: { left: contextMenu.x, top: contextMenu.y } },
-      createElement("button", { type: "button", role: "menuitem", onClick: () => { addContextRef(contextMenu.item); } }, t("composer.quote")),
-    ) : null,
-    props.showQueue === false ? null : createElement(DshAgentQueueTable, { items: snapshot.agentQueue ?? [], members: snapshot.members ?? [], memberId: snapshot.memberId, role: snapshot.role, port: props.port, t }),
-    createElement("form", { className: roomCss.composer, onSubmit: submit },
-      referencedItems.length > 0 ? createElement("div", { className: roomCss.contextRefs, "aria-label": t("composer.quotedMessages") },
-        referencedItems.map((item) => createElement("div", { className: roomCss.contextRef, key: item.contextEventId },
-          createElement("span", null, timelineLabel(item, t)),
-          createElement("button", {
-            type: "button",
-            "aria-label": t("composer.removeQuote"),
-            onClick: () => { setContextRefs(contextRefs.filter((eventId) => eventId !== item.contextEventId)); },
-          }, "×"),
-        )),
-      ) : null,
-      createElement("div", { className: roomCss.composerInput },
-        createElement("textarea", { ref: textareaRef, className: roomCss.textarea, value: draft, onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value), onKeyDown: keyDown, name: "collab-text", "aria-label": t("composer.messageAria"), placeholder: t("composer.placeholder"), rows: 1 }),
-        shouldSuggestAgentMention(draft) ? createElement("div", { className: roomCss.mentionMenu },
-          createElement("button", { type: "button", className: roomCss.mentionSuggestion, "aria-label": t("composer.mentionAgent"), onClick: () => { setDraft(insertAgentMention(draft)); textareaRef.current?.focus(); } },
-            createElement("strong", null, "@agent"),
-            createElement("span", null, t("room.hostAgent")),
-          ),
-        ) : null,
-      ),
-      createElement("div", { className: roomCss.composerFooter },
-        createElement("span", { className: roomCss.composerHint }, t("composer.routeHint")),
-        createElement("button", { className: roomCss.send, type: "submit", "aria-label": t("composer.send"), title: t("composer.send"), disabled: !props.port || draft.trim() === "" }, createElement("span", { "aria-hidden": "true" }, "↑")),
-      ),
-    ),
-    error ? createElement("p", { className: roomCss.error, role: "alert" }, error) : null,
   );
 }
 
@@ -1154,7 +990,7 @@ function DshCollabBarPanel(props: {
     scope: props.scope,
     selection,
     roomSnapshot: snapshot,
-    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, showQueue: false, workUpdates: activityItems, t: props.t }),
+    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t }),
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
     t: props.t,
