@@ -4,12 +4,20 @@
 
 ## What is ready
 
+Current development status (2026-09-05): CRP-U01 through U07 are complete;
+U08 through U13 remain pending. The Room Project backend has independent Room
+identity and member-local workspaces; project-centric UI and structured context
+delivery are not yet complete. The list below includes retained legacy surfaces,
+not proof of the new end-to-end flow. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
+and [DSH 0.1.3-alpha.1 adaptation/design corrections](docs/plans/dsh-0.1.3-alpha.1-adaptation.md).
+Existing alpha.5 regression results do not establish alpha.1 runtime compatibility.
+
 - Versioned room protocol, HTTP Gateway, WebSocket stream, invite/join, permissions, message targeting, single Host Agent queue, steer/cancel, approval, limits, revocation, audit redaction, snapshot recovery and observability.
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
 - Session-scoped Collab Bar hosted by Better Sidebar, with Activity, Changes and Reviews beside each member's native DSH conversation. Collab Rooms remains a management overlay; selecting a room opens the Bar instead of replacing the conversation with a second full-screen chat UI.
 - Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers three released connection methods: `EasyTier virtual network`, direct `Private network` access, or a user-supplied `Custom WSS endpoint`. Participants get the selected transport from the invitation instead of persistent endpoint configuration.
-- The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. A room is created only when the Owner uses `Share this session` in a real DSH conversation; its room ID is that exact native session ID and its editable Room Name defaults to the DSH conversation title.
+- The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. Room identity is now independent from the native Session ID; the Owner Room Workspace has a fresh Host Primary Session for public `@agent`. The legacy share-session UI is scheduled for replacement by the project creation flow in CRP-U11.
 - Host runtime settings now apply token lifetime, member/message/queue limits; Agent tool approvals remain on DSH's native Host approval chain. Runtime snapshots restore room, ledger, dispatcher and approval projection state while short-lived invites and room tokens are reissued after restart.
 - After the first invite is accepted, the Participant's own DSH stores a hidden Joined-room resume record. Restarting DSH never reconnects it automatically; an explicit `Connect` action re-establishes EasyTier when required and then exchanges the saved credential for a fresh room token.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
