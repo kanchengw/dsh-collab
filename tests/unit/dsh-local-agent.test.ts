@@ -7,8 +7,14 @@ import {
   type LocalAgentFrame,
 } from "../../src/dsh-local-agent.js";
 
+type TestAssistantStreamFrame =
+  | { type: "start"; attemptId: string; revision: number; turn: number; step: number }
+  | { type: "chunk"; attemptId: string; revision: number; index: number; time: number; chunk: { type: string; text?: string } }
+  | { type: "end"; attemptId: string; revision: number; index: number; outcome: { kind: "committed"; eventType: "assistant/message" | "assistant/attempt"; seq: number } | { kind: "abandoned" } };
+
 function harness(options: { emitDuringFollowup?: boolean } = {}) {
-  const listeners = new Set<(session: { id: string }, event: DshLocalAgentSessionEvent) => void>();
+  const sessionListeners = new Set<(session: { id: string }, event: DshLocalAgentSessionEvent) => void>();
+  const assistantStreamListeners = new Set<(payload: { agent: DshLocalAgent; frame: TestAssistantStreamFrame }) => void>();
   const agents = new Map<string, DshLocalAgent>();
   const handles = new Map<string, { dispose: ReturnType<typeof vi.fn> }>();
   const createCalls: Array<Record<string, unknown>> = [];
@@ -21,17 +27,22 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
   const installedSelections: unknown[] = [];
 
   const emit = (sessionId: string, event: DshLocalAgentSessionEvent): void => {
-    for (const listener of listeners) listener({ id: sessionId }, event);
+    for (const listener of sessionListeners) listener({ id: sessionId }, event);
   };
-  const context: DshLocalAgentContext = {
+  const emitStream = (sessionId: string, frame: TestAssistantStreamFrame): void => {
+    const agent = agents.get(sessionId);
+    if (!agent) throw new Error(`fixture Agent is missing: ${sessionId}`);
+    for (const listener of assistantStreamListeners) listener({ agent, frame });
+  };
+  const context = {
     agentDefaultModel: {
       currentSelection: () => ({ provider: "local-provider", model: "local-model" }),
     },
-    installModelSelection(_agentContext, selection) {
+    installModelSelection(_agentContext: object, selection: Parameters<DshLocalAgentContext["installModelSelection"]>[1]) {
       installedSelections.push(selection);
     },
     agents: {
-      async create(input) {
+      async create(input: Parameters<DshLocalAgentContext["agents"]["create"]>[0]) {
         createCalls.push(input as unknown as Record<string, unknown>);
         const agentContext = {
           tools: {
@@ -46,8 +57,10 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
             prompts.push(message.content[0].text);
             if (!options.emitDuringFollowup) return;
             emit(input.sessionId, { seq: 1, type: "user/message", data: message });
-            emit(input.sessionId, { seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", text: "Hello" } } });
-            emit(input.sessionId, { seq: 3, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", text: " world" } } });
+            emitStream(input.sessionId, { type: "start", attemptId: `${input.sessionId}:1`, revision: 1, turn: 1, step: 1 });
+            emitStream(input.sessionId, { type: "chunk", attemptId: `${input.sessionId}:1`, revision: 2, index: 0, time: 1, chunk: { type: "text-delta", text: "Hello" } });
+            emitStream(input.sessionId, { type: "chunk", attemptId: `${input.sessionId}:1`, revision: 3, index: 1, time: 2, chunk: { type: "text-delta", text: " world" } });
+            emitStream(input.sessionId, { type: "end", attemptId: `${input.sessionId}:1`, revision: 4, index: 2, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } });
             emit(input.sessionId, { seq: 4, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
           },
           cancel(cause, cancelOptions) {
@@ -62,15 +75,21 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
       },
     },
     agentPresets: {
-      async mount(agentContext) { mountedContexts.push(agentContext); },
+      async mount(agentContext: object) { mountedContexts.push(agentContext); },
     },
-    on(_event, listener) {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
+    on(event: string, listener: unknown) {
+      if (event === "agent/assistant-stream") {
+        const streamListener = listener as (payload: { agent: DshLocalAgent; frame: TestAssistantStreamFrame }) => void;
+        assistantStreamListeners.add(streamListener);
+        return () => { assistantStreamListeners.delete(streamListener); };
+      }
+      const sessionListener = listener as (session: { id: string }, event: DshLocalAgentSessionEvent) => void;
+      sessionListeners.add(sessionListener);
+      return () => { sessionListeners.delete(sessionListener); };
     },
-  };
+  } as unknown as DshLocalAgentContext;
 
-  return { agents, cancellations, context, createCalls, emit, guards, handles, installedSelections, messages, mountedContexts, prompts, restrictions };
+  return { agents, cancellations, context, createCalls, emit, emitStream, guards, handles, installedSelections, messages, mountedContexts, prompts, restrictions };
 }
 
 describe("DSH local Agent session adapter", () => {
@@ -127,6 +146,30 @@ describe("DSH local Agent session adapter", () => {
     expect(frames).toEqual([{ kind: "failed", error: "Local Agent failed: MODEL_UNAVAILABLE" }]);
   });
 
+  it("removes abandoned attempt text before completing with retry output", async () => {
+    const runtime = harness();
+    const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-retry" });
+    const { sessionId } = await port.start({ prompt: "Review" });
+    const frames: LocalAgentFrame[] = [];
+    port.subscribe(sessionId, (frame) => { frames.push(frame); });
+
+    runtime.emit(sessionId, { seq: 1, type: "user/message", data: runtime.messages[0] });
+    runtime.emitStream(sessionId, { type: "start", attemptId: `${sessionId}:1`, revision: 1, turn: 1, step: 1 });
+    runtime.emitStream(sessionId, { type: "chunk", attemptId: `${sessionId}:1`, revision: 2, index: 0, time: 1, chunk: { type: "text-delta", text: "discarded" } });
+    runtime.emitStream(sessionId, { type: "end", attemptId: `${sessionId}:1`, revision: 3, index: 1, outcome: { kind: "abandoned" } });
+    runtime.emitStream(sessionId, { type: "start", attemptId: `${sessionId}:2`, revision: 4, turn: 1, step: 1 });
+    runtime.emitStream(sessionId, { type: "chunk", attemptId: `${sessionId}:2`, revision: 5, index: 0, time: 2, chunk: { type: "text-delta", text: "kept" } });
+    runtime.emitStream(sessionId, { type: "end", attemptId: `${sessionId}:2`, revision: 6, index: 1, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } });
+    runtime.emit(sessionId, { seq: 3, type: "turn/end", data: { reason: { kind: "completed" } } });
+
+    expect(frames).toEqual([
+      { kind: "output", text: "discarded" },
+      { kind: "output", text: "" },
+      { kind: "output", text: "kept" },
+      { kind: "completed", text: "kept" },
+    ]);
+  });
+
   it("limits a review Agent to reads contained by its materialized snapshot workspace", async () => {
     const runtime = harness();
     const port = createDshLocalAgentSessionPort(runtime.context, { sessionId: () => "sidecar-review" });
@@ -151,7 +194,7 @@ describe("DSH local Agent session adapter", () => {
 
     runtime.emit(sessionId, { seq: 1, type: "user/message", data: runtime.messages[0] });
     await port.cancel(sessionId);
-    runtime.emit(sessionId, { seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", text: "late" } } });
+    runtime.emitStream(sessionId, { type: "chunk", attemptId: `${sessionId}:1`, revision: 1, index: 0, time: 1, chunk: { type: "text-delta", text: "late" } });
 
     expect(runtime.cancellations).toEqual([{ cause: { kind: "user" }, keepInbox: false }]);
     expect(agent.whenIdle).toHaveBeenCalledOnce();

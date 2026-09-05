@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
 import { CollabError } from "./errors.js";
 import type { DshSessionService } from "./dsh-host.js";
 import type { AgentDeliveryResult, AgentOutputFrame } from "./types.js";
@@ -52,8 +53,8 @@ interface PendingDelivery {
   sessionId: string;
   started: boolean;
   finished: boolean;
-  text: string;
-  textStep?: string;
+  committedText: string;
+  attempt?: { id: string; text: string };
 }
 
 function userMessage(text: string): DshUserMessage {
@@ -115,9 +116,15 @@ function assistantOutput(events: readonly DshCordisSessionEvent[], baseline: num
 export function createDshCordisSessionService(input: {
   agents: DshCordisAgentRegistry;
   onSessionEvent?: (listener: DshCordisSessionEventListener) => () => void;
+  onAssistantStream?: (listener: (payload: DshAssistantStreamPayload<object>) => void) => () => void;
 }): DshSessionService {
   const pending = new Map<string, PendingDelivery>();
   const outputListeners = new Set<(frame: AgentOutputFrame) => void>();
+  const publish = (requestId: string, delivery: PendingDelivery, text: string): void => {
+    if (delivery.roomId === undefined) return;
+    const frame: AgentOutputFrame = { kind: "agent-output", roomId: delivery.roomId, requestId, text, streaming: true };
+    for (const listener of outputListeners) listener(frame);
+  };
   const unsubscribeSessionEvents = input.onSessionEvent?.((session, event) => {
     for (const [requestId, delivery] of pending) {
       if (delivery.sessionId !== session.id) continue;
@@ -127,18 +134,32 @@ export function createDshCordisSessionService(input: {
       }
       if (delivery.started && event.type === "turn/end") {
         delivery.finished = true;
+      }
+    }
+  });
+  const unsubscribeAssistantStream = input.onAssistantStream?.(({ agent, frame }) => {
+    for (const [requestId, delivery] of pending) {
+      if (delivery.agent !== agent || !delivery.started || delivery.finished) continue;
+      if (frame.type === "start") {
+        delivery.attempt = { id: frame.attemptId, text: "" };
         continue;
       }
-      if (!delivery.started || delivery.finished || event.type !== "assistant/chunk") continue;
-      const data = record(event.data);
-      const chunk = record(data?.chunk);
-      if (chunk?.type !== "text-delta" || typeof chunk.text !== "string" || delivery.roomId === undefined) continue;
-      const step = String(data?.turn) + ":" + String(data?.step);
-      if (delivery.text !== "" && delivery.textStep !== undefined && delivery.textStep !== step) delivery.text += "\n\n";
-      delivery.textStep = step;
-      delivery.text += chunk.text;
-      const frame: AgentOutputFrame = { kind: "agent-output", roomId: delivery.roomId, requestId, text: delivery.text, streaming: true };
-      for (const listener of outputListeners) listener(frame);
+      if (delivery.attempt?.id !== frame.attemptId) continue;
+      if (frame.type === "chunk") {
+        if (frame.chunk.type !== "text-delta" || typeof frame.chunk.text !== "string") continue;
+        delivery.attempt.text += frame.chunk.text;
+        const separator = delivery.committedText !== "" && delivery.attempt.text !== "" ? "\n\n" : "";
+        publish(requestId, delivery, delivery.committedText + separator + delivery.attempt.text);
+        continue;
+      }
+      if (frame.outcome.kind === "committed" && frame.outcome.eventType === "assistant/message") {
+        if (delivery.attempt.text !== "") {
+          delivery.committedText += (delivery.committedText === "" ? "" : "\n\n") + delivery.attempt.text;
+        }
+      } else if (delivery.attempt.text !== "") {
+        publish(requestId, delivery, delivery.committedText);
+      }
+      delivery.attempt = undefined;
     }
   });
   const deliver = async (mode: "followup" | "steer", delivery: { sessionId: string; roomId?: string; requestId: string; text: string; contextContent?: string[] }): Promise<void> => {
@@ -153,7 +174,7 @@ export function createDshCordisSessionService(input: {
       sessionId: delivery.sessionId,
       started: false,
       finished: false,
-      text: "",
+      committedText: "",
     });
     try {
       await agent[mode](message);
@@ -187,6 +208,7 @@ export function createDshCordisSessionService(input: {
     },
     dispose(): void {
       unsubscribeSessionEvents?.();
+      unsubscribeAssistantStream?.();
       outputListeners.clear();
       pending.clear();
     },

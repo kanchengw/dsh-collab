@@ -58,6 +58,8 @@ import { privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
+import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
+import type { DshCordisSessionEventListener } from "./dsh-cordis-agent.js";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskInput } from "./local-sidecar.js";
 import { LocalSideTaskFile } from "./local-sidecar-store.js";
@@ -192,7 +194,10 @@ function registerGatewayControl(
         },
         agents: { create: (input) => createLocalAgent.call(context.agents, input) },
         agentPresets: context.agentPresets,
-        on: (event, listener) => context.on!(event, listener),
+        on: ((event: "session/event" | "agent/assistant-stream", listener: unknown) => {
+          if (event === "session/event") return context.on!(event, listener as DshCordisSessionEventListener);
+          return context.on!(event, listener as (payload: DshAssistantStreamPayload<object>) => void);
+        }) as DshLocalAgentContext["on"],
       }), {
         snapshot: sideTaskPersistence?.loadSync(),
         workspace: new DshLocalSidecarWorkspace({

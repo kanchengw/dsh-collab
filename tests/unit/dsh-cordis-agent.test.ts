@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createDshCordisSessionService, type DshUserMessage } from "../../src/dsh-cordis-agent.js";
 
+type TestAssistantStreamFrame =
+  | { type: "start"; attemptId: string; revision: number; turn: number; step: number }
+  | { type: "chunk"; attemptId: string; revision: number; index: number; time: number; chunk: { type: string; text?: string } }
+  | { type: "end"; attemptId: string; revision: number; index: number; outcome: { kind: "committed"; eventType: "assistant/message" | "assistant/attempt"; seq: number } | { kind: "abandoned" } };
+
 describe("real DSH Cordis Agent bridge", () => {
   it("reads the immutable workspace path from the live DSH Session header", () => {
     const service = createDshCordisSessionService({
@@ -14,9 +19,10 @@ describe("real DSH Cordis Agent bridge", () => {
     expect(service.workspacePath?.("missing")).toBeUndefined();
   });
 
-  it("publishes accumulated text chunks for only the matching Collab request", async () => {
+  it("publishes committed-step text from only the matching Agent stream", async () => {
     const events: Array<{ seq: number; type: string; data: unknown }> = [];
     let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
+    let observeStream: ((payload: { agent: object; frame: TestAssistantStreamFrame }) => void) | undefined;
     const output: unknown[] = [];
     const agent = {
       session: { get events() { return events; } },
@@ -30,25 +36,62 @@ describe("real DSH Cordis Agent bridge", () => {
     const service = createDshCordisSessionService({
       agents: { get: () => agent },
       onSessionEvent: (listener) => { observe = listener; return () => { observe = undefined; }; },
+      onAssistantStream: (listener: typeof observeStream) => { observeStream = listener; return () => { observeStream = undefined; }; },
     });
     service.onAgentOutput?.((frame) => output.push(frame));
 
     await service.followup({ roomId: "room-1", requestId: "request-1", sessionId: "session-1", text: "reply" });
-    observe?.({ id: "other-session" }, { seq: 1, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "wrong" } } });
-    observe?.({ id: "session-1" }, { seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "reasoning-delta", index: 0, text: "hidden" } } });
-    observe?.({ id: "session-1" }, { seq: 3, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "Hello" } } });
-    observe?.({ id: "session-1" }, { seq: 4, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: " world" } } });
-    observe?.({ id: "session-1" }, { seq: 5, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
-    observe?.({ id: "session-1" }, { seq: 6, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: " private Host turn" } } });
+    observeStream?.({ agent: {}, frame: { type: "chunk", attemptId: "other:1", revision: 1, index: 0, time: 1, chunk: { type: "text-delta", text: "wrong" } } });
+    observeStream?.({ agent, frame: { type: "start", attemptId: "session-1:1", revision: 2, turn: 1, step: 1 } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:1", revision: 3, index: 0, time: 2, chunk: { type: "reasoning-delta", text: "hidden" } } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:1", revision: 4, index: 1, time: 3, chunk: { type: "text-delta", text: "Hello" } } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:1", revision: 5, index: 2, time: 4, chunk: { type: "text-delta", text: " world" } } });
+    observeStream?.({ agent, frame: { type: "end", attemptId: "session-1:1", revision: 6, index: 3, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } } });
+    observeStream?.({ agent, frame: { type: "start", attemptId: "session-1:2", revision: 7, turn: 1, step: 2 } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:2", revision: 8, index: 0, time: 5, chunk: { type: "text-delta", text: "Next" } } });
+    observe?.({ id: "session-1" }, { seq: 3, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:2", revision: 9, index: 1, time: 6, chunk: { type: "text-delta", text: " private Host turn" } } });
 
     expect(output).toEqual([
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello", streaming: true },
       { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello world", streaming: true },
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "Hello world\n\nNext", streaming: true },
+    ]);
+  });
+
+  it("rolls back failed attempt text before publishing retry output", async () => {
+    let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
+    let observeStream: ((payload: { agent: object; frame: TestAssistantStreamFrame }) => void) | undefined;
+    const output: unknown[] = [];
+    const agent = {
+      session: { events: [] },
+      followup(message: DshUserMessage) { observe?.({ id: "session-1" }, { seq: 0, type: "user/message", data: message }); },
+      steer() {}, cancel() {}, whenIdle: () => Promise.resolve(),
+    };
+    const service = createDshCordisSessionService({
+      agents: { get: () => agent },
+      onSessionEvent: (listener) => { observe = listener; return () => {}; },
+      onAssistantStream: (listener: typeof observeStream) => { observeStream = listener; return () => {}; },
+    });
+    service.onAgentOutput?.((frame) => output.push(frame));
+
+    await service.followup({ roomId: "room-1", requestId: "request-1", sessionId: "session-1", text: "reply" });
+    observeStream?.({ agent, frame: { type: "start", attemptId: "session-1:1", revision: 1, turn: 1, step: 1 } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:1", revision: 2, index: 0, time: 1, chunk: { type: "text-delta", text: "discarded" } } });
+    observeStream?.({ agent, frame: { type: "end", attemptId: "session-1:1", revision: 3, index: 1, outcome: { kind: "committed", eventType: "assistant/attempt", seq: 1 } } });
+    observeStream?.({ agent, frame: { type: "start", attemptId: "session-1:2", revision: 4, turn: 1, step: 1 } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:2", revision: 5, index: 0, time: 2, chunk: { type: "text-delta", text: "kept" } } });
+
+    expect(output).toEqual([
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "discarded", streaming: true },
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "", streaming: true },
+      { kind: "agent-output", roomId: "room-1", requestId: "request-1", text: "kept", streaming: true },
     ]);
   });
 
   it("forgets stream association when waiting for the Host Agent fails", async () => {
     let observe: ((session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) | undefined;
+    let observeStream: ((payload: { agent: object; frame: TestAssistantStreamFrame }) => void) | undefined;
     const output: unknown[] = [];
     const agent = {
       session: { events: [] },
@@ -58,12 +101,13 @@ describe("real DSH Cordis Agent bridge", () => {
     const service = createDshCordisSessionService({
       agents: { get: () => agent },
       onSessionEvent: (listener) => { observe = listener; return () => {}; },
+      onAssistantStream: (listener: typeof observeStream) => { observeStream = listener; return () => {}; },
     });
     service.onAgentOutput?.((frame) => output.push(frame));
 
     await service.followup({ roomId: "room-1", requestId: "request-1", sessionId: "session-1", text: "reply" });
     await expect(service.whenIdle?.({ requestId: "request-1", sessionId: "session-1" })).rejects.toThrow("Host stopped");
-    observe?.({ id: "session-1" }, { seq: 1, type: "assistant/chunk", data: { turn: 2, step: 1, chunk: { type: "text-delta", index: 0, text: "unrelated" } } });
+    observeStream?.({ agent, frame: { type: "chunk", attemptId: "session-1:1", revision: 1, index: 0, time: 1, chunk: { type: "text-delta", text: "unrelated" } } });
     expect(output).toEqual([]);
   });
 

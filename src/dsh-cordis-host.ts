@@ -1,4 +1,5 @@
 import { createDshCordisSessionService, type DshCordisAgentRegistry, type DshCordisSessionEventListener } from "./dsh-cordis-agent.js";
+import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
 import type { DshSessionService } from "./dsh-host.js";
 import { createDshCollabHostRuntime, type DshCollabHostRuntime, type DshCollabHostRuntimeOptions } from "./host-runtime.js";
 import { HostSnapshotFile, resolveDefaultCollabChangeSetDir, resolveDefaultCollabIntegrationJournalDir, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
@@ -15,6 +16,7 @@ export interface DshCordisHostContext {
   subprocess?: DshRepositorySubprocess;
   on?: {
     (event: "agent/created", listener: (payload: { agent: { id: string } }) => void): () => void;
+    (event: "agent/assistant-stream", listener: (payload: DshAssistantStreamPayload<object>) => void): () => void;
     (event: "session/event", listener: DshCordisSessionEventListener): () => void;
   };
 }
@@ -72,6 +74,7 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   const sessions: DshSessionService = createDshCordisSessionService({
     agents: context.agents,
     ...(context.on ? { onSessionEvent: (listener: DshCordisSessionEventListener) => context.on!("session/event", listener) } : {}),
+    ...(context.on ? { onAssistantStream: (listener: (payload: DshAssistantStreamPayload<object>) => void) => context.on!("agent/assistant-stream", listener) } : {}),
   });
   const persistence = config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile());
   const snapshot = persistence?.loadSync();

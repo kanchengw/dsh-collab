@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ModelSelection, ModelSelectionRef } from "@deepseek-ai/dsh-agent";
+import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
 
 export type LocalAgentFrame =
   | { kind: "output"; text: string }
@@ -59,6 +60,10 @@ export interface DshLocalAgentContext {
     event: "session/event",
     listener: (session: { id: string }, event: DshLocalAgentSessionEvent) => void,
   ): () => void;
+  on(
+    event: "agent/assistant-stream",
+    listener: (payload: DshAssistantStreamPayload<object>) => void,
+  ): () => void;
 }
 
 interface DshLocalAgentToolContext {
@@ -73,11 +78,13 @@ interface LocalSession {
   handle: DshLocalAgentHandle;
   listeners: Set<(frame: LocalAgentFrame) => void>;
   messageId: string;
+  committedOutput: string;
   output: string;
   removeEvents: () => void;
   started: boolean;
   terminal: boolean;
   terminalFrame?: Exclude<LocalAgentFrame, { kind: "output" }>;
+  attempt?: { id: string; text: string };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -155,26 +162,20 @@ export function createDshLocalAgentSessionPort(
         handle,
         listeners: new Set(),
         messageId: message.id,
+        committedOutput: "",
         output: "",
         removeEvents: () => {},
         started: false,
         terminal: false,
       };
       sessions.set(sessionId, session);
-      session.removeEvents = context.on("session/event", (subject, event) => {
+      const removeSessionEvents = context.on("session/event", (subject, event) => {
         if (subject.id !== sessionId || session.terminal) return;
         if (event.type === "user/message" && record(event.data)?.id === session.messageId) {
           session.started = true;
           return;
         }
         if (!session.started || !session.acceptingOutput) return;
-        if (event.type === "assistant/chunk") {
-          const chunk = record(record(event.data)?.chunk);
-          if (chunk?.type !== "text-delta" || typeof chunk.text !== "string") return;
-          session.output += chunk.text;
-          append(session, { kind: "output", text: session.output });
-          return;
-        }
         if (event.type !== "turn/end") return;
         session.terminal = true;
         const reason = record(record(event.data)?.reason);
@@ -182,6 +183,36 @@ export function createDshLocalAgentSessionPort(
         else if (reason?.kind === "error") append(session, { kind: "failed", error: localAgentError(reason) });
         else append(session, { kind: "completed", text: session.output });
       });
+      const removeAssistantStream = context.on("agent/assistant-stream", ({ agent, frame }) => {
+        if (agent !== session.handle.agent || !session.started || !session.acceptingOutput || session.terminal) return;
+        if (frame.type === "start") {
+          session.attempt = { id: frame.attemptId, text: "" };
+          return;
+        }
+        if (session.attempt?.id !== frame.attemptId) return;
+        if (frame.type === "chunk") {
+          if (frame.chunk.type !== "text-delta" || typeof frame.chunk.text !== "string") return;
+          session.attempt.text += frame.chunk.text;
+          const separator = session.committedOutput !== "" && session.attempt.text !== "" ? "\n\n" : "";
+          session.output = session.committedOutput + separator + session.attempt.text;
+          append(session, { kind: "output", text: session.output });
+          return;
+        }
+        if (frame.outcome.kind === "committed" && frame.outcome.eventType === "assistant/message") {
+          if (session.attempt.text !== "") {
+            session.committedOutput += (session.committedOutput === "" ? "" : "\n\n") + session.attempt.text;
+          }
+          session.output = session.committedOutput;
+        } else if (session.attempt.text !== "") {
+          session.output = session.committedOutput;
+          append(session, { kind: "output", text: session.output });
+        }
+        session.attempt = undefined;
+      });
+      session.removeEvents = () => {
+        removeSessionEvents();
+        removeAssistantStream();
+      };
       try {
         await handle.agent.followup(message);
         return { sessionId };

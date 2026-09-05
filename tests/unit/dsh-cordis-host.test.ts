@@ -148,6 +148,29 @@ describe("Cordis Host mount", () => {
     expect(await canConnect(port)).toBe(false);
   });
 
+  it("subscribes and unsubscribes the Host adapter to DSH session and assistant stream events", async () => {
+    const observed: string[] = [];
+    const removals = new Map<string, ReturnType<typeof vi.fn>>();
+    const context = {
+      agents: { get: () => undefined },
+      on(event: string, _listener: unknown) {
+        observed.push(event);
+        const remove = vi.fn();
+        removals.set(event, remove);
+        return remove;
+      },
+    };
+    const mounted = mountDshCollabCordisHost(context as Parameters<typeof mountDshCollabCordisHost>[0], {
+      roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host", port: 0, ...noPersistence,
+    });
+    await mounted?.ready;
+
+    expect(observed).toEqual(["session/event", "agent/assistant-stream"]);
+    await mounted?.dispose();
+    expect(removals.get("session/event")).toHaveBeenCalledOnce();
+    expect(removals.get("agent/assistant-stream")).toHaveBeenCalledOnce();
+  });
+
   it("composes the dormant ChangeSet Staging service only when real workspace dependencies are available", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-staging-composition-"));
     try {
@@ -499,12 +522,18 @@ describe("Cordis Host mount", () => {
     const gatewayPort = await freeTcpPort();
     const disposeEffects: Array<() => void | Promise<void>> = [];
     const sessionListeners = new Set<(session: { id: string }, event: { seq: number; type: string; data: unknown }) => void>();
+    const assistantStreamListeners = new Set<(payload: { agent: object; frame: object }) => void>();
     let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     let sidecarSessionId = "";
     let prompt = "";
     const disposed = vi.fn(async () => {});
     const emit = (event: { seq: number; type: string; data: unknown }): void => {
       for (const listener of sessionListeners) listener({ id: sidecarSessionId }, event);
+    };
+    let sidecarAgent: object | undefined;
+    const emitStream = (frame: object): void => {
+      if (!sidecarAgent) throw new Error("sidecar Agent was not created");
+      for (const listener of assistantStreamListeners) listener({ agent: sidecarAgent, frame });
     };
     let persisted: DshCollabPersistedSettings = {
       gateway: { gatewayHost: "127.0.0.1", gatewayPort, exposeMode: "loopback", advertisedEndpoint: "" },
@@ -515,24 +544,31 @@ describe("Cordis Host mount", () => {
         create: vi.fn(async (input: { sessionId: string; setup?: (agentContext: object) => Promise<void> | void }) => {
           sidecarSessionId = input.sessionId;
           await input.setup?.({ on: () => () => {} });
-          return {
-            agent: {
+          sidecarAgent = {
               followup(message: { id: string; content: [{ text: string }] }) {
                 prompt = message.content[0].text;
                 emit({ seq: 1, type: "user/message", data: message });
               },
               cancel: vi.fn(),
               whenIdle: vi.fn(async () => {}),
-            },
+          };
+          return {
+            agent: sidecarAgent,
             dispose: disposed,
           };
         }),
       },
       agentDefaultModel: { currentSelection: () => ({ provider: "local-provider", model: "local-model" }) },
       agentPresets: { mount: vi.fn(async () => {}) },
-      on: (_event: "session/event", listener: (session: { id: string }, event: { seq: number; type: string; data: unknown }) => void) => {
-        sessionListeners.add(listener);
-        return () => { sessionListeners.delete(listener); };
+      on: (event: string, listener: unknown) => {
+        if (event === "agent/assistant-stream") {
+          const streamListener = listener as (payload: { agent: object; frame: object }) => void;
+          assistantStreamListeners.add(streamListener);
+          return () => { assistantStreamListeners.delete(streamListener); };
+        }
+        const sessionListener = listener as (session: { id: string }, event: { seq: number; type: string; data: unknown }) => void;
+        sessionListeners.add(sessionListener);
+        return () => { sessionListeners.delete(sessionListener); };
       },
       effect: (factory: () => (() => void | Promise<void>) | void) => { const dispose = factory(); if (dispose) disposeEffects.push(dispose); return () => {}; },
       inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async (patch: object) => { persisted = { ...persisted, ...patch as Partial<DshCollabPersistedSettings> }; } }) } }),
@@ -553,7 +589,9 @@ describe("Cordis Host mount", () => {
     expect(context.agents.get).not.toHaveBeenCalled();
     expect(await canConnect(gatewayPort)).toBe(false);
 
-    emit({ seq: 2, type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "text-delta", text: "The stable key" } } });
+    emitStream({ type: "start", attemptId: `${sidecarSessionId}:1`, revision: 1, turn: 1, step: 1 });
+    emitStream({ type: "chunk", attemptId: `${sidecarSessionId}:1`, revision: 2, index: 0, time: 1, chunk: { type: "text-delta", text: "The stable key" } });
+    emitStream({ type: "end", attemptId: `${sidecarSessionId}:1`, revision: 3, index: 1, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } });
     emit({ seq: 3, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
     await vi.waitFor(() => { expect(disposed).toHaveBeenCalledOnce(); });
     await expect(control!("sidecar/get", { roomId: "room-remote" }, new AbortController().signal)).resolves.toMatchObject({
