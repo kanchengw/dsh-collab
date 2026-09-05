@@ -11,6 +11,10 @@ network` path; neither profile has a preassigned room role.
 ./e2e/start.ps1 -Client B
 ```
 
+The prepare script validates `apps/cli/package.json` before building or
+installing the plugin and rejects any DSH repository other than
+`0.1.3-alpha.1`.
+
 Run the start commands in separate terminals. Client A opens at
 `http://127.0.0.1:3082`; Client B opens at `http://127.0.0.1:3083`.
 

@@ -63,4 +63,13 @@ describe("isolated two-DSH browser environment", () => {
     expect(releasePatch).not.toMatch(/4312|4313|__PRIVATE_ADDRESS__/);
     expect(packageJson.files?.some((entry) => entry === "e2e" || entry.startsWith("e2e/"))).toBe(false);
   });
+
+  it("rejects a DSH repository that is not the supported runtime version", () => {
+    const prepare = read("e2e/prepare.ps1");
+
+    expect(prepare).toContain('$ExpectedDshVersion = "0.1.3-alpha.1"');
+    expect(prepare).toContain('Join-Path $DshRepo "apps/cli/package.json"');
+    expect(prepare).toContain("ConvertFrom-Json");
+    expect(prepare).toContain("DSH runtime version mismatch");
+  });
 });

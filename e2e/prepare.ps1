@@ -5,6 +5,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ExpectedDshVersion = "0.1.3-alpha.1"
+$dshManifestPath = Join-Path $DshRepo "apps/cli/package.json"
+if (-not (Test-Path $dshManifestPath)) {
+  throw "DSH CLI manifest not found: $dshManifestPath"
+}
+$dshManifest = Get-Content -Raw $dshManifestPath | ConvertFrom-Json
+if ($dshManifest.version -ne $ExpectedDshVersion) {
+  throw "DSH runtime version mismatch: expected $ExpectedDshVersion, found $($dshManifest.version)"
+}
 $previousDshHome = [Environment]::GetEnvironmentVariable("DSH_HOME", "Process")
 $clients = @(
   @{ Id = "client-a" },
