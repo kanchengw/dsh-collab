@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,6 +36,30 @@ function registrarFixture() {
 }
 
 describe("DshRoomProjectRegistrar", () => {
+  it("canonicalizes an existing workspace before calling the DSH registry", async () => {
+    const path = await workspace("canonical-target");
+    const alias = join(path, "..", "canonical-alias");
+    await symlink(path, alias, "junction");
+    directories.push(alias);
+    const { calls, registrar, store } = registrarFixture();
+
+    await registrar.register({ roomId: "room-canonical", memberId: "member-1", roomTitle: "Atlas", workspacePath: alias });
+
+    expect(calls[0]).toEqual(["create", { path }]);
+    expect(store.get("room-canonical")?.workspacePath).toBe(path);
+  });
+
+  it("fails before mutating Collab state when the workspace directory does not exist", async () => {
+    const missing = join(await workspace("missing-parent"), "not-created");
+    const { calls, registrar, store } = registrarFixture();
+
+    await expect(registrar.register({ roomId: "room-missing", memberId: "member-1", roomTitle: "Atlas", workspacePath: missing }))
+      .rejects.toThrow(/workspace|ENOENT/i);
+
+    expect(calls).toEqual([]);
+    expect(store.get("room-missing")).toBeUndefined();
+  });
+
   it("creates, names, and durably records the first native DSH project", async () => {
     const path = await workspace("first");
     const { calls, registrar, snapshots, store } = registrarFixture();

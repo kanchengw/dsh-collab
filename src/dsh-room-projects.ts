@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import {
   RoomProjectStore,
   type RegisterRoomProjectInput,
@@ -36,9 +37,10 @@ export class DshRoomProjectRegistrar {
   }
 
   private async registerNow(input: RegisterRoomProjectInput): Promise<RoomProject> {
+    const canonicalInput = { ...input, workspacePath: await realpath(input.workspacePath) };
     // Keep the live mapping untouched until both DSH and durable storage succeed.
     const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
-    let project = staged.register(input);
+    let project = staged.register(canonicalInput);
     const wasRegistered = project.nativeWorkspaceId !== undefined;
     if (!wasRegistered) {
       const workspace = await this.input.workspaces.create({ path: project.workspacePath });
@@ -47,7 +49,7 @@ export class DshRoomProjectRegistrar {
     }
     await this.input.persistence.save(staged.snapshot());
 
-    const committed = this.input.store.register(input);
+    const committed = this.input.store.register(canonicalInput);
     if (wasRegistered) return committed;
     if (!project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
     return this.input.store.setNativeWorkspaceId({ roomId: committed.roomId, nativeWorkspaceId: project.nativeWorkspaceId });
