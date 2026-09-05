@@ -96,13 +96,16 @@ export class DshRequestEventTracker {
       || !Array.isArray(inserted)) return;
 
     const list = this.inbox[target];
-    const removed = list.splice(start as number, removedCount as number, ...inserted.map((message) => String(record(message)?.id ?? "")));
-    if (inserted.some((message) => record(message)?.id === this.messageId)) this.state = "pending";
+    const insertedIds = inserted.map((message) => String(record(message)?.id ?? ""));
+    const removed = list.splice(start as number, removedCount as number, ...insertedIds);
+    const reinserted = insertedIds.includes(this.messageId);
+    if (reinserted) this.state = "pending";
     if (!removed.includes(this.messageId)) return;
+    if (reinserted) return;
     if (data?.outcome === "canceled") {
       this.terminalReason = { kind: "canceled" };
       this.state = "terminal";
-    } else if (this.state === "pending" && inserted.length === 0) {
+    } else if (this.state === "pending") {
       this.state = "claimed";
     }
   }
