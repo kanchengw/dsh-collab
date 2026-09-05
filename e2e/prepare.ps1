@@ -5,6 +5,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$projectManifestPath = Join-Path $projectRoot "package.json"
+$projectManifest = Get-Content -Raw $projectManifestPath | ConvertFrom-Json
+$expectedBetterSidebarRange = ">=0.17.1 <0.18.0"
+$actualBetterSidebarRange = [string]$projectManifest.peerDependencies."dsh-better-sidebar"
+if ($actualBetterSidebarRange -ne $expectedBetterSidebarRange) {
+  throw "Better Sidebar compatibility mismatch: expected $expectedBetterSidebarRange, found $actualBetterSidebarRange"
+}
+$dependencySections = @(
+  $projectManifest.dependencies,
+  $projectManifest.devDependencies,
+  $projectManifest.peerDependencies
+) | Where-Object { $_ -ne $null }
+$forbiddenAgentTeamPackageNames = @(
+  "@deepseek-ai/dsh-experimental-agent-team",
+  "@deepseek-ai/dsh-experimental-tool-agent-team",
+  "@deepseek-ai/dsh-experimental-client-ui-agent-team"
+)
+$agentTeamDependencies = @($dependencySections | ForEach-Object {
+  $_.PSObject.Properties.Name
+} | Where-Object {
+  $forbiddenAgentTeamPackageNames -contains $_
+})
+if ($agentTeamDependencies.Count -gt 0) {
+  throw "Experimental Agent Team dependencies are not supported: $($agentTeamDependencies -join ", ")"
+}
 $ExpectedDshVersion = "0.1.3-alpha.1"
 $dshManifestPath = Join-Path $DshRepo "apps/cli/package.json"
 if (-not (Test-Path $dshManifestPath)) {

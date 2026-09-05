@@ -15,6 +15,18 @@ The prepare script validates `apps/cli/package.json` before building or
 installing the plugin and rejects any DSH repository other than
 `0.1.3-alpha.1`.
 
+Compatibility baseline:
+
+| Component | Required baseline | Evidence |
+| --- | --- | --- |
+| DSH runtime | `0.1.3-alpha.1` | `apps/cli/package.json` preflight |
+| Better Sidebar | `>=0.17.1 <0.18.0` optional peer | Collab manifest and provider contract |
+| Agent Team | Not used by Collab | prepare-time dependency rejection |
+
+The profile must still provide a real compatible Better Sidebar at runtime for
+the Collab Bar. This repository does not claim that an external Sidebar
+checkout or installation has been verified by `prepare.ps1`.
+
 Run the start commands in separate terminals. Client A opens at
 `http://127.0.0.1:3082`; Client B opens at `http://127.0.0.1:3083`.
 

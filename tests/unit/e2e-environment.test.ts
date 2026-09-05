@@ -72,4 +72,14 @@ describe("isolated two-DSH browser environment", () => {
     expect(prepare).toContain("ConvertFrom-Json");
     expect(prepare).toContain("DSH runtime version mismatch");
   });
+
+  it("pins the verified sidebar contract and rejects experimental Agent Team dependencies", () => {
+    const prepare = read("e2e/prepare.ps1");
+
+    expect(prepare).toContain('peerDependencies."dsh-better-sidebar"');
+    expect(prepare).toContain('">=0.17.1 <0.18.0"');
+    expect(prepare).toContain("experimental-agent-team");
+    expect(prepare).toContain("experimental-tool-agent-team");
+    expect(prepare).toContain("experimental-client-ui-agent-team");
+  });
 });
