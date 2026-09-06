@@ -8,6 +8,7 @@ import {
   nextCollabBarTab,
   type CollabBarTab,
 } from "../../src/collab-bar.js";
+import type { CollabChangesPort } from "../../src/collab-changes.js";
 import { DshCollabDock, type DshCollabClientPort, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { zh, type CollabTranslate } from "../../src/locales.js";
 
@@ -46,7 +47,44 @@ function roomPort(value: DshCollabClientSnapshot): DshCollabClientPort {
   };
 }
 
+function changesPort(workspace: CollabChangesPort["getSnapshot"] extends () => infer T ? T : never): CollabChangesPort {
+  return {
+    getSnapshot: () => workspace,
+    subscribe: () => () => {},
+    refresh: vi.fn(async () => {}),
+    sync: vi.fn(async () => {}),
+    discardAndSync: vi.fn(async () => {}),
+    createDraft: vi.fn(async () => {}),
+    submitDraft: vi.fn(async () => {}),
+    selectChangeSet: vi.fn(async () => {}),
+  };
+}
+
 describe("Collab Bar", () => {
+  it("shows the Room Project version, local workspace state, and member summary", () => {
+    const html = renderToStaticMarkup(createElement(CollabBarView, {
+      scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },
+      selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "Release planning" },
+      roomSnapshot: snapshot(),
+      changesPort: changesPort({
+        roomId: "room-1",
+        role: "owner",
+        connection: "online",
+        workspace: { kind: "owner", latestVersionId: "version-1" },
+        staged: [],
+      }),
+      discussion: createElement(DshCollabDock, { port: roomPort(snapshot()), showHeader: false }),
+    }));
+
+    expect(html).toContain('data-collab-project="true"');
+    expect(html).toContain("Room Project");
+    expect(html).toContain("version-1");
+    expect(html).toContain("Owner workspace");
+    expect(html).toContain("2 members");
+    expect(html).toContain("Owner");
+    expect(html).toContain("Alice");
+  });
+
   it("composes room discussion and three panels without recreating a root room surface or native conversation", () => {
     const html = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },

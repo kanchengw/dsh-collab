@@ -99,6 +99,50 @@
   font: var(--dsw-font-xxs-12, 11px/18px var(--dsw-font-family));
 }
 
+.project {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxs-12, 12px/18px var(--dsw-font-family));
+}
+
+.projectHeading,
+.projectDetails {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.projectHeading strong,
+.projectHeading span,
+.projectDetails span,
+.projectMembers {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectHeading strong {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+}
+
+.projectHeading span { flex: none; }
+
+.projectDetails span:last-child { flex: none; }
+
+.projectMembers {
+  margin: 0;
+  color: var(--dsw-alias-label-quaternary, var(--dsw-alias-label-tertiary));
+}
+
 .tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -195,6 +239,7 @@
 @media (max-width: 48rem) {
   .bar { max-width: 100%; }
   .header { min-height: 50px; padding-inline: 10px; }
+  .project { padding-inline: 10px; }
   .tabs { padding-inline: 6px; }
   .tabs button { min-height: 34px; }
   .panel { overscroll-behavior: contain; }

@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import { CollabChanges, type CollabChangesPort } from "./collab-changes.js";
 import type { DshCollabRoomSelection } from "./collab-rooms.js";
 import { CollabReviews, type CollabReviewsPort } from "./collab-reviews.js";
@@ -16,6 +16,7 @@ export interface CollabBarRoomSnapshot {
   role: "host" | "participant";
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
+  members?: readonly { memberId: string; displayName: string }[];
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
 }
 
@@ -39,6 +40,37 @@ function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnap
     <span className={css.emptyMark} aria-hidden="true"><span /></span>
     <p>{props.children}</p>
   </div>;
+}
+
+function ProjectOverview(props: { changesPort?: CollabChangesPort; members: readonly { memberId: string; displayName: string }[]; t: CollabTranslate }): ReactNode {
+  const [changes, setChanges] = useState(() => props.changesPort?.getSnapshot());
+  useEffect(() => {
+    if (!props.changesPort) {
+      setChanges(undefined);
+      return;
+    }
+    const update = (): void => { setChanges(props.changesPort!.getSnapshot()); };
+    update();
+    return props.changesPort.subscribe(update);
+  }, [props.changesPort]);
+
+  const workspace = changes?.workspace;
+  const workspaceLabel = changes?.connection !== "online" ? props.t("project.workspaceOffline")
+    : workspace?.kind === "owner" ? props.t("project.workspaceOwner")
+      : workspace?.kind === "unavailable" ? props.t("project.workspaceUnavailable")
+        : workspace?.linked === false ? props.t("project.workspaceUnlinked")
+          : workspace?.dirtyPaths.length ? props.t("project.workspaceDirty")
+            : workspace ? props.t("project.workspaceReady") : props.t("project.workspacePending");
+  const memberNames = props.members.map((member) => member.displayName).join(" · ");
+
+  return <section className={css.project} data-collab-project="true" aria-label={props.t("project.title")}>
+    <div className={css.projectHeading}><strong>{props.t("project.title")}</strong><span>{props.t("project.version", { version: changes?.workspace.latestVersionId ?? props.t("project.versionPending") })}</span></div>
+    <div className={css.projectDetails}>
+      <span>{props.t("project.workspace", { state: workspaceLabel })}</span>
+      <span>{props.t("project.members", { count: props.members.length })}</span>
+    </div>
+    {memberNames ? <p className={css.projectMembers}>{memberNames}</p> : null}
+  </section>;
 }
 
 export function CollabBarView(props: {
@@ -93,6 +125,7 @@ export function CollabBarView(props: {
       </div>
       <span className={css.role}>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span>
     </header>
+    <ProjectOverview changesPort={props.changesPort} members={snapshot.members ?? []} t={t} />
     <nav className={css.tabs} role="tablist" aria-label={t("bar.navigation")}>
       {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
     </nav>
