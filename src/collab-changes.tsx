@@ -7,7 +7,7 @@ import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 export type CollabChangesWorkspaceSnapshot =
   | { kind: "owner"; latestVersionId?: string }
   | { kind: "unavailable"; latestVersionId?: string }
-  | { kind: "ready"; path: string; baseVersionId: string; latestVersionId?: string; dirtyPaths: readonly string[]; linked: boolean };
+  | { kind: "ready"; path: string; nativeWorkspaceId?: string; baseVersionId: string; latestVersionId?: string; dirtyPaths: readonly string[]; linked: boolean };
 
 export interface CollabChangesSnapshot {
   roomId: string;
@@ -43,6 +43,7 @@ export function validateCollabChangesSnapshot(snapshot: CollabChangesSnapshot): 
   if ((snapshot.role === "owner") !== (snapshot.workspace.kind === "owner")) throw new Error("Collab Changes workspace does not match its role");
   if (snapshot.workspace.kind === "ready"
     && (snapshot.workspace.path.trim() === "" || snapshot.workspace.baseVersionId.trim() === ""
+      || (snapshot.workspace.nativeWorkspaceId !== undefined && (typeof snapshot.workspace.nativeWorkspaceId !== "string" || snapshot.workspace.nativeWorkspaceId.trim() === ""))
       || typeof snapshot.workspace.linked !== "boolean"
       || !Array.isArray(snapshot.workspace.dirtyPaths) || snapshot.workspace.dirtyPaths.some((path) => typeof path !== "string" || path.trim() === ""))) {
     throw new Error("Collab Changes workspace is invalid");

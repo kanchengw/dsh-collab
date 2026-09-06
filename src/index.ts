@@ -55,8 +55,8 @@ export * from "./room-summary.js";
 
 import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
-import { privateGatewayEndpoint } from "./endpoint-policy.js";
-import { HostSnapshotFile, resolveDefaultCollabSideTaskFile, resolveDefaultCollabStateFile } from "./persistence.js";
+import { gatewayHttpUrl, normalizeGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
+import { HostSnapshotFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
@@ -73,6 +73,12 @@ import { DshWorkspaceControl } from "./dsh-workspace-control.js";
 import { DshCollabCredentialStore, type DshCredentialProvider } from "./dsh-credentials.js";
 import { RoomProjectFile, RoomProjectStore, resolveDefaultRoomProjectFile } from "./room-projects.js";
 import type { ParticipantResumeState } from "./dsh-browser-client.js";
+import { DshRoomProjectRegistrar } from "./dsh-room-projects.js";
+import { ParticipantRoomWorkspaceJoiner } from "./participant-room-join.js";
+import { RoomWorkspaceMaterializer } from "./room-workspace.js";
+import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
+import { WorkspaceVersionClient } from "./workspace-version-transport.js";
+import type { ParticipantGatewayTransport } from "./participant.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -102,8 +108,29 @@ export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agen
   easyTierTransport?: EasyTierTransportCoordinator;
   credentials?: DshCredentialProvider;
   workspaceRegistry?: {
-    create(path: string): Promise<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
+    create(input: { path: string }): Promise<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
+    rename?(workspaceId: string, title: string): Promise<unknown>;
     list(): Array<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
+  };
+}
+
+function participantGatewayTransport(endpoint: string): ParticipantGatewayTransport {
+  const base = gatewayHttpUrl(endpoint).replace(/\/$/, "");
+  return {
+    async request(input) {
+      const response = await fetch(`${base}${input.path}`, {
+        method: input.method,
+        headers: {
+          authorization: `Bearer ${input.token}`,
+          ...(input.capabilities?.length ? { "x-dsh-collab-capabilities": input.capabilities.join(",") } : {}),
+          ...(input.body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      const envelope = await response.json() as { data?: unknown; error?: unknown };
+      return { status: response.status, body: response.status >= 400 ? envelope.error : envelope.data };
+    },
   };
 }
 
@@ -221,6 +248,8 @@ function registerGatewayControl(
   const roomProjects = roomProjectSnapshot
     ? RoomProjectStore.fromSnapshot(roomProjectSnapshot)
     : new RoomProjectStore();
+  const roomWorkspaceArtifacts = new WorkspaceSnapshotStore(resolveDefaultCollabSnapshotDir());
+  const participantRoomProjectAvailable = roomProjectFile !== undefined && context.workspaceRegistry?.rename !== undefined;
   const roomProjectObserver = createDshRoomProjectSessionObserver({ context, projects: roomProjects });
   roomProjectObserver.start();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
@@ -368,6 +397,41 @@ function registerGatewayControl(
         return { ok: true, value: { deleted: true } };
       }
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
+      if (endpoint === "participant/room-project/join") {
+        if (!participantRoomProjectAvailable) throw new Error("Participant Room Project is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Participant Room Project request is invalid");
+        const input = payload as { roomId?: unknown; memberId?: unknown; roomTitle?: unknown; gatewayEndpoint?: unknown; roomToken?: unknown };
+        if ([input.roomId, input.memberId, input.roomTitle, input.gatewayEndpoint, input.roomToken].some((value) => typeof value !== "string" || value.trim() === "")) {
+          throw new Error("Participant Room Project request is invalid");
+        }
+        const gatewayEndpoint = normalizeGatewayEndpoint(input.gatewayEndpoint as string);
+        const joiner = new ParticipantRoomWorkspaceJoiner({
+          versions: new WorkspaceVersionClient({ transport: participantGatewayTransport(gatewayEndpoint), artifacts: roomWorkspaceArtifacts }),
+          materializer: new RoomWorkspaceMaterializer({ root: resolveDefaultCollabRoomWorkspaceDir(), artifacts: roomWorkspaceArtifacts }),
+          registrar: new DshRoomProjectRegistrar({
+            store: roomProjects,
+            persistence: roomProjectFile!,
+            workspaces: {
+              create: async (workspace) => ({ workspaceId: (await context.workspaceRegistry!.create(workspace)).id }),
+              rename: (workspaceId, title) => context.workspaceRegistry!.rename!(workspaceId, title),
+            },
+          }),
+        });
+        const result = await joiner.join({
+          roomId: (input.roomId as string).trim(),
+          memberId: (input.memberId as string).trim(),
+          roomTitle: (input.roomTitle as string).trim(),
+          token: input.roomToken as string,
+        });
+        if (!result.project.nativeWorkspaceId) throw new Error("Participant Room Project native Workspace is missing");
+        return { ok: true, value: {
+          roomId: result.project.roomId,
+          memberId: result.project.memberId,
+          roomTitle: result.project.roomTitle,
+          workspacePath: result.workspace.workspacePath,
+          nativeWorkspaceId: result.project.nativeWorkspaceId,
+        } };
+      }
       if (endpoint === "sidecar/start") {
         if (!sidecar) throw new Error("Local Sidecar Agent is unavailable");
         return { ok: true, value: { sideTask: await sidecar.startExplain(payload as StartExplainTaskInput) } };

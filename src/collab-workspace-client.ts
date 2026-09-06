@@ -23,6 +23,7 @@ interface WorkspaceProjection {
 export interface OpenParticipantRoomWorkspaceInput {
   roomId: string;
   path: string;
+  nativeWorkspaceId?: string;
   gatewayEndpoint: string;
   roomTitle: string;
   hostDisplayName: string;
@@ -245,6 +246,7 @@ class SessionWorkspacePorts {
       await this.input.openWorkspace({
         roomId: binding.roomId,
         path: workspace.path,
+        ...(workspace.nativeWorkspaceId ? { nativeWorkspaceId: workspace.nativeWorkspaceId } : {}),
         gatewayEndpoint: room.gatewayEndpoint,
         roomTitle: room.roomTitle,
         hostDisplayName: room.hostDisplayName,

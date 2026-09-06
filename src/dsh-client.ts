@@ -43,8 +43,8 @@ export function createDshParticipantWorkspaceOpener(input: {
   return async (room) => {
     const panelHost = input.panelHost();
     if (!panelHost) throw new Error("Collab Bar is unavailable");
-    const workspace = await input.workspaces.create({ path: room.path });
-    const sessionId = await input.workspaceNavigation.connectWorkspace(workspace.workspaceId);
+    const workspaceId = room.nativeWorkspaceId ?? (await input.workspaces.create({ path: room.path })).workspaceId;
+    const sessionId = await input.workspaceNavigation.connectWorkspace(workspaceId);
     input.sessions.open(sessionId);
     openDshCollabRoom({
       kind: "joined",
@@ -53,6 +53,73 @@ export function createDshParticipantWorkspaceOpener(input: {
       roomTitle: room.roomTitle,
       ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}),
     }, panelHost, { sessionId, cwd: room.path });
+  };
+}
+
+interface DshJoinedRoomOpenerSettings {
+  connectJoinedRoom(ref: JoinedRoomRef): Promise<void>;
+  getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
+  getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
+}
+
+interface DshJoinedRoomProjectRecord {
+  roomId: string;
+  memberId: string;
+  roomTitle: string;
+  workspacePath: string;
+  nativeWorkspaceId: string;
+}
+
+function joinedRoomProjectValue(value: unknown): DshJoinedRoomProjectRecord {
+  const envelope = value as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
+  if (!envelope || envelope.ok !== true || !envelope.value || typeof envelope.value !== "object" || Array.isArray(envelope.value)) {
+    throw new Error(typeof envelope?.error?.message === "string" ? envelope.error.message : "Participant Room Project join failed");
+  }
+  const project = envelope.value as Record<string, unknown>;
+  if ([project.roomId, project.memberId, project.roomTitle, project.workspacePath, project.nativeWorkspaceId]
+    .some((field) => typeof field !== "string" || field.trim() === "")) {
+    throw new Error("Participant Room Project response is invalid");
+  }
+  return {
+    roomId: project.roomId as string,
+    memberId: project.memberId as string,
+    roomTitle: project.roomTitle as string,
+    workspacePath: project.workspacePath as string,
+    nativeWorkspaceId: project.nativeWorkspaceId as string,
+  };
+}
+
+export function createDshJoinedRoomOpener(input: {
+  settings: DshJoinedRoomOpenerSettings;
+  rpc: DshClientConnectionRpc;
+  openWorkspace: (input: OpenParticipantRoomWorkspaceInput) => Promise<void>;
+}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string }) => Promise<void> {
+  return async (room) => {
+    const current = input.settings.getRoomSnapshot();
+    if (current.roomId !== room.roomId || current.role !== "participant" || current.connection !== "online") {
+      await input.settings.connectJoinedRoom({ gatewayEndpoint: room.gatewayEndpoint, roomId: room.roomId });
+    }
+    const connected = input.settings.getRoomSnapshot();
+    if (connected.roomId !== room.roomId || connected.role !== "participant" || connected.connection !== "online" || !connected.memberId || !connected.gatewayEndpoint) {
+      throw new Error("The selected Joined room is not connected");
+    }
+    const access = input.settings.getLocalSnapshotAccess(room.roomId);
+    const project = joinedRoomProjectValue(await input.rpc.call("/dsh-collab", "participant/room-project/join", {
+      roomId: room.roomId,
+      memberId: connected.memberId,
+      roomTitle: connected.roomTitle,
+      gatewayEndpoint: connected.gatewayEndpoint,
+      roomToken: access.roomToken,
+    }));
+    if (project.roomId !== room.roomId || project.memberId !== connected.memberId) throw new Error("Participant Room Project response does not match the selected room");
+    await input.openWorkspace({
+      roomId: project.roomId,
+      path: project.workspacePath,
+      nativeWorkspaceId: project.nativeWorkspaceId,
+      gatewayEndpoint: connected.gatewayEndpoint,
+      roomTitle: project.roomTitle,
+      hostDisplayName: connected.hostDisplayName,
+    });
   };
 }
 
@@ -1064,6 +1131,14 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     sessions,
     panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
   }) : undefined;
+  const openJoinedRoom = browserSettings && connection && openWorkspace
+    && browserSettings.connectJoinedRoom && browserSettings.getRoomSnapshot && browserSettings.getLocalSnapshotAccess
+    ? createDshJoinedRoomOpener({
+        settings: browserSettings as DshJoinedRoomOpenerSettings,
+        rpc: connection.rpc,
+        openWorkspace,
+      })
+    : undefined;
   const workspacePorts = browserClient && connection ? new DshCollabWorkspacePorts({
     rpc: connection.rpc,
     source: browserClient,
@@ -1088,6 +1163,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
     port: settings,
     panelHost: panelResolution,
+    ...(openJoinedRoom ? { openJoinedRoom } : {}),
     t: translationFor(props),
   })));
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, { port: settings, t: translationFor(props) })));

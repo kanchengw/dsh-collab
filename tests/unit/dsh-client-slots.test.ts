@@ -27,6 +27,46 @@ function memoryParticipantSecrets() {
 }
 
 describe("real DSH client slot adapter", () => {
+  it("reuses the registered native Room Workspace when the project already has an id", async () => {
+    const order: string[] = [];
+    const opener = createDshParticipantWorkspaceOpener({
+      workspaces: {
+        create: async () => {
+          order.push("create-workspace");
+          return { workspaceId: "unexpected" };
+        },
+      },
+      workspaceNavigation: {
+        connectWorkspace: async (workspaceId) => {
+          order.push(`connect-workspace:${workspaceId}`);
+          return "session-room";
+        },
+      },
+      sessions: {
+        open: () => { order.push("open-session"); },
+      },
+      panelHost: () => ({
+        register: () => () => {},
+        open: () => { order.push("open-collab-bar"); },
+      }),
+    });
+
+    await opener({
+      roomId: "room-1",
+      path: "C:\\rooms\\room-1\\workspace",
+      nativeWorkspaceId: "registered-room-workspace",
+      gatewayEndpoint: "ws://10.0.0.1:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+    });
+
+    expect(order).toEqual([
+      "connect-workspace:registered-room-workspace",
+      "open-session",
+      "open-collab-bar",
+    ]);
+  });
+
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
     expect(inject).toEqual(["slots", "settingsScope", "connection", "locale"]);

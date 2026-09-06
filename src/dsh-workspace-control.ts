@@ -364,6 +364,7 @@ export class DshWorkspaceControl {
           ? {
               kind: "ready",
               path: workspace.workspacePath,
+              ...(project.nativeWorkspaceId ? { nativeWorkspaceId: project.nativeWorkspaceId } : {}),
               baseVersionId: workspace.record.version.workspaceVersionId,
               ...(latestVersionId ? { latestVersionId } : {}),
               dirtyPaths: await findRoomWorkspaceChangedPaths(workspace),

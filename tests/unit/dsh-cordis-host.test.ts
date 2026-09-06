@@ -447,6 +447,31 @@ describe("Cordis Host mount", () => {
     expect(control).toBeDefined();
   });
 
+  it("fails closed when Participant Room Project joining lacks native Workspace persistence", async () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: { get: () => undefined },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async () => {} }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+
+    apply(context, { hostId: "host", hostDisplayName: "Host", ...noPersistence });
+
+    await expect(control!("participant/room-project/join", {
+      roomId: "room-1",
+      memberId: "member-1",
+      roomTitle: "Room",
+      gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+      roomToken: "token",
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false,
+      error: { message: "Participant Room Project is unavailable" },
+    });
+  });
+
   it("does not read an undeclared optional service through the Cordis context facade", () => {
     let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     const persisted: DshCollabPersistedSettings = {
