@@ -25,13 +25,14 @@ export interface DshCollabJoinedRoomOpenInput {
 }
 
 export type DshCollabJoinedRoomOpener = (room: DshCollabJoinedRoomOpenInput) => void | Promise<void>;
+export type DshCollabOwnedRoomCreator = (roomTitle: string) => boolean | Promise<boolean>;
 
 export function getDshCollabRoomSelection(sessionId?: string): DshCollabRoomSelection | undefined {
   return sessionId === undefined ? roomSelection : roomSelectionsBySession.get(sessionId);
 }
 
 export function openDshCollabRoom(selection: DshCollabRoomSelection, panelHost?: CollabPanelHost, target?: CollabPanelOpenTarget): void {
-  const destination = selection.kind === "owned" ? { sessionId: selection.hostSessionId } : target;
+  const destination = selection.kind === "owned" ? target ?? { sessionId: selection.hostSessionId } : target;
   const nextSelection = selection.kind === "joined" && destination
     ? { ...selection, localSessionId: destination.sessionId }
     : selection;
@@ -149,7 +150,7 @@ export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { w
   );
 }
 
-export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; panelHost?: BetterSidebarHostResolution; openJoinedRoom?: DshCollabJoinedRoomOpener; t?: CollabTranslate }): ReactNode {
+export function DshCollabRoomsPanel({ port, panelHost, createOwnedRoom, openJoinedRoom, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; panelHost?: BetterSidebarHostResolution; createOwnedRoom?: DshCollabOwnedRoomCreator; openJoinedRoom?: DshCollabJoinedRoomOpener; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
   const ownedRooms = useOwnedRooms(port);
   const joinedRooms = useJoinedRooms(port);
@@ -157,6 +158,7 @@ export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defau
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const [displayName, setDisplayName] = useState("");
+  const [ownedRoomTitle, setOwnedRoomTitle] = useState("");
   const [joinInvitation, setJoinInvitation] = useState("");
   const [hostInvitation, setHostInvitation] = useState<{ roomId: string; value: string }>();
   const [busy, setBusy] = useState<string>();
@@ -173,12 +175,12 @@ export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defau
 
   if (!open) return null;
 
-  const perform = async (key: string, action: () => void | Promise<void>, success?: string): Promise<void> => {
+  const perform = async (key: string, action: () => void | boolean | Promise<void | boolean>, success?: string): Promise<void> => {
     setBusy(key);
     setNotice(undefined);
     try {
-      await action();
-      if (success) setNotice({ tone: "success", message: success });
+      const completed = await action();
+      if (success && completed !== false) setNotice({ tone: "success", message: success });
     } catch (cause) {
       setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.actionError") });
     } finally {
@@ -188,6 +190,16 @@ export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defau
   const startSharing = async (room: DshCollabOwnedRoom): Promise<void> => {
     if (!port?.shareHostRoom) throw new Error(t("owned.unavailable"));
     await shareDshCollabOwnedRoom(port, { roomId: room.roomId, hostSessionId: room.hostSessionId, title: room.title });
+  };
+  const createOwnerRoom = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const title = ownedRoomTitle.trim();
+    if (!createOwnedRoom || title === "") return;
+    await perform("create-owned", async () => {
+      const created = await createOwnedRoom(title);
+      if (created) setOwnedRoomTitle("");
+      return created;
+    }, t("owned.createdNotice"));
   };
   const join = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -225,6 +237,10 @@ export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defau
           </div> : null}
           <section className={css.roomSection} aria-labelledby="owned-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="owned-rooms-title">{t("owned.title")}</h3><p>{t("owned.description")}</p></div><span className={css.count}>{ownedRooms.length}</span></div>
+            {createOwnedRoom ? <form className={css.ownedCreator} onSubmit={(event) => { void createOwnerRoom(event); }}>
+              <input name="ownedRoomTitle" value={ownedRoomTitle} aria-label={t("owned.createTitle")} placeholder={t("owned.createTitle")} onChange={(event) => { setOwnedRoomTitle(event.target.value); }} disabled={busy !== undefined} />
+              <button type="submit" className={css.primaryAction} disabled={busy !== undefined || ownedRoomTitle.trim() === ""}>{t(busy === "create-owned" ? "owned.creating" : "owned.createAction")}</button>
+            </form> : null}
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>
               <div className={css.roomHead}><div><strong>{room.title}</strong><span>{room.hostSessionId}</span></div><Status tone={room.sharing ? "active" : "neutral"}>{t(room.sharing ? "owned.sharing" : "owned.notSharing")}</Status></div>
               <div className={css.actions}>

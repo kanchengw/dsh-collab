@@ -15,7 +15,7 @@ import type { AgentQueueItem, RoomEvent } from "./types.js";
 import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
 import { CollabBarView } from "./collab-bar.js";
 import { projectCollabActivity, type CollabActivityItem } from "./collab-activity.js";
-import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelRenderScope } from "./collab-panel-host.js";
+import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelOpenTarget, type CollabPanelRenderScope } from "./collab-panel-host.js";
 import type { CollabChangesPort } from "./collab-changes.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
 import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
@@ -24,6 +24,7 @@ import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from 
 
 interface DshClientWorkspaces {
   create(input: { path: string }): Promise<{ workspaceId: string }>;
+  pickDirectory?(): Promise<string | null>;
 }
 
 interface DshClientWorkspaceNavigation {
@@ -53,6 +54,50 @@ export function createDshParticipantWorkspaceOpener(input: {
       roomTitle: room.roomTitle,
       ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}),
     }, panelHost, { sessionId, cwd: room.path });
+  };
+}
+
+export function createDshOwnedRoomCreator(input: {
+  rpc: DshClientConnectionRpc;
+  workspaces: DshClientWorkspaces & { pickDirectory(): Promise<string | null> };
+  workspaceNavigation: DshClientWorkspaceNavigation;
+  sessions: DshClientSessions;
+  panelHost(): CollabPanelHost | undefined;
+  getActiveTarget(): CollabPanelOpenTarget | undefined;
+  refreshOwnedRooms?(): Promise<unknown>;
+}): (roomTitle: string) => Promise<boolean> {
+  return async (roomTitle) => {
+    const title = roomTitle.trim();
+    if (title === "") throw new Error("Room title must not be blank");
+    const source = input.getActiveTarget();
+    if (!source?.cwd) throw new Error("Open a DSH workspace Session before creating a Collab Workspace");
+    const panelHost = input.panelHost();
+    if (!panelHost) throw new Error("Collab Bar is unavailable");
+    const sourcePath = await input.workspaces.pickDirectory();
+    if (sourcePath === null) return false;
+    const prepared = controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/prepare", {
+      sourcePath,
+      sourceSessionId: source.sessionId,
+      roomTitle: title,
+    }), "Owner Room Project preparation failed");
+    if (typeof prepared.roomId !== "string" || typeof prepared.workspacePath !== "string" || typeof prepared.nativeWorkspaceId !== "string") {
+      throw new Error("Invalid Owner Room Project response");
+    }
+    const hostPrimarySessionId = await input.workspaceNavigation.connectWorkspace(prepared.nativeWorkspaceId);
+    input.sessions.open(hostPrimarySessionId);
+    controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/complete", {
+      roomId: prepared.roomId,
+      sourceSessionId: source.sessionId,
+      hostPrimarySessionId,
+    }), "Owner Room Project completion failed");
+    openDshCollabRoom({
+      kind: "owned",
+      roomId: prepared.roomId,
+      hostSessionId: hostPrimarySessionId,
+      roomTitle: title,
+    }, panelHost, { sessionId: hostPrimarySessionId, cwd: prepared.workspacePath });
+    await input.refreshOwnedRooms?.();
+    return true;
   };
 }
 
@@ -1125,6 +1170,17 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   const sessions = optionalService<DshClientSessions>(context, "sessions");
   let panelResolution = resolveBetterSidebarHost(undefined);
+  const createOwnedRoom = connection && workspaces && typeof workspaces.pickDirectory === "function" && workspaceNavigation && sessions
+    ? createDshOwnedRoomCreator({
+        rpc: connection.rpc,
+        workspaces: workspaces as DshClientWorkspaces & { pickDirectory(): Promise<string | null> },
+        workspaceNavigation,
+        sessions,
+        panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
+        getActiveTarget: () => panelResolution.kind === "ready" ? panelResolution.getActiveTarget() : undefined,
+        ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
+      })
+    : undefined;
   const openWorkspace = workspaces && workspaceNavigation && sessions ? createDshParticipantWorkspaceOpener({
     workspaces,
     workspaceNavigation,
@@ -1163,6 +1219,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
     port: settings,
     panelHost: panelResolution,
+    ...(createOwnedRoom ? { createOwnedRoom } : {}),
     ...(openJoinedRoom ? { openJoinedRoom } : {}),
     t: translationFor(props),
   })));

@@ -18,13 +18,33 @@ export class OwnerRoomWorkspaceBootstrapper {
   constructor(private readonly options: {
     materializer: RoomWorkspaceMaterializer;
     registrar: DshRoomProjectRegistrar;
-    workspaceNavigation: DshRoomProjectNavigationService;
+    workspaceNavigation?: DshRoomProjectNavigationService;
   }) {}
 
   async create(input: {
     roomId: string;
     memberId: string;
     roomTitle: string;
+    initialVersion: WorkspaceVersionRecord;
+  }): Promise<OwnerRoomWorkspaceBootstrapResult> {
+    if (!this.options.workspaceNavigation) throw new Error("DSH Workspace navigation is unavailable");
+    const prepared = await this.prepare(input);
+    if (prepared.project.hostPrimarySessionId) return prepared;
+    if (!prepared.project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
+
+    const sessionId = await this.options.workspaceNavigation.connectWorkspace(prepared.project.nativeWorkspaceId);
+    this.options.workspaceNavigation.sessions.open(sessionId);
+    return {
+      project: await this.complete({ roomId: prepared.project.roomId, sessionId }),
+      workspace: prepared.workspace,
+    };
+  }
+
+  async prepare(input: {
+    roomId: string;
+    memberId: string;
+    roomTitle: string;
+    nativeWorkspaceTitle?: string;
     initialVersion: WorkspaceVersionRecord;
   }): Promise<OwnerRoomWorkspaceBootstrapResult> {
     const roomId = typeof input.roomId === "string" ? input.roomId.trim() : "";
@@ -37,16 +57,13 @@ export class OwnerRoomWorkspaceBootstrapper {
       roomId,
       memberId: input.memberId,
       roomTitle: input.roomTitle,
+      ...(input.nativeWorkspaceTitle ? { nativeWorkspaceTitle: input.nativeWorkspaceTitle } : {}),
       workspacePath: workspace.workspacePath,
     });
-    if (project.hostPrimarySessionId) return { project, workspace };
-    if (!project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
+    return { project, workspace };
+  }
 
-    const sessionId = await this.options.workspaceNavigation.connectWorkspace(project.nativeWorkspaceId);
-    this.options.workspaceNavigation.sessions.open(sessionId);
-    return {
-      project: await this.options.registrar.recordHostPrimarySession({ roomId, sessionId }),
-      workspace,
-    };
+  complete(input: { roomId: string; sessionId: string }): Promise<RoomProject> {
+    return this.options.registrar.recordHostPrimarySession(input);
   }
 }

@@ -79,6 +79,8 @@ import { RoomWorkspaceMaterializer } from "./room-workspace.js";
 import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import { WorkspaceVersionClient } from "./workspace-version-transport.js";
 import type { ParticipantGatewayTransport } from "./participant.js";
+import { OwnerRoomProjectService } from "./owner-room-project.js";
+import { OwnerRoomWorkspaceBootstrapper } from "./owner-room-bootstrap.js";
 
 interface DshSettingsRegistrationContext {
   settings: {
@@ -248,7 +250,35 @@ function registerGatewayControl(
     ? RoomProjectStore.fromSnapshot(roomProjectSnapshot)
     : new RoomProjectStore();
   const roomWorkspaceArtifacts = new WorkspaceSnapshotStore(resolveDefaultCollabSnapshotDir());
-  const participantRoomProjectAvailable = roomProjectFile !== undefined && context.workspaceRegistry?.create !== undefined;
+  const roomProjectRegistrar = roomProjectFile && context.workspaceRegistry?.create
+    ? new DshRoomProjectRegistrar({
+        store: roomProjects,
+        persistence: roomProjectFile,
+        workspaces: {
+          create: async (path, title) => ({ workspaceId: (await context.workspaceRegistry!.create(path, title)).id }),
+        },
+      })
+    : undefined;
+  const ownerRoomProject = (): OwnerRoomProjectService | undefined => {
+    const current = mounted;
+    if (!current?.workspaceSnapshots || !current.runtime.workspaceVersions || !roomProjectRegistrar) return undefined;
+    return new OwnerRoomProjectService({
+      hostId: config.hostId!,
+      hostDisplayName: config.hostDisplayName!,
+      sessions: { workspacePath: (sessionId) => context.agents.get(sessionId)?.session?.header?.cwd },
+      rooms: current.runtime.rooms,
+      roomProjects,
+      ledger: current.runtime.ledger,
+      workspace: current.runtime.workspace,
+      workspaceVersions: current.runtime.workspaceVersions,
+      bootstrap: new OwnerRoomWorkspaceBootstrapper({
+        materializer: new RoomWorkspaceMaterializer({ root: resolveDefaultCollabRoomWorkspaceDir(), artifacts: roomWorkspaceArtifacts }),
+        registrar: roomProjectRegistrar,
+      }),
+      commitCriticalState: () => current.runtime.commitCriticalState(),
+    });
+  };
+  const participantRoomProjectAvailable = roomProjectRegistrar !== undefined;
   const roomProjectObserver = createDshRoomProjectSessionObserver({ context, projects: roomProjects });
   roomProjectObserver.start();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
@@ -307,7 +337,10 @@ function registerGatewayControl(
   const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean }> => {
     const rooms = mounted?.runtime.rooms.snapshot()
       ?? (config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile()).loadSync()?.rooms);
-    return (rooms?.rooms ?? []).map(({ room }) => ({
+    return (rooms?.rooms ?? []).filter(({ room }) => {
+      const project = roomProjects.get(room.roomId);
+      return !project || project.hostPrimarySessionId === room.hostSessionId;
+    }).map(({ room }) => ({
       roomId: room.roomId,
       hostSessionId: room.hostSessionId,
       title: room.title,
@@ -396,6 +429,15 @@ function registerGatewayControl(
         return { ok: true, value: { deleted: true } };
       }
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
+      if (endpoint === "owner/room-project/prepare" || endpoint === "owner/room-project/complete") {
+        const service = ownerRoomProject();
+        if (!service) throw new Error("Owner Room Project is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Owner Room Project request is invalid");
+        const value = endpoint.endsWith("/prepare")
+          ? await service.prepare(payload as { sourcePath: string; sourceSessionId: string; roomTitle: string })
+          : await service.complete(payload as { roomId: string; sourceSessionId: string; hostPrimarySessionId: string });
+        return { ok: true, value };
+      }
       if (endpoint === "participant/room-project/join") {
         if (!participantRoomProjectAvailable) throw new Error("Participant Room Project is unavailable");
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Participant Room Project request is invalid");
@@ -407,13 +449,7 @@ function registerGatewayControl(
         const joiner = new ParticipantRoomWorkspaceJoiner({
           versions: new WorkspaceVersionClient({ transport: participantGatewayTransport(gatewayEndpoint), artifacts: roomWorkspaceArtifacts }),
           materializer: new RoomWorkspaceMaterializer({ root: resolveDefaultCollabRoomWorkspaceDir(), artifacts: roomWorkspaceArtifacts }),
-          registrar: new DshRoomProjectRegistrar({
-            store: roomProjects,
-            persistence: roomProjectFile!,
-            workspaces: {
-              create: async (path, title) => ({ workspaceId: (await context.workspaceRegistry!.create(path, title)).id }),
-            },
-          }),
+          registrar: roomProjectRegistrar!,
         });
         const result = await joiner.join({
           roomId: (input.roomId as string).trim(),

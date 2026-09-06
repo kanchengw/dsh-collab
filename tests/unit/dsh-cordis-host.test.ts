@@ -8,7 +8,7 @@ import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost } from ".
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, EasyTierTransportCoordinator, HostSnapshotFile, type DshCollabPersistedSettings, type EasyTierRuntimeStatus } from "../../src/index.js";
 import { RoomStore } from "../../src/room.js";
-import { RoomProjectStore } from "../../src/room-projects.js";
+import { RoomProjectFile, RoomProjectStore, resolveDefaultRoomProjectFile } from "../../src/room-projects.js";
 import { localDshSubprocess } from "../helpers/local-dsh-subprocess.js";
 
 async function freeTcpPort(): Promise<number> {
@@ -472,6 +472,28 @@ describe("Cordis Host mount", () => {
     });
   });
 
+  it("exposes explicit Owner Room Project routes and fails closed when their runtime is unavailable", async () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: { get: () => undefined },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async () => {} }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>, options: unknown) => { control = handler; expect(options).toEqual({ authority: "loopback" }); return async () => {}; }) } },
+    };
+    apply(context, { hostId: "host", hostDisplayName: "Host", ...noPersistence });
+
+    await expect(control!("owner/room-project/prepare", {}, new AbortController().signal)).resolves.toEqual({
+      ok: false,
+      error: { code: "internal", message: "Owner Room Project is unavailable", details: {} },
+    });
+    await expect(control!("owner/room-project/complete", {}, new AbortController().signal)).resolves.toEqual({
+      ok: false,
+      error: { code: "internal", message: "Owner Room Project is unavailable", details: {} },
+    });
+  });
+
   it("does not read an undeclared optional service through the Cordis context facade", () => {
     let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     const persisted: DshCollabPersistedSettings = {
@@ -707,6 +729,44 @@ describe("Cordis Host mount", () => {
         value: { rooms: [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: false }] },
       });
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not list a prepared Owner Room Project before its Host Primary Session is complete", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dsh-collab-prepared-owner-room-"));
+    const stateFile = join(dir, "state.json");
+    const previousDshHome = process.env.DSH_HOME;
+    process.env.DSH_HOME = dir;
+    const rooms = new RoomStore();
+    rooms.createRoom({ roomId: "room-prepared", hostId: "host", hostSessionId: "source-session", title: "Atlas", hostDisplayName: "Host", now: 1 });
+    await new HostSnapshotFile(stateFile).save({
+      version: 1,
+      rooms: rooms.snapshot(),
+      ledger: { version: 1, rooms: [] },
+      dispatcher: { version: 1, records: [], queue: [], nextQueueSeq: 1 },
+    });
+    const projects = new RoomProjectStore();
+    projects.register({ roomId: "room-prepared", memberId: "member-host", roomTitle: "Atlas", workspacePath: dir });
+    projects.setNativeWorkspaceId({ roomId: "room-prepared", nativeWorkspaceId: "workspace-prepared" });
+    await new RoomProjectFile(resolveDefaultRoomProjectFile()).save(projects.snapshot());
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const context = {
+      agents: { get: () => undefined },
+      effect: () => () => {},
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({
+        get: () => ({ gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" } }),
+        update: async () => {},
+      }) } }),
+      connection: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+    };
+
+    try {
+      apply(context, { hostId: "host", hostDisplayName: "Host", stateFile });
+      expect(await control!("rooms/list", {}, new AbortController().signal)).toEqual({ ok: true, value: { rooms: [] } });
+    } finally {
+      if (previousDshHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previousDshHome;
       await rm(dir, { recursive: true, force: true });
     }
   });

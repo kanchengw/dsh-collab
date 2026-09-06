@@ -14,6 +14,10 @@ export interface RoomProjectPersistence {
   save(snapshot: RoomProjectSnapshot): Promise<void>;
 }
 
+export interface DshRoomProjectRegistrationInput extends RegisterRoomProjectInput {
+  nativeWorkspaceTitle?: string;
+}
+
 export class DshRoomProjectRegistrar {
   private queue = Promise.resolve();
 
@@ -23,7 +27,7 @@ export class DshRoomProjectRegistrar {
     workspaces: DshRoomProjectWorkspaceService;
   }) {}
 
-  register(input: RegisterRoomProjectInput): Promise<RoomProject> {
+  register(input: DshRoomProjectRegistrationInput): Promise<RoomProject> {
     const operation = this.queue.then(() => this.registerNow(input));
     this.queue = operation.then(() => undefined, () => undefined);
     return operation;
@@ -35,14 +39,15 @@ export class DshRoomProjectRegistrar {
     return operation;
   }
 
-  private async registerNow(input: RegisterRoomProjectInput): Promise<RoomProject> {
+  private async registerNow(input: DshRoomProjectRegistrationInput): Promise<RoomProject> {
     const canonicalInput = { ...input, workspacePath: await realpath(input.workspacePath) };
     // Keep the live mapping untouched until both DSH and durable storage succeed.
     const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
     let project = staged.register(canonicalInput);
     const wasRegistered = project.nativeWorkspaceId !== undefined;
     if (!wasRegistered) {
-      const workspace = await this.input.workspaces.create(project.workspacePath, project.roomTitle);
+      const nativeWorkspaceTitle = input.nativeWorkspaceTitle?.trim() || project.roomTitle;
+      const workspace = await this.input.workspaces.create(project.workspacePath, nativeWorkspaceTitle);
       project = staged.setNativeWorkspaceId({ roomId: project.roomId, nativeWorkspaceId: workspace.workspaceId });
     }
     await this.input.persistence.save(staged.snapshot());

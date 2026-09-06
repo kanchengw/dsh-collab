@@ -67,6 +67,18 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Participating rooms");
   });
 
+  it("offers Collab Workspace creation in the Owned rooms section", () => {
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
+      port: port(),
+      createOwnedRoom: vi.fn(),
+    }));
+    setDshCollabRoomsOpen(false);
+
+    expect(html).toContain('name="ownedRoomTitle"');
+    expect(html).toContain("Create Collab workspace");
+  });
+
   it("does not bind a Joined room to the active unrelated Session", () => {
     setDshCollabRoomsOpen(true);
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {

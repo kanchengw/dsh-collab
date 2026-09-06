@@ -110,6 +110,55 @@ async function bootstrapFixture(input: {
 }
 
 describe("OwnerRoomWorkspaceBootstrapper", () => {
+  it("supports server-side prepare and complete without browser navigation", async () => {
+    const initial = await initialVersionFixture();
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-owner-workspace-server-"));
+    roots.push(root);
+    const store = new RoomProjectStore();
+    const bootstrap = new OwnerRoomWorkspaceBootstrapper({
+      materializer: new RoomWorkspaceMaterializer({ root, artifacts: initial.artifacts }),
+      registrar: new DshRoomProjectRegistrar({
+        store,
+        persistence: { save: async () => {} },
+        workspaces: { create: async () => ({ workspaceId: "dsh-workspace-atlas" }) },
+      }),
+    });
+
+    const prepared = await bootstrap.prepare({
+      roomId: "room-atlas",
+      memberId: "owner-member",
+      roomTitle: "Atlas",
+      initialVersion: initial.record,
+    });
+    await bootstrap.complete({ roomId: "room-atlas", sessionId: "host-primary-session" });
+
+    expect(prepared.project.nativeWorkspaceId).toBe("dsh-workspace-atlas");
+    expect(store.get("room-atlas")?.hostPrimarySessionId).toBe("host-primary-session");
+  });
+
+  it("rejects the legacy one-step create before side effects when browser navigation is unavailable", async () => {
+    const initial = await initialVersionFixture();
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-owner-workspace-no-navigation-"));
+    roots.push(root);
+    const store = new RoomProjectStore();
+    const bootstrap = new OwnerRoomWorkspaceBootstrapper({
+      materializer: new RoomWorkspaceMaterializer({ root, artifacts: initial.artifacts }),
+      registrar: new DshRoomProjectRegistrar({
+        store,
+        persistence: { save: async () => {} },
+        workspaces: { create: async () => ({ workspaceId: "dsh-workspace-atlas" }) },
+      }),
+    });
+
+    await expect(bootstrap.create({
+      roomId: "room-atlas",
+      memberId: "owner-member",
+      roomTitle: "Atlas",
+      initialVersion: initial.record,
+    })).rejects.toThrow(/navigation/i);
+    expect(store.list()).toEqual([]);
+  });
+
   it("materializes an immutable source version before registering a native project and fresh Host Primary Session", async () => {
     const initial = await initialVersionFixture();
     const calls: string[] = [];

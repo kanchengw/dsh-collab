@@ -75,6 +75,22 @@ describe("DshRoomProjectRegistrar", () => {
     expect(snapshots).toEqual([store.snapshot()]);
   });
 
+  it("uses a dedicated native Workspace title without changing the Room title", async () => {
+    const path = await workspace("native-title");
+    const { calls, registrar, store } = registrarFixture();
+
+    await registrar.register({
+      roomId: "room-1",
+      memberId: "member-1",
+      roomTitle: "Atlas",
+      workspacePath: path,
+      nativeWorkspaceTitle: "source-root \u00b7 Atlas",
+    });
+
+    expect(calls).toEqual([["create", path, "source-root \u00b7 Atlas"]]);
+    expect(store.get("room-1")?.roomTitle).toBe("Atlas");
+  });
+
   it("reuses a registered native DSH project without overwriting a user rename", async () => {
     const path = await workspace("reuse");
     const { calls, registrar, snapshots, store } = registrarFixture();

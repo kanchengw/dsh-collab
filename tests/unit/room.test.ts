@@ -118,4 +118,37 @@ describe("RoomStore", () => {
       roomId: "session-1", hostId: "other", hostSessionId: "session-2", title: "Hijack", hostDisplayName: "Other",
     })).toThrow(/host|session|forbidden/i);
   });
+
+  it("rebinds only the current Host source Session and is idempotent for the target Session", () => {
+    const rooms = new RoomStore();
+    rooms.createRoom({
+      roomId: "room-1", hostId: "host", hostSessionId: "source-session", title: "Release", hostDisplayName: "Host",
+    });
+
+    expect(rooms.rebindHostSession({
+      roomId: "room-1",
+      hostId: "host",
+      fromSessionId: "source-session",
+      toSessionId: "host-primary-session",
+    })).toMatchObject({ hostSessionId: "host-primary-session", revision: 2 });
+    expect(rooms.rebindHostSession({
+      roomId: "room-1",
+      hostId: "host",
+      fromSessionId: "source-session",
+      toSessionId: "host-primary-session",
+    })).toMatchObject({ hostSessionId: "host-primary-session", revision: 2 });
+
+    expect(() => rooms.rebindHostSession({
+      roomId: "room-1",
+      hostId: "other",
+      fromSessionId: "host-primary-session",
+      toSessionId: "attacker-session",
+    })).toThrow(/host|forbidden/i);
+    expect(() => rooms.rebindHostSession({
+      roomId: "room-1",
+      hostId: "host",
+      fromSessionId: "stale-session",
+      toSessionId: "other-session",
+    })).toThrow(/session|conflict/i);
+  });
 });

@@ -383,6 +383,39 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
+  it("provides the Host Room Project creator to the registered Rooms overlay", () => {
+    let overlay: ((props: Record<string, unknown>) => unknown) | undefined;
+    const betterSidebar = {
+      version: "0.17.1",
+      features: ["targetedOpen"],
+      registerTab: vi.fn(() => () => {}),
+      openTab: vi.fn(),
+      getSnapshot: () => ({ sessionId: "source-session", cwd: "C:\\work\\atlas" }),
+    };
+    const context = {
+      slots: {
+        inject: vi.fn((_name: string, register: () => unknown) => register()),
+        register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
+          if (options.name === "shell.overlay") overlay = component;
+          return () => {};
+        }),
+      },
+      get: vi.fn((name: string) => {
+        if (name === "betterSidebar") return betterSidebar;
+        if (name === "connection") return { rpc: { call: vi.fn() } };
+        if (name === "workspaces") return { create: vi.fn(), pickDirectory: vi.fn() };
+        if (name === "uiWorkspace") return { connectWorkspace: vi.fn() };
+        if (name === "sessions") return { open: vi.fn() };
+        return undefined;
+      }),
+    };
+
+    applyDshCollabClient(context as unknown as DshCollabClientContext);
+
+    const element = overlay?.({}) as React.ReactElement<{ createOwnedRoom?: unknown }> | undefined;
+    expect(element?.props.createOwnedRoom).toEqual(expect.any(Function));
+  });
+
   it("prepares an EasyTier Owner invitation through loopback RPC while preserving the Gateway invite token", async () => {
     const network = {
       mode: "easytier" as const, version: 1 as const, networkName: "room-1", networkSecret: "network-secret",

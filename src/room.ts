@@ -88,6 +88,31 @@ export class RoomStore {
     return copy(this.record(roomId).room);
   }
 
+  rebindHostSession(input: {
+    roomId: string;
+    hostId: string;
+    fromSessionId: string;
+    toSessionId: string;
+  }): Room {
+    const record = this.record(input.roomId);
+    const hostId = requiredText(input.hostId, "hostId");
+    const fromSessionId = requiredText(input.fromSessionId, "fromSessionId");
+    const toSessionId = requiredText(input.toSessionId, "toSessionId");
+    if (record.room.hostId !== hostId) {
+      throw new CollabError("ACTION_FORBIDDEN", "only the room Host can rebind its Session", { roomId: record.room.roomId });
+    }
+    if (record.room.hostSessionId === toSessionId) return copy(record.room);
+    if (record.room.hostSessionId !== fromSessionId) {
+      throw new CollabError("REQUEST_CONFLICT", "room is no longer bound to the expected Host Session", {
+        roomId: record.room.roomId,
+      });
+    }
+    record.room.hostSessionId = toSessionId;
+    record.room.revision += 1;
+    this.emit();
+    return copy(record.room);
+  }
+
   snapshot(): RoomStoreSnapshot {
     return {
       version: 1,

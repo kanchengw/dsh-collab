@@ -332,6 +332,30 @@
   gap: 8px;
 }
 
+.ownedCreator {
+  display: flex;
+  gap: 8px;
+}
+
+.ownedCreator input {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 34px;
+  flex: 1;
+  padding: 0 9px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ownedCreator input:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
 .joinDisclosure {
   border-bottom: 0;
   border-top: 1px solid var(--dsw-alias-border-l1);
