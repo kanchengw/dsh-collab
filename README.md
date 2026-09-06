@@ -4,11 +4,11 @@
 
 ## What is ready
 
-Current development status (2026-09-05): CRP-U01 through U07 are complete;
-U08 through U13 remain pending. The Room Project backend has independent Room
-identity and member-local workspaces; project-centric UI and structured context
-delivery are not yet complete. The list below includes retained legacy surfaces,
-not proof of the new end-to-end flow. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
+Current development status (2026-09-06): CRP-U01 through U12 are complete;
+CRP-U13 remains pending for the real dual-client E2E and obsolete-path decision.
+The Room Project backend, structured context delivery, native project navigation,
+and project-centric Collab Bar are implemented. This status is not proof of the
+new end-to-end flow. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
 and [DSH 0.1.3-alpha.1 adaptation/design corrections](docs/plans/dsh-0.1.3-alpha.1-adaptation.md).
 Existing alpha.5 regression results do not establish alpha.1 runtime compatibility.
 
