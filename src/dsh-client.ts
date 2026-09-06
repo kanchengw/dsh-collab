@@ -24,7 +24,6 @@ import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from 
 
 interface DshClientWorkspaces {
   create(input: { path: string }): Promise<{ workspaceId: string }>;
-  pickDirectory?(): Promise<string | null>;
 }
 
 interface DshClientWorkspaceNavigation {
@@ -33,6 +32,20 @@ interface DshClientWorkspaceNavigation {
 
 interface DshClientSessions {
   open(sessionId: string): void;
+  list?: {
+    getSnapshot(): {
+      current?: string;
+      byId: Readonly<Record<string, { cwd?: string }>>;
+    };
+  };
+}
+
+function currentDshSessionTarget(sessions: DshClientSessions): CollabPanelOpenTarget | undefined {
+  const snapshot = sessions.list?.getSnapshot();
+  const sessionId = snapshot?.current;
+  if (typeof sessionId !== "string" || sessionId.trim() === "") return undefined;
+  const cwd = snapshot?.byId[sessionId]?.cwd;
+  return { sessionId, ...(typeof cwd === "string" && cwd.trim() !== "" ? { cwd } : {}) };
 }
 
 export function createDshParticipantWorkspaceOpener(input: {
@@ -59,7 +72,6 @@ export function createDshParticipantWorkspaceOpener(input: {
 
 export function createDshOwnedRoomCreator(input: {
   rpc: DshClientConnectionRpc;
-  workspaces: DshClientWorkspaces & { pickDirectory(): Promise<string | null> };
   workspaceNavigation: DshClientWorkspaceNavigation;
   sessions: DshClientSessions;
   panelHost(): CollabPanelHost | undefined;
@@ -73,10 +85,8 @@ export function createDshOwnedRoomCreator(input: {
     if (!source?.cwd) throw new Error("Open a DSH workspace Session before creating a Collab Workspace");
     const panelHost = input.panelHost();
     if (!panelHost) throw new Error("Collab Bar is unavailable");
-    const sourcePath = await input.workspaces.pickDirectory();
-    if (sourcePath === null) return false;
     const prepared = controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/prepare", {
-      sourcePath,
+      sourcePath: source.cwd,
       sourceSessionId: source.sessionId,
       roomTitle: title,
     }), "Owner Room Project preparation failed");
@@ -1170,14 +1180,14 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   const sessions = optionalService<DshClientSessions>(context, "sessions");
   let panelResolution = resolveBetterSidebarHost(undefined);
-  const createOwnedRoom = connection && workspaces && typeof workspaces.pickDirectory === "function" && workspaceNavigation && sessions
+  const createOwnedRoom = connection && workspaceNavigation && sessions
     ? createDshOwnedRoomCreator({
         rpc: connection.rpc,
-        workspaces: workspaces as DshClientWorkspaces & { pickDirectory(): Promise<string | null> },
         workspaceNavigation,
         sessions,
         panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
-        getActiveTarget: () => panelResolution.kind === "ready" ? panelResolution.getActiveTarget() : undefined,
+        getActiveTarget: () => currentDshSessionTarget(sessions)
+          ?? (panelResolution.kind === "ready" ? panelResolution.getActiveTarget() : undefined),
         ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
       })
     : undefined;
@@ -1223,7 +1233,12 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     ...(openJoinedRoom ? { openJoinedRoom } : {}),
     t: translationFor(props),
   })));
-  context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, { port: settings, t: translationFor(props) })));
+  context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, {
+    port: settings,
+    ...(createOwnedRoom ? { createOwnedRoom } : {}),
+    currentWorkspacePath: sessions ? currentDshSessionTarget(sessions)?.cwd : undefined,
+    t: translationFor(props),
+  })));
 }
 
 /** DSH client runner entry expected by every `dsh.client` bundle. */

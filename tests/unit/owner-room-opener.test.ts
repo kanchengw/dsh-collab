@@ -26,10 +26,6 @@ describe("createDshOwnedRoomCreator", () => {
     };
     const create = createDshOwnedRoomCreator({
       rpc,
-      workspaces: {
-        create: vi.fn(),
-        pickDirectory: async () => "C:\\work\\atlas",
-      },
       workspaceNavigation: {
         connectWorkspace: async (workspaceId) => {
           order.push(`connect:${workspaceId}`);
@@ -57,18 +53,17 @@ describe("createDshOwnedRoomCreator", () => {
     ]);
   });
 
-  it("stops when the DSH directory picker is cancelled", async () => {
+  it("requires an active DSH workspace Session", async () => {
     const rpc = { call: vi.fn() };
     const create = createDshOwnedRoomCreator({
       rpc,
-      workspaces: { create: vi.fn(), pickDirectory: async () => null },
       workspaceNavigation: { connectWorkspace: vi.fn() },
       sessions: { open: vi.fn() },
       panelHost: () => ({ register: () => () => {}, open: vi.fn() }),
-      getActiveTarget: () => ({ sessionId: "source-session", cwd: "C:\\work\\atlas" }),
+      getActiveTarget: () => undefined,
     });
 
-    await expect(create("Atlas")).resolves.toBe(false);
+    await expect(create("Atlas")).rejects.toThrow("Open a DSH workspace Session");
     expect(rpc.call).not.toHaveBeenCalled();
   });
 });

@@ -386,27 +386,38 @@ describe("real DSH client slot adapter", () => {
 
   it("provides the Host Room Project creator to the registered Rooms overlay", () => {
     let overlay: ((props: Record<string, unknown>) => unknown) | undefined;
+    let settingsItem: ((props: Record<string, unknown>) => unknown) | undefined;
     const betterSidebar = {
       version: "0.17.1",
       features: ["targetedOpen"],
       registerTab: vi.fn(() => () => {}),
       openTab: vi.fn(),
-      getSnapshot: () => ({ sessionId: "source-session", cwd: "C:\\work\\atlas" }),
+      getSnapshot: () => ({}),
     };
     const context = {
       slots: {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
         register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
           if (options.name === "shell.overlay") overlay = component;
+          if (options.name === "settings.plugin.item") settingsItem = component;
           return () => {};
         }),
       },
       get: vi.fn((name: string) => {
         if (name === "betterSidebar") return betterSidebar;
         if (name === "connection") return { rpc: { call: vi.fn() } };
-        if (name === "workspaces") return { create: vi.fn(), pickDirectory: vi.fn() };
+        if (name === "workspaces") return { create: vi.fn() };
         if (name === "uiWorkspace") return { connectWorkspace: vi.fn() };
-        if (name === "sessions") return { open: vi.fn() };
+        if (name === "sessions") return {
+          open: vi.fn(),
+          list: {
+            getSnapshot: () => ({
+              current: "source-session",
+              byId: { "source-session": { id: "source-session", cwd: "C:\\work\\atlas" } },
+            }),
+            subscribe: vi.fn(() => () => {}),
+          },
+        };
         return undefined;
       }),
     };
@@ -415,6 +426,9 @@ describe("real DSH client slot adapter", () => {
 
     const element = overlay?.({}) as React.ReactElement<{ createOwnedRoom?: unknown }> | undefined;
     expect(element?.props.createOwnedRoom).toEqual(expect.any(Function));
+    const settings = settingsItem?.({}) as React.ReactElement<{ createOwnedRoom?: unknown; currentWorkspacePath?: string }> | undefined;
+    expect(settings?.props.createOwnedRoom).toEqual(expect.any(Function));
+    expect(settings?.props.currentWorkspacePath).toBe("C:\\work\\atlas");
   });
 
   it("opens a Joined Room through the installed-plugin production composition", async () => {
