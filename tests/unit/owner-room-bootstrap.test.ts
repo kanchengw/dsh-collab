@@ -88,11 +88,10 @@ async function bootstrapFixture(input: {
     store,
     persistence: { save: async (snapshot) => { snapshots.push(snapshot); } },
     workspaces: {
-      create: async (request) => {
-        dshCalls.push(["create", request]);
+      create: async (path, title) => {
+        dshCalls.push(["create", path, title]);
         return { workspaceId: "dsh-workspace-atlas" };
       },
-      rename: async (workspaceId, title) => { dshCalls.push(["rename", workspaceId, title]); },
     },
   });
   return {
@@ -131,10 +130,7 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
 
     expect(await readFile(join(initial.sourcePath, "README.md"), "utf8")).toBe("owner source remains private\n");
     expect(await readFile(join(created.workspace.workspacePath, "README.md"), "utf8")).toBe("owner source remains private\n");
-    expect(fixture.dshCalls).toEqual([
-      ["create", { path: created.workspace.workspacePath }],
-      ["rename", "dsh-workspace-atlas", "Atlas"],
-    ]);
+    expect(fixture.dshCalls).toEqual([["create", created.workspace.workspacePath, "Atlas"]]);
     expect(calls).toEqual(["connect", "open:host-primary-session"]);
     expect(created.project).toMatchObject({
       roomId: "room-atlas",

@@ -108,8 +108,7 @@ export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agen
   easyTierTransport?: EasyTierTransportCoordinator;
   credentials?: DshCredentialProvider;
   workspaceRegistry?: {
-    create(input: { path: string }): Promise<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
-    rename?(workspaceId: string, title: string): Promise<unknown>;
+    create(path: string, title?: string): Promise<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
     list(): Array<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
   };
 }
@@ -249,7 +248,7 @@ function registerGatewayControl(
     ? RoomProjectStore.fromSnapshot(roomProjectSnapshot)
     : new RoomProjectStore();
   const roomWorkspaceArtifacts = new WorkspaceSnapshotStore(resolveDefaultCollabSnapshotDir());
-  const participantRoomProjectAvailable = roomProjectFile !== undefined && context.workspaceRegistry?.rename !== undefined;
+  const participantRoomProjectAvailable = roomProjectFile !== undefined && context.workspaceRegistry?.create !== undefined;
   const roomProjectObserver = createDshRoomProjectSessionObserver({ context, projects: roomProjects });
   roomProjectObserver.start();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
@@ -412,8 +411,7 @@ function registerGatewayControl(
             store: roomProjects,
             persistence: roomProjectFile!,
             workspaces: {
-              create: async (workspace) => ({ workspaceId: (await context.workspaceRegistry!.create(workspace)).id }),
-              rename: (workspaceId, title) => context.workspaceRegistry!.rename!(workspaceId, title),
+              create: async (path, title) => ({ workspaceId: (await context.workspaceRegistry!.create(path, title)).id }),
             },
           }),
         });

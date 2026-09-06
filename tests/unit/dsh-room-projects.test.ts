@@ -25,11 +25,10 @@ function registrarFixture() {
     store,
     persistence: { save: async (snapshot) => { snapshots.push(snapshot); } },
     workspaces: {
-      create: async (input) => {
-        calls.push(["create", input]);
+      create: async (path, title) => {
+        calls.push(["create", path, title]);
         return { workspaceId: "dsh-workspace-1" };
       },
-      rename: async (workspaceId, title) => { calls.push(["rename", workspaceId, title]); },
     },
   });
   return { calls, registrar, snapshots, store };
@@ -45,7 +44,7 @@ describe("DshRoomProjectRegistrar", () => {
 
     await registrar.register({ roomId: "room-canonical", memberId: "member-1", roomTitle: "Atlas", workspacePath: alias });
 
-    expect(calls[0]).toEqual(["create", { path }]);
+    expect(calls[0]).toEqual(["create", path, "Atlas"]);
     expect(store.get("room-canonical")?.workspacePath).toBe(path);
   });
 
@@ -72,10 +71,7 @@ describe("DshRoomProjectRegistrar", () => {
       nativeWorkspaceId: "dsh-workspace-1",
     });
 
-    expect(calls).toEqual([
-      ["create", { path }],
-      ["rename", "dsh-workspace-1", "Atlas"],
-    ]);
+    expect(calls).toEqual([["create", path, "Atlas"]]);
     expect(snapshots).toEqual([store.snapshot()]);
   });
 
@@ -101,10 +97,7 @@ describe("DshRoomProjectRegistrar", () => {
     const registrar = new DshRoomProjectRegistrar({
       store,
       persistence: { save: async (snapshot) => { snapshots.push(snapshot); } },
-      workspaces: {
-        create: async () => { throw new Error("DSH unavailable"); },
-        rename: async () => undefined,
-      },
+      workspaces: { create: async () => { throw new Error("DSH unavailable"); } },
     });
 
     await expect(registrar.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: path })).rejects.toThrow("DSH unavailable");
@@ -112,20 +105,17 @@ describe("DshRoomProjectRegistrar", () => {
     expect(snapshots).toEqual([]);
   });
 
-  it("does not commit a local registration when DSH naming fails", async () => {
-    const path = await workspace("rename-failure");
+  it("does not commit a local registration when DSH creation fails", async () => {
+    const path = await workspace("create-failure");
     const store = new RoomProjectStore();
     const snapshots: RoomProjectSnapshot[] = [];
     const registrar = new DshRoomProjectRegistrar({
       store,
       persistence: { save: async (snapshot) => { snapshots.push(snapshot); } },
-      workspaces: {
-        create: async () => ({ workspaceId: "dsh-workspace-1" }),
-        rename: async () => { throw new Error("DSH rename unavailable"); },
-      },
+      workspaces: { create: async () => { throw new Error("DSH create unavailable"); } },
     });
 
-    await expect(registrar.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: path })).rejects.toThrow("DSH rename unavailable");
+    await expect(registrar.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: path })).rejects.toThrow("DSH create unavailable");
     expect(store.list()).toEqual([]);
     expect(snapshots).toEqual([]);
   });

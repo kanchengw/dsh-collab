@@ -77,11 +77,10 @@ async function joinerFixture(input: { downloadLatest(input: { roomId: string; to
     store,
     persistence: { save: async (snapshot) => { snapshots.push(snapshot); } },
     workspaces: {
-      create: async (request) => {
-        dshCalls.push(["create", request]);
+      create: async (path, title) => {
+        dshCalls.push(["create", path, title]);
         return { workspaceId: "dsh-workspace-atlas" };
       },
-      rename: async (workspaceId, title) => { dshCalls.push(["rename", workspaceId, title]); },
     },
   });
   return {
@@ -113,10 +112,7 @@ describe("ParticipantRoomWorkspaceJoiner", () => {
 
     expect(downloads).toEqual([{ roomId: "room-atlas", token: "room-token" }]);
     expect(await readFile(join(joined.workspace.workspacePath, "src", "shared.ts"), "utf8")).toBe("export const shared = true;\n");
-    expect(fixture.dshCalls).toEqual([
-      ["create", { path: joined.workspace.workspacePath }],
-      ["rename", "dsh-workspace-atlas", "Atlas"],
-    ]);
+    expect(fixture.dshCalls).toEqual([["create", joined.workspace.workspacePath, "Atlas"]]);
     expect(joined.project).toEqual({
       roomId: "room-atlas",
       memberId: "participant-member",

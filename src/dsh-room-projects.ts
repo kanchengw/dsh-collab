@@ -7,8 +7,7 @@ import {
 } from "./room-projects.js";
 
 export interface DshRoomProjectWorkspaceService {
-  create(input: { path: string }): Promise<{ workspaceId: string }>;
-  rename(workspaceId: string, title: string): Promise<unknown>;
+  create(path: string, title?: string): Promise<{ workspaceId: string }>;
 }
 
 export interface RoomProjectPersistence {
@@ -43,8 +42,7 @@ export class DshRoomProjectRegistrar {
     let project = staged.register(canonicalInput);
     const wasRegistered = project.nativeWorkspaceId !== undefined;
     if (!wasRegistered) {
-      const workspace = await this.input.workspaces.create({ path: project.workspacePath });
-      await this.input.workspaces.rename(workspace.workspaceId, project.roomTitle);
+      const workspace = await this.input.workspaces.create(project.workspacePath, project.roomTitle);
       project = staged.setNativeWorkspaceId({ roomId: project.roomId, nativeWorkspaceId: workspace.workspaceId });
     }
     await this.input.persistence.save(staged.snapshot());
