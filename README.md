@@ -4,12 +4,13 @@
 
 ## What is ready
 
-Current development status (2026-09-06): CRP-U01 through U12 are complete;
-CRP-U13 remains pending for the real dual-client E2E and obsolete-path decision.
-The Room Project backend, structured context delivery, native project navigation,
-and project-centric Collab Bar are implemented. This status is not proof of the
-new end-to-end flow. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
-and [DSH 0.1.3-alpha.1 adaptation/design corrections](docs/plans/dsh-0.1.3-alpha.1-adaptation.md).
+Current development status (2026-09-06): CRP-U01 through U10 are complete;
+CRP-U11 is reopened for the missing production Host creation flow and the
+obsolete Participant Workspace adapter. CRP-U12 has a display foundation but
+is not complete until U11's Room Workspace lifecycle is wired. CRP-U13 remains
+pending for the real dual-client E2E and obsolete-path decision. See the
+[CRP plan](docs/plans/collab-room-project-mvp.md) and [DSH
+0.1.3-alpha.1 adaptation/design corrections](docs/plans/dsh-0.1.3-alpha.1-adaptation.md).
 Existing alpha.5 regression results do not establish alpha.1 runtime compatibility.
 
 - Versioned room protocol, HTTP Gateway, WebSocket stream, invite/join, permissions, message targeting, single Host Agent queue, steer/cancel, approval, limits, revocation, audit redaction, snapshot recovery and observability.
