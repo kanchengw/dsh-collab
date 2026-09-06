@@ -416,6 +416,123 @@ describe("real DSH client slot adapter", () => {
     expect(element?.props.createOwnedRoom).toEqual(expect.any(Function));
   });
 
+  it("opens a Joined Room through the installed-plugin production composition", async () => {
+    const order: string[] = [];
+    let connected = false;
+    let overlay: ((props: Record<string, unknown>) => unknown) | undefined;
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
+      expect(_channel).toBe("/dsh-collab");
+      if (endpoint !== "participant/room-project/join") throw new Error("Unexpected RPC: " + endpoint);
+      order.push("join-room-project");
+      expect(payload).toEqual({
+        roomId: "room-joined",
+        memberId: "member-alice",
+        roomTitle: "Release",
+        gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+        roomToken: "room-token",
+      });
+      return { ok: true, value: {
+        roomId: "room-joined",
+        memberId: "member-alice",
+        roomTitle: "Release",
+        workspacePath: "C:\\rooms\\room-joined\\workspace",
+        nativeWorkspaceId: "workspace-room-joined",
+      } };
+    }) };
+    const collabSettings = {
+      getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+      save: vi.fn(async () => {}),
+      connectJoinedRoom: vi.fn(async () => {
+        order.push("connect-joined-room");
+        connected = true;
+      }),
+      getRoomSnapshot: () => ({
+        roomId: connected ? "room-joined" : "other-room",
+        gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+        memberId: connected ? "member-alice" : "other-member",
+        roomTitle: "Release",
+        hostDisplayName: "Host",
+        role: "participant" as const,
+        connection: connected ? "online" as const : "offline" as const,
+      }),
+      getLocalSnapshotAccess: () => ({
+        gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+        roomToken: "room-token",
+      }),
+    };
+    const createWorkspace = vi.fn(async () => ({ workspaceId: "unexpected-workspace" }));
+    const connectWorkspace = vi.fn(async (workspaceId: string) => {
+      order.push("connect-workspace:" + workspaceId);
+      return "session-room-joined";
+    });
+    const openSession = vi.fn((sessionId: string) => { order.push("open-session:" + sessionId); });
+    const openTab = vi.fn((_seed: unknown, target: { sessionId: string; cwd?: string }) => {
+      order.push("open-collab-bar:" + target.sessionId);
+    });
+    const betterSidebar = {
+      version: "0.18.0",
+      features: ["targetedOpen"],
+      registerTab: vi.fn(() => () => {}),
+      openTab,
+    };
+    const context = {
+      slots: {
+        inject: vi.fn((_name: string, register: () => unknown) => register()),
+        register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
+          if (options.name === "shell.overlay") overlay = component;
+          return () => {};
+        }),
+      },
+      get: vi.fn((name: string) => {
+        if (name === "betterSidebar") return betterSidebar;
+        if (name === "collabClient") return { getSnapshot: () => snapshot, subscribe: () => () => {}, send: vi.fn() };
+        if (name === "collabSettings") return collabSettings;
+        if (name === "connection") return { rpc };
+        if (name === "workspaces") return { create: createWorkspace };
+        if (name === "uiWorkspace") return { connectWorkspace };
+        if (name === "sessions") return { open: openSession };
+        return undefined;
+      }),
+      inject: vi.fn((_services: string[], callback: (scope: unknown) => void) => callback(context)),
+    };
+
+    applyDshCollabClient(context as unknown as DshCollabClientContext);
+
+    const element = overlay?.({}) as React.ReactElement<{ openJoinedRoom?: (room: {
+      roomId: string;
+      gatewayEndpoint: string;
+      roomTitle: string;
+      hostDisplayName?: string;
+    }) => Promise<void> }> | undefined;
+    expect(element?.props.openJoinedRoom).toEqual(expect.any(Function));
+
+    await element!.props.openJoinedRoom!({
+      roomId: "room-joined",
+      gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+    });
+
+    expect(order).toEqual([
+      "connect-joined-room",
+      "join-room-project",
+      "connect-workspace:workspace-room-joined",
+      "open-session:session-room-joined",
+      "open-collab-bar:session-room-joined",
+    ]);
+    expect(collabSettings.connectJoinedRoom).toHaveBeenCalledWith({
+      gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+      roomId: "room-joined",
+    });
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(connectWorkspace).toHaveBeenCalledWith("workspace-room-joined");
+    expect(openSession).toHaveBeenCalledWith("session-room-joined");
+    expect(openTab).toHaveBeenCalledWith(
+      { type: "dsh-collab:room", url: "dsh-collab://panel" },
+      { sessionId: "session-room-joined", cwd: "C:\\rooms\\room-joined\\workspace" },
+    );
+  });
+
   it("prepares an EasyTier Owner invitation through loopback RPC while preserving the Gateway invite token", async () => {
     const network = {
       mode: "easytier" as const, version: 1 as const, networkName: "room-1", networkSecret: "network-secret",
