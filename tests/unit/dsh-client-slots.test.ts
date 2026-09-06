@@ -69,7 +69,15 @@ describe("real DSH client slot adapter", () => {
 
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
-    expect(inject).toEqual(["slots", "settingsScope", "connection", "locale"]);
+    expect(inject).toEqual([
+      "slots",
+      "settingsScope",
+      "connection",
+      "locale",
+      "workspaces",
+      "uiWorkspace",
+      "sessions",
+    ]);
   });
 
   it("starts and stops the Host Gateway only through the official Connection RPC", async () => {

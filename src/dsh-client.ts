@@ -1,5 +1,5 @@
 import { createElement, useEffect, useState, type ReactNode } from "react";
-import { MarkdownText, MessageText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
+import { MarkdownText, projectUserText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 import { type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
@@ -244,7 +244,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope", "connection", "locale"];
+export const inject = ["slots", "settingsScope", "connection", "locale", "workspaces", "uiWorkspace", "sessions"];
 
 interface DshCollabLocaleService {
   register(namespace: string, dictionaries: { zh: typeof zh; en: typeof en }): () => void;
@@ -1002,7 +1002,7 @@ function DshCollabTimeline(props: {
         createElement("div", { className: roomCss.messageMeta }, createElement("strong", null, author), status ? createElement("span", { className: roomCss.status }, agentStatusLabel(status, props.t)) : null),
         createElement("div", { className: roomCss.text }, item.kind === "agent"
           ? createElement(MarkdownText, { text: timelineLabel(item, props.t), streaming: item.streaming === true, labels: markdownLabels(props.t) })
-          : createElement(MessageText, { text: timelineLabel(item, props.t) })),
+          : projectUserText(timelineLabel(item, props.t), [])),
       ));
     }),
   );
