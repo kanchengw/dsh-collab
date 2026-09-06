@@ -67,6 +67,22 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Participating rooms");
   });
 
+  it("does not bind a Joined room to the active unrelated Session", () => {
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
+      port: port(),
+      panelHost: {
+        kind: "ready",
+        version: "0.17.1",
+        host: { register: () => () => {}, open: vi.fn() },
+        getActiveTarget: () => ({ sessionId: "unrelated-session", cwd: "C:/private" }),
+      },
+    }));
+    setDshCollabRoomsOpen(false);
+
+    expect((html.match(/>Open room</g) ?? []).length).toBe(1);
+  });
+
   it("uses the DSH portal-backed Modal so the room drawer escapes shell stacking contexts", () => {
     setDshCollabRoomsOpen(true);
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: port() }));

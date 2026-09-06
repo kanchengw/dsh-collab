@@ -17,6 +17,15 @@ export type DshCollabRoomSelection =
   | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string }
   | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; localSessionId?: string };
 
+export interface DshCollabJoinedRoomOpenInput {
+  roomId: string;
+  gatewayEndpoint: string;
+  roomTitle: string;
+  hostDisplayName?: string;
+}
+
+export type DshCollabJoinedRoomOpener = (room: DshCollabJoinedRoomOpenInput) => void | Promise<void>;
+
 export function getDshCollabRoomSelection(sessionId?: string): DshCollabRoomSelection | undefined {
   return sessionId === undefined ? roomSelection : roomSelectionsBySession.get(sessionId);
 }
@@ -140,7 +149,7 @@ export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { w
   );
 }
 
-export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; panelHost?: BetterSidebarHostResolution; t?: CollabTranslate }): ReactNode {
+export function DshCollabRoomsPanel({ port, panelHost, openJoinedRoom, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; panelHost?: BetterSidebarHostResolution; openJoinedRoom?: DshCollabJoinedRoomOpener; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
   const ownedRooms = useOwnedRooms(port);
   const joinedRooms = useJoinedRooms(port);
@@ -246,12 +255,7 @@ export function DshCollabRoomsPanel({ port, panelHost, t = defaultCollabTranslat
               return <li key={`${room.gatewayEndpoint}:${room.roomId}`} className={css.roomRow}>
                 <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span></div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>
                 <div className={css.actions}>
-                  <Action disabled={busy !== undefined || panelHost?.kind !== "ready" || !panelHost.getActiveTarget()} onClick={() => {
-                    if (panelHost?.kind !== "ready") return;
-                    const target = panelHost.getActiveTarget();
-                    if (!target) return;
-                    openDshCollabRoom({ kind: "joined", roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) }, panelHost.host, target);
-                  }}>{t("joined.openRoom")}</Action>
+                  {openJoinedRoom ? <Action disabled={busy !== undefined} onClick={() => { void perform(`open:${room.roomId}`, () => openJoinedRoom({ roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) })); }}>{t("joined.openRoom")}</Action> : null}
                   {active
                     ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { void perform(`disconnect:${room.roomId}`, async () => { await port?.disconnectJoinedRoom?.(); }); }}>{t("joined.disconnect")}</Action>
                     : <Action primary disabled={!connectJoinedRoom || participantConnected || busy !== undefined} onClick={() => { void perform(`joined:${room.roomId}`, async () => { await connectJoinedRoom?.(ref); }); }}>{t("joined.connect")}</Action>}
