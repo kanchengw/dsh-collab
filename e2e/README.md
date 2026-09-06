@@ -20,7 +20,7 @@ Compatibility baseline:
 | Component | Required baseline | Evidence |
 | --- | --- | --- |
 | DSH runtime | `0.1.3-alpha.1` | `apps/cli/package.json` preflight |
-| Better Sidebar | `>=0.17.1 <0.18.0` optional peer | Collab manifest and provider contract |
+| Better Sidebar | `>=0.17.1 <0.19.0` optional peer | Collab manifest and provider contract |
 | Agent Team | Not used by Collab | prepare-time dependency rejection |
 
 The profile must still provide a real compatible Better Sidebar at runtime for

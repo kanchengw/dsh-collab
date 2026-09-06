@@ -115,9 +115,9 @@ describe("Collab Rooms navigation", () => {
     }));
     setDshCollabRoomsOpen(false);
 
-    expect(missing).toContain("Install a compatible dsh-better-sidebar 0.17.x release (minimum 0.17.1) to open the Collab Bar");
+    expect(missing).toContain("Install a compatible dsh-better-sidebar 0.17.x or 0.18.x release (minimum 0.17.1) to open the Collab Bar");
     expect(missing).toContain("Owned rooms");
-    expect(incompatible).toContain("Use a compatible dsh-better-sidebar 0.17.x release (minimum 0.17.1)");
+    expect(incompatible).toContain("Use a compatible dsh-better-sidebar 0.17.x or 0.18.x release (minimum 0.17.1)");
     expect(incompatible).toContain("Joined rooms");
   });
 

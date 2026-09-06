@@ -38,7 +38,7 @@ function isCompatibleVersion(version: string): boolean {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!match) return false;
   const [, major, minor, patch] = match.map(Number);
-  return major === 0 && minor === 17 && patch! >= 1;
+  return major === 0 && ((minor === 17 && patch! >= 1) || minor === 18);
 }
 
 function isServicePort(value: unknown): value is BetterSidebarServicePort {
@@ -104,7 +104,7 @@ export function createBetterSidebarHost(service: BetterSidebarServicePort): Coll
     },
     open(target: CollabPanelOpenTarget) {
       if (!registration) throw new Error("Collab panel is not registered");
-      // Better Sidebar 0.17.1 expands active desktop and narrow panels only
+      // Better Sidebar expands active desktop and narrow panels only
       // for content opens. The Collab tab ignores this internal URL seed.
       service.openTab({ type: registration.panel.id, url: "dsh-collab://panel" }, target);
     },

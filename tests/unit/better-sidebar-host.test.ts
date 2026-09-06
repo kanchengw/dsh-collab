@@ -31,7 +31,7 @@ describe("BetterSidebarHost provider", () => {
   it("declares Better Sidebar as an optional peer rather than bundling another copy", () => {
     const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
 
-    expect(manifest.peerDependencies["dsh-better-sidebar"]).toBe(">=0.17.1 <0.18.0");
+    expect(manifest.peerDependencies["dsh-better-sidebar"]).toBe(">=0.17.1 <0.19.0");
     expect(manifest.peerDependenciesMeta["dsh-better-sidebar"]).toEqual({ optional: true });
     expect(manifest.dependencies?.["dsh-better-sidebar"]).toBeUndefined();
   });
@@ -50,7 +50,9 @@ describe("BetterSidebarHost provider", () => {
       actualVersion: "0.17.0",
     });
     expect(resolveBetterSidebarHost(service({ version: "0.17.1-beta.1" }))).toMatchObject({ kind: "incompatible", reason: "version" });
-    expect(resolveBetterSidebarHost(service({ version: "0.18.0" }))).toMatchObject({ kind: "incompatible", reason: "version" });
+    expect(resolveBetterSidebarHost(service({ version: "0.16.9" }))).toMatchObject({ kind: "incompatible", reason: "version" });
+    expect(resolveBetterSidebarHost(service({ version: "0.18.0" }))).toMatchObject({ kind: "ready", version: "0.18.0" });
+    expect(resolveBetterSidebarHost(service({ version: "0.18.0-alpha.0" }))).toMatchObject({ kind: "incompatible", reason: "version" });
     expect(resolveBetterSidebarHost(service({ features: ["stateSubscription"] }))).toMatchObject({
       kind: "incompatible",
       reason: "features",

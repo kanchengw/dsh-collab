@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $projectManifestPath = Join-Path $projectRoot "package.json"
 $projectManifest = Get-Content -Raw $projectManifestPath | ConvertFrom-Json
-$expectedBetterSidebarRange = ">=0.17.1 <0.18.0"
+$expectedBetterSidebarRange = ">=0.17.1 <0.19.0"
 $actualBetterSidebarRange = [string]$projectManifest.peerDependencies."dsh-better-sidebar"
 if ($actualBetterSidebarRange -ne $expectedBetterSidebarRange) {
   throw "Better Sidebar compatibility mismatch: expected $expectedBetterSidebarRange, found $actualBetterSidebarRange"
