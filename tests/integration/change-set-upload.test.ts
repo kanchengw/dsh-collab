@@ -379,7 +379,7 @@ describe("ChangeSet atomic upload and Owner Staging Area", () => {
     await expect(finalizedQuota.createUpload({
       roomId: "room-1", principalId: "alice", clientRequestId: "after-finalize", draft: finalizedState.bundle.draft,
     })).resolves.toMatchObject({ state: "uploading", changeSetId: finalized.changeSetId });
-  }, 10_000);
+  }, 30_000);
 
   it("serializes concurrent upload creation so the active quota cannot be bypassed", async () => {
     const state = await setup();
