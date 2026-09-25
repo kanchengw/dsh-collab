@@ -84,7 +84,6 @@ export function createDshParticipantWorkspaceOpener(input: {
 
 export function createDshOwnedRoomCreator(input: {
   rpc: DshClientConnectionRpc;
-  startGateway?(): Promise<unknown>;
   workspaces: DshClientWorkspaces;
   workspaceNavigation: DshClientWorkspaceNavigation;
   sessions: DshClientSessions;
@@ -101,7 +100,6 @@ export function createDshOwnedRoomCreator(input: {
       const sourceWorkspace = await input.workspaces.create({ path: sourcePath });
       sourceSessionId = await input.workspaceNavigation.connectWorkspace(sourceWorkspace.workspaceId);
     }
-    await input.startGateway?.();
     const prepared = controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/prepare", {
       sourcePath,
       sourceSessionId,

@@ -110,7 +110,7 @@ describe("createDshOwnedRoomCreator", () => {
     expect(createWorkspace).toHaveBeenCalledWith({ path: "C:\\work\\atlas" });
   });
 
-  it("starts the Host Gateway before preparing an Owner Room Project", async () => {
+  it("does not start the Host Gateway while creating an Owner Room Project", async () => {
     const order: string[] = [];
     const rpc = {
       call: vi.fn(async (_channel: string, endpoint: string) => {
@@ -124,7 +124,6 @@ describe("createDshOwnedRoomCreator", () => {
     };
     const create = createDshOwnedRoomCreator({
       rpc,
-      startGateway: async () => { order.push("gateway:start"); },
       workspaces: { create: vi.fn() },
       workspaceNavigation: { connectWorkspace: async () => "host-primary", openSession: vi.fn() },
       sessions: {
@@ -134,6 +133,6 @@ describe("createDshOwnedRoomCreator", () => {
     });
 
     await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
-    expect(order).toEqual(["gateway:start", "owner/room-project/prepare", "owner/room-project/complete"]);
+    expect(order).toEqual(["owner/room-project/prepare", "owner/room-project/complete"]);
   });
 });

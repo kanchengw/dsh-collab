@@ -149,7 +149,7 @@ export function registerDshCollabSettings(
     settingsContext: DshResolvedSettingsContext,
   ) => void,
 ): void {
-  const gatewayHost = config.host ?? "127.0.0.1";
+  const gatewayHost = config.host ?? defaultCollabSettings.gatewayHost;
   const register = (settingsContext: DshResolvedSettingsContext): void => {
     const scope = settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
       base: {
@@ -172,7 +172,7 @@ export function registerDshCollabSettings(
           maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
           maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
         },
-        connectionMethod: "unconfigured",
+        connectionMethod: defaultCollabSettings.connectionMethod,
         easyTierSharedNode: defaultCollabSettings.easyTierSharedNode,
         easyTierRooms: [],
       },

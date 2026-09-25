@@ -39,11 +39,11 @@ export interface CollabSettings {
 
 export const defaultCollabSettings: CollabSettings = {
   enabled: true,
-  gatewayHost: "127.0.0.1",
+  gatewayHost: "0.0.0.0",
   gatewayPort: 4310,
-  exposeMode: "loopback",
+  exposeMode: "network",
   advertisedEndpoint: "",
-  connectionMethod: "unconfigured",
+  connectionMethod: "private-network",
   easyTierSharedNode: "tcp://public.kkrainbow.top:11010",
   tokenTtlMs: 24 * 60 * 60 * 1000,
   approvalPolicy: "host-only",

@@ -1,9 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
+import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, joinDshCollabRoom, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
 import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
 import type { CollabPanelHost } from "../../src/collab-panel-host.js";
+import { encodeCollabInvitation } from "../../src/invitation.js";
 
 vi.mock("@deepseek-ai/dsh-client-ui-primitives", async () => {
   const React = await import("react");
@@ -203,6 +204,23 @@ describe("Collab Rooms navigation", () => {
     expect(order).toEqual(["room"]);
   });
 
+  it("restarts a running Gateway when its saved sharing configuration is stale", async () => {
+    const actions = port();
+    const order: string[] = [];
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4311, exposeMode: "network", advertisedEndpoint: "",
+      appliedGateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    });
+    actions.stopGateway = vi.fn(async () => { order.push("stop"); return { status: "stopped" as const }; });
+    actions.startGateway = vi.fn(async () => { order.push("start"); return { status: "running" as const, port: 4311 }; });
+    actions.shareHostRoom = vi.fn(async () => { order.push("share"); });
+
+    await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
+
+    expect(order).toEqual(["stop", "start", "share"]);
+  });
+
   it("creates invitations from the applied private-network endpoint", async () => {
     const actions = port();
     actions.getSnapshot = () => ({
@@ -251,5 +269,39 @@ describe("Collab Rooms navigation", () => {
     expect((html.match(/Connected/g) ?? []).length).toBe(1);
     expect((html.match(/Disconnected/g) ?? []).length).toBe(2);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect<\/button>/);
+  });
+
+  it("opens the exact room that was just joined", async () => {
+    const actions = port();
+    const invitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://192.168.1.20/collab",
+      roomId: "room-joined",
+      inviteId: "invite-1",
+      token: "token-1",
+      expiresAt: Date.now() + 60_000,
+      network: { mode: "lan", version: 1, endpoint: "ws://192.168.1.20/collab" },
+    });
+    actions.join = vi.fn(async () => {});
+    actions.listJoinedRooms = () => [{
+      gatewayEndpoint: "ws://192.168.1.20/collab",
+      roomId: "room-joined",
+      memberId: "member-bob",
+      credential: "resume-secret",
+      roomTitle: "Design review",
+      hostDisplayName: "Alice",
+    }];
+    const openJoinedRoom = vi.fn(async () => {});
+
+    await joinDshCollabRoom(actions, { invitation, displayName: "Bob" }, openJoinedRoom);
+
+    expect(actions.join).toHaveBeenCalledWith({ invitation, displayName: "Bob" });
+    expect(openJoinedRoom).toHaveBeenCalledWith({
+      roomId: "room-joined",
+      gatewayEndpoint: "ws://192.168.1.20/collab",
+      roomTitle: "Design review",
+      hostDisplayName: "Alice",
+    });
   });
 });

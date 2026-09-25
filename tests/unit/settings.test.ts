@@ -4,8 +4,10 @@ import { detectPrivateNetworkAddress } from "../../src/network-address.js";
 
 describe("collab settings", () => {
   it("provides safe defaults and separates host and participant settings", () => {
-    expect(defaultCollabSettings.exposeMode).toBe("loopback");
+    expect(defaultCollabSettings.exposeMode).toBe("network");
+    expect(defaultCollabSettings.gatewayHost).toBe("0.0.0.0");
     expect(defaultCollabSettings.gatewayPort).toBe(4310);
+    expect(defaultCollabSettings.connectionMethod).toBe("private-network");
     expect(defaultCollabSettings.tokenTtlMs).toBe(24 * 60 * 60 * 1000);
     const html = renderCollabSettings(defaultCollabSettings);
     expect(html).toContain('data-settings-namespace="collab"');

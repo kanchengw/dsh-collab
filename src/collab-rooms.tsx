@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Modal } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client.js";
+import type { DshBrowserJoinInput, JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client.js";
 import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
+import { decodeCollabInvitation } from "./invitation.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-rooms.module.css";
 import type { CollabPanelHost, CollabPanelOpenTarget } from "./collab-panel-host.js";
@@ -52,7 +53,16 @@ export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: 
 
 export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {
   if (!port.shareHostRoom) throw new Error("Owner room sharing is unavailable");
-  if (port.getGatewaySnapshot?.().status !== "running") await port.startGateway?.();
+  const gateway = port.getGatewaySnapshot?.();
+  const settings = port.getSnapshot();
+  const applied = settings.appliedGateway;
+  const stale = gateway?.status === "running" && applied !== undefined
+    && (applied.gatewayHost !== settings.gatewayHost
+      || applied.gatewayPort !== settings.gatewayPort
+      || applied.exposeMode !== settings.exposeMode
+      || (settings.exposeMode === "loopback" && applied.advertisedEndpoint !== settings.advertisedEndpoint));
+  if (stale) await port.stopGateway?.();
+  if (stale || gateway?.status !== "running") await port.startGateway?.();
   await port.shareHostRoom(input);
 }
 
@@ -63,6 +73,22 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
   if (!gatewayEndpoint) throw new Error("Configure a private-network address before creating an invitation");
   const created = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, roomId);
   return created.invitation;
+}
+
+export async function joinDshCollabRoom(port: DshCollabSettingsPort, input: DshBrowserJoinInput, openJoinedRoom?: DshCollabJoinedRoomOpener): Promise<boolean> {
+  if (!port.join) throw new Error("Joining a room is unavailable");
+  const invitation = decodeCollabInvitation(input.invitation);
+  await port.join(input);
+  if (!openJoinedRoom) return false;
+  const joined = port.listJoinedRooms?.().find((room) => room.roomId === invitation.roomId && room.gatewayEndpoint === invitation.gatewayEndpoint);
+  if (!joined) throw new Error("Joined room was saved but its local record is unavailable");
+  await openJoinedRoom({
+    roomId: joined.roomId,
+    gatewayEndpoint: joined.gatewayEndpoint,
+    roomTitle: joined.roomTitle ?? joined.roomId,
+    ...(joined.hostDisplayName ? { hostDisplayName: joined.hostDisplayName } : {}),
+  });
+  return true;
 }
 
 export function closeDshCollabRoom(sessionId?: string): void {
@@ -223,9 +249,10 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
     event.preventDefault();
     if (!port?.join || participantConnected) return;
     await perform("join", async () => {
-      await port.join?.({ invitation: joinInvitation, displayName: displayName.trim() });
+      const opened = await joinDshCollabRoom(port, { invitation: joinInvitation, displayName: displayName.trim() }, openJoinedRoom);
       setJoinInvitation("");
-    }, t("join.savedNotice"));
+      return opened;
+    }, openJoinedRoom ? t("join.openedNotice") : t("join.savedNotice"));
   };
   const stopSharing = port?.stopSharing;
   const connectJoinedRoom = port?.connectJoinedRoom;
