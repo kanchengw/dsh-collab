@@ -35,7 +35,7 @@ export interface DshContextMessage {
   id: string;
   role: "user";
   content: [{ type: "text"; text: string }];
-  source: { kind: "plugin"; plugin: "dsh-collab" };
+  source: { kind: "user" };
 }
 
 export interface DshCordisSessionEvent {
@@ -76,7 +76,7 @@ function contextMessage(text: string): DshContextMessage {
     id: randomUUID(),
     role: "user",
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "dsh-collab" },
+    source: { kind: "user" },
   };
 }
 

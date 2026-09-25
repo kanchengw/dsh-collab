@@ -149,7 +149,7 @@ describe("real DSH Cordis Agent bridge", () => {
 
     expect(injected).toEqual([expect.objectContaining({
       role: "user",
-      source: { kind: "plugin", plugin: "dsh-collab" },
+      source: { kind: "user" },
       content: [{ type: "text", text: "Original quoted message" }],
     })]);
   });
