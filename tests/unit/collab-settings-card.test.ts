@@ -84,7 +84,7 @@ describe("DSH-native collaboration settings", () => {
     expect(html).not.toMatch(/<details[^>]*open/);
     expect(html).toContain('id="collab-queue"');
     expect(html).toContain('value="5"');
-    expect(html).toContain("Used the next time the Gateway starts");
+    expect(html).toContain("Used the next time you share a room");
     expect(html).not.toContain("trusted LAN/VPN");
     expect(html.match(/<h3/g)).toHaveLength(1);
   });
@@ -103,8 +103,8 @@ describe("DSH-native collaboration settings", () => {
     }));
 
     expect(html).toContain("The running Gateway still uses the previous address");
-    expect(html).toContain("Stop and restart the Gateway now");
-    expect(html).toContain("Stopping or restarting room sharing alone does not update it");
+    expect(html).toContain("Gateway will restart automatically before the next room share");
+    expect(html).toContain("sharing refreshes the Gateway when needed");
   });
 
   it("keeps a fresh install unconfigured without exposing a local-only invitation mode", () => {

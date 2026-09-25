@@ -200,8 +200,10 @@ describe("Collab Rooms navigation", () => {
 
     order.length = 0;
     actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
+    actions.stopGateway = vi.fn(async () => { order.push("stop"); return { status: "stopped" as const }; });
+    actions.startGateway = vi.fn(async () => { order.push("start"); return { status: "running" as const, port: 4310 }; });
     await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
-    expect(order).toEqual(["room"]);
+    expect(order).toEqual(["stop", "start", "room"]);
   });
 
   it("restarts a running Gateway when its saved sharing configuration is stale", async () => {
@@ -214,6 +216,23 @@ describe("Collab Rooms navigation", () => {
     });
     actions.stopGateway = vi.fn(async () => { order.push("stop"); return { status: "stopped" as const }; });
     actions.startGateway = vi.fn(async () => { order.push("start"); return { status: "running" as const, port: 4311 }; });
+    actions.shareHostRoom = vi.fn(async () => { order.push("share"); });
+
+    await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
+
+    expect(order).toEqual(["stop", "start", "share"]);
+  });
+
+  it("refreshes the automatically detected private-network address before sharing", async () => {
+    const actions = port();
+    const order: string[] = [];
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "", connectionMethod: "private-network",
+      appliedGateway: { gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.0.65:4310/collab" },
+    });
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
+    actions.stopGateway = vi.fn(async () => { order.push("stop"); return { status: "stopped" as const }; });
+    actions.startGateway = vi.fn(async () => { order.push("start"); return { status: "running" as const, port: 4310 }; });
     actions.shareHostRoom = vi.fn(async () => { order.push("share"); });
 
     await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });

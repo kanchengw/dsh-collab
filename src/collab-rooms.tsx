@@ -61,8 +61,10 @@ export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input
       || applied.gatewayPort !== settings.gatewayPort
       || applied.exposeMode !== settings.exposeMode
       || (settings.exposeMode === "loopback" && applied.advertisedEndpoint !== settings.advertisedEndpoint));
-  if (stale) await port.stopGateway?.();
-  if (stale || gateway?.status !== "running") await port.startGateway?.();
+  const refreshesPrivateNetwork = gateway?.status === "running"
+    && (settings.connectionMethod === "private-network" || (settings.connectionMethod === undefined && settings.exposeMode === "network"));
+  if (stale || refreshesPrivateNetwork) await port.stopGateway?.();
+  if (stale || refreshesPrivateNetwork || gateway?.status !== "running") await port.startGateway?.();
   await port.shareHostRoom(input);
 }
 
