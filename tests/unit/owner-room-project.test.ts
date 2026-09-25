@@ -12,7 +12,9 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(input: {
+  workspacePath?: (sessionId: string) => string | Promise<string | undefined> | undefined;
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "dsh-collab-owner-project-"));
   roots.push(root);
   const sourcePath = join(root, "source");
@@ -69,7 +71,7 @@ async function fixture() {
   const service = new OwnerRoomProjectService({
     hostId: "host-principal",
     hostDisplayName: "Host",
-    sessions: { workspacePath: (sessionId: string) => sessionPaths.get(sessionId) },
+    sessions: { workspacePath: input.workspacePath ?? ((sessionId: string) => sessionPaths.get(sessionId)) },
     rooms,
     roomProjects,
     ledger: { latestSeq: () => { calls.push("ledger"); return 1; } },
@@ -135,6 +137,16 @@ describe("OwnerRoomProjectService", () => {
     expect(createRoom).not.toHaveBeenCalled();
     expect(value.bootstrap.prepare).not.toHaveBeenCalled();
     expect(value.calls).toEqual([]);
+  });
+
+  it("accepts a source Session workspace path resolved from the cold Session query", async () => {
+    const value = await fixture({ workspacePath: async (sessionId) => value.sessionPaths.get(sessionId) });
+
+    await expect(value.service.prepare({
+      sourcePath: value.sourcePath,
+      sourceSessionId: "source-session",
+      roomTitle: "Atlas",
+    })).resolves.toMatchObject({ roomId: "room-fixed" });
   });
 
   it("completes the browser-created Session by rebinding both Room and Room Project", async () => {

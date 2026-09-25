@@ -100,7 +100,7 @@ async function bootstrapFixture(input: {
       registrar,
       workspaceNavigation: {
         connectWorkspace: input.connectWorkspace,
-        sessions: { open: input.openSession },
+        openSession: input.openSession,
       },
     }),
     dshCalls,

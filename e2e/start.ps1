@@ -16,7 +16,7 @@ $env:DSH_HOME = Join-Path $projectRoot "e2e/.state/$($selected.Home)"
 
 Push-Location $DshRepo
 try {
-  pnpm dsh web --port $selected.UiPort --no-open
+  pnpm dsh web --host 127.0.0.1 --port $selected.UiPort --no-open
   if ($LASTEXITCODE -ne 0) { throw "Client $Client DSH exited with code $LASTEXITCODE" }
 } finally {
   Pop-Location

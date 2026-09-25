@@ -1,17 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { COLLAB_TOKEN_TTL_OPTIONS, defaultCollabSettings, tokenTtlMsFromOption, tokenTtlOptionFromMs } from "./settings-shared.js";
 import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort, DshCollabSettingsSnapshot } from "./dsh-client.js";
-import type { DshCollabOwnedRoomCreator } from "./collab-rooms.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-settings-card.module.css";
 
 type Notice = { tone: "error" | "success"; message: string };
 type ConnectionMethod = "unconfigured" | "private-network" | "easytier" | "custom-wss";
-
-interface CollabWorkspaceCreationProps {
-  createOwnedRoom?: DshCollabOwnedRoomCreator;
-  currentWorkspacePath?: string;
-}
 
 function connectionMethodFor(settings: DshCollabSettingsSnapshot): ConnectionMethod {
   if (settings.connectionMethod) return settings.connectionMethod;
@@ -53,7 +47,7 @@ function useGateway(port: DshCollabSettingsPort | undefined): DshCollabGatewayRu
 }
 
 /** The task-oriented contents of the Collab settings card. */
-export function DshCollabSettingsPanel({ port, createOwnedRoom, currentWorkspacePath, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate } & CollabWorkspaceCreationProps): ReactNode {
+export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
   const initial = useMemo<DshCollabSettingsSnapshot>(() => port?.getSnapshot() ?? { ...defaultCollabSettings }, [port]);
   const [saved, setSaved] = useState(initial);
   const [connectionMethod, setConnectionMethod] = useState<ConnectionMethod>(() => connectionMethodFor(initial));
@@ -63,31 +57,12 @@ export function DshCollabSettingsPanel({ port, createOwnedRoom, currentWorkspace
   const [maxMembers, setMaxMembers] = useState(String(initial.maxMembers ?? defaultCollabSettings.maxMembers));
   const [maxMessageBytes, setMaxMessageBytes] = useState(String(initial.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes));
   const [maxQueue, setMaxQueue] = useState(String(initial.maxQueue ?? defaultCollabSettings.maxQueue));
-  const [ownedRoomTitle, setOwnedRoomTitle] = useState("");
-  const [busy, setBusy] = useState<"save" | "gateway" | "workspace">();
+  const [busy, setBusy] = useState<"save" | "gateway">();
   const [notice, setNotice] = useState<Notice>();
   const gateway = useGateway(port);
   const writable = port !== undefined && saved.writable !== false;
   const configurationDisabled = !writable || busy !== undefined;
   const restartRequired = gateway.status === "running" && gatewaySettingsDiffer(saved);
-  const createWorkspace = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    const title = ownedRoomTitle.trim();
-    if (!createOwnedRoom || !currentWorkspacePath || title === "") return;
-    setBusy("workspace");
-    setNotice(undefined);
-    try {
-      const created = await createOwnedRoom(title);
-      if (created) {
-        setOwnedRoomTitle("");
-        setNotice({ tone: "success", message: t("owned.createdNotice") });
-      }
-    } catch (cause) {
-      setNotice({ tone: "error", message: errorMessage(cause, t("rooms.actionError")) });
-    } finally {
-      setBusy(undefined);
-    }
-  };
   const toggleGateway = async (): Promise<void> => {
     if (!port) return;
     setBusy("gateway");
@@ -166,17 +141,6 @@ export function DshCollabSettingsPanel({ port, createOwnedRoom, currentWorkspace
     <div className={css.body} data-settings-namespace="dsh-collab">
       {!writable && port ? <p className={css.readOnly} role="status">{t("settings.readOnly")}</p> : null}
 
-      <section className={css.workspaceSection}>
-        <div className={css.sectionHead}>
-          <div><h3>{t("settings.workspaceTitle")}</h3><p>{t("settings.workspaceDescription")}</p></div>
-        </div>
-        {currentWorkspacePath ? <code className={css.workspacePath} title={currentWorkspacePath}>{currentWorkspacePath}</code> : <p className={css.empty}>{t("settings.workspaceUnavailable")}</p>}
-        <form className={css.workspaceForm} onSubmit={(event) => { void createWorkspace(event); }}>
-          <input name="ownedRoomTitle" className={css.input} value={ownedRoomTitle} aria-label={t("owned.createTitle")} placeholder={t("owned.createTitle")} onChange={(event) => { setOwnedRoomTitle(event.target.value); }} disabled={!currentWorkspacePath || busy !== undefined} />
-          <button type="submit" className={css.primaryButton} disabled={!createOwnedRoom || !currentWorkspacePath || ownedRoomTitle.trim() === "" || busy !== undefined}>{t(busy === "workspace" ? "owned.creating" : "owned.createAction")}</button>
-        </form>
-      </section>
-
       <form className={css.section} onSubmit={(event) => { void save(event); }}>
         <div className={css.sectionHead}>
           <div><h3>{t("settings.gatewayTitle")}</h3><p>{t("settings.gatewayDescription")}</p></div>
@@ -240,7 +204,7 @@ export function DshCollabSettingsPanel({ port, createOwnedRoom, currentWorkspace
 }
 
 /** Collapsible list item matching DSH's official plugin-settings card chrome. */
-export function DshCollabSettingsCard({ port, createOwnedRoom, currentWorkspacePath, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate } & CollabWorkspaceCreationProps): ReactNode {
+export function DshCollabSettingsCard({ port, t = defaultCollabTranslate }: { port?: DshCollabSettingsPort; t?: CollabTranslate }): ReactNode {
   const [open, setOpen] = useState(false);
   return (
     <li className={open ? `${css.card} ${css.cardOpen}` : css.card} data-collab-settings-card="true" data-settings-namespace="dsh-collab">
@@ -248,7 +212,7 @@ export function DshCollabSettingsCard({ port, createOwnedRoom, currentWorkspaceP
         <span className={css.cardTitle}><strong>dsh-collab</strong><span>{t("settings.cardDescription")}</span></span>
         <span className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron} aria-hidden="true">⌄</span>
       </button>
-      {open ? <DshCollabSettingsPanel port={port} createOwnedRoom={createOwnedRoom} currentWorkspacePath={currentWorkspacePath} t={t} /> : null}
+      {open ? <DshCollabSettingsPanel port={port} t={t} /> : null}
     </li>
   );
 }

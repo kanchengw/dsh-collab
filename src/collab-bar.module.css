@@ -232,6 +232,22 @@
   line-height: 1.6;
 }
 
+.emptyAction {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 7px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12, 12px/18px var(--dsw-font-family));
+  cursor: pointer;
+}
+
+.emptyAction:hover {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
 @keyframes collabPulse {
   50% { opacity: .55; }
 }

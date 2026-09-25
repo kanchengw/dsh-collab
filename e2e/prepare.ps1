@@ -7,11 +7,6 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $projectManifestPath = Join-Path $projectRoot "package.json"
 $projectManifest = Get-Content -Raw $projectManifestPath | ConvertFrom-Json
-$expectedBetterSidebarRange = ">=0.17.1 <0.19.0"
-$actualBetterSidebarRange = [string]$projectManifest.peerDependencies."dsh-better-sidebar"
-if ($actualBetterSidebarRange -ne $expectedBetterSidebarRange) {
-  throw "Better Sidebar compatibility mismatch: expected $expectedBetterSidebarRange, found $actualBetterSidebarRange"
-}
 $dependencySections = @(
   $projectManifest.dependencies,
   $projectManifest.devDependencies,
@@ -30,7 +25,7 @@ $agentTeamDependencies = @($dependencySections | ForEach-Object {
 if ($agentTeamDependencies.Count -gt 0) {
   throw "Experimental Agent Team dependencies are not supported: $($agentTeamDependencies -join ", ")"
 }
-$ExpectedDshVersion = "0.1.3-alpha.1"
+$ExpectedDshVersion = "0.1.7-rc.2"
 $dshManifestPath = Join-Path $DshRepo "apps/cli/package.json"
 if (-not (Test-Path $dshManifestPath)) {
   throw "DSH CLI manifest not found: $dshManifestPath"
@@ -71,6 +66,22 @@ try {
     try {
       pnpm dsh plugin --profile web add $projectRoot
       if ($LASTEXITCODE -ne 0) { throw "DSH plugin installation failed for $clientHome" }
+
+      $profileManifestPath = Join-Path $clientHome "profiles/web/package.json"
+      $profileManifest = Get-Content -Raw $profileManifestPath | ConvertFrom-Json
+      $hasBetterSidebarDependency = $profileManifest.dependencies -and $profileManifest.dependencies.PSObject.Properties.Name -contains "dsh-better-sidebar"
+      if ($hasBetterSidebarDependency) {
+        pnpm dsh plugin --profile web remove dsh-better-sidebar
+        if ($LASTEXITCODE -ne 0) { throw "Failed to remove legacy dsh-better-sidebar from $clientHome" }
+        $profileManifest = Get-Content -Raw $profileManifestPath | ConvertFrom-Json
+      }
+      if ($profileManifest.dependencies -and $profileManifest.dependencies.PSObject.Properties.Name -contains "dsh-better-sidebar") {
+        $profileManifest.dependencies.PSObject.Properties.Remove("dsh-better-sidebar")
+      }
+      if ($profileManifest.dsh -and $profileManifest.dsh.profile -and $profileManifest.dsh.profile.bundles) {
+        $profileManifest.dsh.profile.bundles = @($profileManifest.dsh.profile.bundles | Where-Object { $_ -ne "dsh-better-sidebar" })
+      }
+      $profileManifest | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $profileManifestPath
     } finally {
       Pop-Location
     }

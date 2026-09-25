@@ -67,28 +67,44 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Participating rooms");
   });
 
-  it("offers Collab Workspace creation in the Owned rooms section", () => {
+  it("does not show an owned room again in Joined rooms", () => {
+    const actions = port();
+    actions.listJoinedRooms = () => [{
+      gatewayEndpoint: "ws://127.0.0.1:4310/collab",
+      roomId: "room-owned",
+      memberId: "member-stale",
+      credential: "stale-secret",
+      roomTitle: "Release planning",
+    }];
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: actions }));
+    setDshCollabRoomsOpen(false);
+
+    expect((html.match(/Release planning/g) ?? []).length).toBe(1);
+    expect(html).toContain("Joined rooms");
+  });
+
+  it("offers Collab Workspace creation above the Owned rooms list", () => {
     setDshCollabRoomsOpen(true);
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
       port: port(),
       createOwnedRoom: vi.fn(),
+      pickDirectory: vi.fn(),
     }));
     setDshCollabRoomsOpen(false);
 
+    expect(html).toContain("Create a Collab workspace");
+    expect(html).toContain("Choose directory");
     expect(html).toContain('name="ownedRoomTitle"');
     expect(html).toContain("Create Collab workspace");
+    expect(html.indexOf("Create a Collab workspace")).toBeLessThan(html.indexOf("Owned rooms"));
   });
 
   it("does not bind a Joined room to the active unrelated Session", () => {
     setDshCollabRoomsOpen(true);
     const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
       port: port(),
-      panelHost: {
-        kind: "ready",
-        version: "0.17.1",
-        host: { register: () => () => {}, open: vi.fn() },
-        getActiveTarget: () => ({ sessionId: "unrelated-session", cwd: "C:/private" }),
-      },
+      panelHost: { register: () => () => {}, open: vi.fn() },
     }));
     setDshCollabRoomsOpen(false);
 
@@ -115,22 +131,15 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Stop sharing");
   });
 
-  it("explains the optional Better Sidebar requirement without hiding room management", () => {
+  it("explains when the official Sidebar services are unavailable without hiding room management", () => {
     setDshCollabRoomsOpen(true);
     const missing = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
       port: port(),
-      panelHost: { kind: "missing", requiredVersion: "0.17.1" },
-    }));
-    const incompatible = renderToStaticMarkup(createElement(DshCollabRoomsPanel, {
-      port: port(),
-      panelHost: { kind: "incompatible", reason: "version", requiredVersion: "0.17.1", actualVersion: "0.17.0" },
     }));
     setDshCollabRoomsOpen(false);
 
-    expect(missing).toContain("Install a compatible dsh-better-sidebar 0.17.x or 0.18.x release (minimum 0.17.1) to open the Collab Bar");
+    expect(missing).toContain("The official DSH Sidebar services are not ready");
     expect(missing).toContain("Owned rooms");
-    expect(incompatible).toContain("Use a compatible dsh-better-sidebar 0.17.x or 0.18.x release (minimum 0.17.1)");
-    expect(incompatible).toContain("Joined rooms");
   });
 
   it("stores Owned and Joined room navigation under the same Collab Rooms entry", () => {

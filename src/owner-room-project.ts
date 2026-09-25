@@ -52,7 +52,7 @@ export class OwnerRoomProjectService {
   constructor(private readonly options: {
     hostId: string;
     hostDisplayName: string;
-    sessions: { workspacePath?(sessionId: string): string | undefined };
+    sessions: { workspacePath?(sessionId: string): string | Promise<string | undefined> | undefined };
     rooms: RoomStore;
     roomProjects: RoomProjectStore;
     ledger: Pick<EventLedger, "latestSeq">;
@@ -66,7 +66,7 @@ export class OwnerRoomProjectService {
   async prepare(input: OwnerRoomProjectPrepareInput): Promise<OwnerRoomProjectPrepareResult> {
     const sourceSessionId = requiredText(input.sourceSessionId, "sourceSessionId");
     const sourcePath = await realpath(requiredText(input.sourcePath, "sourcePath"));
-    const sessionPath = this.options.sessions.workspacePath?.(sourceSessionId);
+    const sessionPath = await this.options.sessions.workspacePath?.(sourceSessionId);
     if (!sessionPath || !samePath(sourcePath, await realpath(sessionPath))) {
       throw new Error("Selected workspace path does not match the source DSH Session");
     }
@@ -119,7 +119,7 @@ export class OwnerRoomProjectService {
     if (room.hostSessionId !== sourceSessionId && room.hostSessionId !== hostPrimarySessionId) {
       throw new Error("Room is no longer bound to the expected Host Session");
     }
-    const targetPath = this.options.sessions.workspacePath?.(hostPrimarySessionId);
+    const targetPath = await this.options.sessions.workspacePath?.(hostPrimarySessionId);
     if (!targetPath || !samePath(await realpath(targetPath), await realpath(project.workspacePath))) {
       throw new Error("Host Primary Session does not belong to the Room Project workspace");
     }

@@ -104,6 +104,10 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+.panelContents[data-collab-rooms-embedded='true'] {
+  height: 100%;
+}
+
 .panelHeader {
   flex: none;
   display: flex;
@@ -209,6 +213,7 @@
 }
 
 .gatewaySection,
+.workspaceCreator,
 .roomSection {
   padding: 14px 0 18px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
@@ -330,6 +335,42 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.workspaceCreator {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 0;
+}
+
+.workspacePickerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspacePath,
+.workspacePlaceholder {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspacePath {
+  padding: 5px 7px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.workspacePlaceholder {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .ownedCreator {

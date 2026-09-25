@@ -85,7 +85,7 @@ describe("Collab Bar", () => {
     expect(html).toContain("Alice");
   });
 
-  it("composes room discussion and three panels without recreating a root room surface or native conversation", () => {
+  it("composes room discussion, a local composer, and three panels without recreating a root room surface", () => {
     const html = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },
       selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "Release planning" },
@@ -101,10 +101,10 @@ describe("Collab Bar", () => {
     expect(html).toContain(">Changes<");
     expect(html).toContain(">Reviews<");
     expect(html).toContain("Ready for review");
-    expect(html).not.toContain('name="collab-text"');
+    expect(html).toContain('name="collab-text"');
     expect(html).not.toContain('data-collab-agent-queue="true"');
-    expect(html).not.toContain("<textarea");
-    expect(html).not.toContain('data-collab-surface="room"');
+    expect(html).toContain("<textarea");
+    expect(html).toContain('data-collab-surface="room"');
     expect(html).not.toContain('data-collab-room-overlay="true"');
     expect(html).not.toContain("Agent message queue");
   });
@@ -200,7 +200,7 @@ describe("Collab Bar", () => {
     expect(barCss).toContain("min-width: 0");
     expect(roomCss).toMatch(/\.dock\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s);
     expect(roomCss).toMatch(/\.timeline\s*\{[^}]*flex:\s*1/s);
-    expect(roomCss).not.toMatch(/\.composer\s*\{/);
+    expect(roomCss).toMatch(/\.composer\s*\{/);
     expect(roomCss).not.toMatch(/\.queue\s*\{/);
     expect(roomCss).not.toContain("width: min(900px");
   });

@@ -25,6 +25,10 @@ export interface RegisterRoomProjectInput {
   workspacePath: string;
 }
 
+export interface RoomProjectRegistrationOptions {
+  replaceMember?: boolean;
+}
+
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw invalidInput(`${field} must not be blank`, { field });
   return value.trim();
@@ -106,14 +110,22 @@ export function validateRoomProjectSnapshot(value: unknown): RoomProjectSnapshot
 export class RoomProjectStore {
   private readonly projects = new Map<string, RoomProject>();
 
-  register(input: RegisterRoomProjectInput): RoomProject {
+  register(input: RegisterRoomProjectInput, options: RoomProjectRegistrationOptions = {}): RoomProject {
     const next = normalizeRegistration(input);
     const existing = this.projects.get(next.roomId);
     if (existing) {
       if (existing.memberId !== next.memberId) {
-        throw new CollabError("REQUEST_CONFLICT", "Room Project belongs to another member; replace the member explicitly", {
-          roomId: next.roomId,
-        });
+        if (!options.replaceMember) {
+          throw new CollabError("REQUEST_CONFLICT", "Room Project belongs to another member; replace the member explicitly", {
+            roomId: next.roomId,
+          });
+        }
+        if (!samePath(existing.workspacePath, next.workspacePath)) {
+          throw new CollabError("REQUEST_CONFLICT", "Room Project is already registered at another workspace", {
+            roomId: next.roomId,
+          });
+        }
+        existing.memberId = next.memberId;
       }
       if (!samePath(existing.workspacePath, next.workspacePath)) {
         throw new CollabError("REQUEST_CONFLICT", "Room Project is already registered at another workspace", {

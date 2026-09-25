@@ -3,6 +3,7 @@ import {
   RoomProjectStore,
   type RegisterRoomProjectInput,
   type RoomProject,
+  type RoomProjectRegistrationOptions,
   type RoomProjectSnapshot,
 } from "./room-projects.js";
 
@@ -27,8 +28,8 @@ export class DshRoomProjectRegistrar {
     workspaces: DshRoomProjectWorkspaceService;
   }) {}
 
-  register(input: DshRoomProjectRegistrationInput): Promise<RoomProject> {
-    const operation = this.queue.then(() => this.registerNow(input));
+  register(input: DshRoomProjectRegistrationInput, options: RoomProjectRegistrationOptions = {}): Promise<RoomProject> {
+    const operation = this.queue.then(() => this.registerNow(input, options));
     this.queue = operation.then(() => undefined, () => undefined);
     return operation;
   }
@@ -39,11 +40,11 @@ export class DshRoomProjectRegistrar {
     return operation;
   }
 
-  private async registerNow(input: DshRoomProjectRegistrationInput): Promise<RoomProject> {
+  private async registerNow(input: DshRoomProjectRegistrationInput, options: RoomProjectRegistrationOptions): Promise<RoomProject> {
     const canonicalInput = { ...input, workspacePath: await realpath(input.workspacePath) };
     // Keep the live mapping untouched until both DSH and durable storage succeed.
     const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
-    let project = staged.register(canonicalInput);
+    let project = staged.register(canonicalInput, options);
     const wasRegistered = project.nativeWorkspaceId !== undefined;
     if (!wasRegistered) {
       const nativeWorkspaceTitle = input.nativeWorkspaceTitle?.trim() || project.roomTitle;
@@ -52,7 +53,7 @@ export class DshRoomProjectRegistrar {
     }
     await this.input.persistence.save(staged.snapshot());
 
-    const committed = this.input.store.register(canonicalInput);
+    const committed = this.input.store.register(canonicalInput, options);
     if (wasRegistered) return committed;
     if (!project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
     return this.input.store.setNativeWorkspaceId({ roomId: committed.roomId, nativeWorkspaceId: project.nativeWorkspaceId });

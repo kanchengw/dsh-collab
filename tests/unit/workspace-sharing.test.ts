@@ -71,25 +71,29 @@ describe("Workspace Sharing", () => {
     expect(new WorkspaceSharingRegistry().get("room-1")).toEqual({ roomId: "room-1", enabled: false, revision: 0 });
   });
 
-  it("keeps durable event revisions monotonic when current sharing state resets after restart", () => {
+  it("restores the latest durable sharing state after restart", () => {
     const first = setup();
-    first.service.setSharing({ roomId: "room-1", principalId: "host", enabled: true });
+    const enabled = first.service.setSharing({ roomId: "room-1", principalId: "host", enabled: true });
 
     const ledger = EventLedger.fromSnapshot(first.ledger.snapshot());
+    const registry = new WorkspaceSharingRegistry();
+    registry.restore(enabled);
     const service = new WorkspaceService({
       rooms: first.rooms,
       ledger,
-      registry: new WorkspaceSharingRegistry(),
+      registry,
       now: () => 20,
     });
     expect(service.getState({ roomId: "room-1", principalId: "host" })).toEqual({
       roomId: "room-1",
-      enabled: false,
+      enabled: true,
+      enabledBy: "member-host",
+      enabledAt: 10,
       revision: 1,
     });
-    const enabled = service.setSharing({ roomId: "room-1", principalId: "host", enabled: true });
+    const disabled = service.setSharing({ roomId: "room-1", principalId: "host", enabled: false });
 
-    expect(enabled.revision).toBe(2);
+    expect(disabled.revision).toBe(2);
     expect(ledger.readAfter("room-1", 0).map((event) => event.eventId)).toEqual([
       "workspace-sharing:room-1:1",
       "workspace-sharing:room-1:2",

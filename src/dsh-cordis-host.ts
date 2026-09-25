@@ -10,12 +10,22 @@ import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import type { WorkspaceSnapshotProvider } from "./workspace-service.js";
 import { supportsDshCanonicalWorkspace } from "./canonical-workspace.js";
 import type { RoomSummaryLlmPort } from "./room-summary.js";
+import type { DshCollabPersistedSettings } from "./settings.js";
 import { bindDshNativeAgentContext, type DshNativeAgentContextAgent, type DshNativeAgentContextRegistry } from "./dsh-native-agent-context.js";
 import { createDshRoomProjectSessionList, DshRoomProjectSessionObserver } from "./dsh-room-project-sessions.js";
 import type { RoomProjectStore } from "./room-projects.js";
 
 export interface DshCordisHostContext {
   agents: DshCordisAgentRegistry;
+  sessions?: DshSessionStore;
+  sessionQuery?: DshSessionQuery;
+  webServer?: unknown;
+  settings?: {
+    register(namespace: string, schema: unknown, options: Record<string, unknown>): {
+      get(): DshCollabPersistedSettings;
+      update(patch: object): Promise<void>;
+    };
+  };
   llm?: RoomSummaryLlmPort;
   fs?: DshWorkspaceFileSystem;
   subprocess?: DshRepositorySubprocess;
@@ -26,6 +36,31 @@ export interface DshCordisHostContext {
     (event: "agent/assistant-stream", listener: (payload: DshAssistantStreamPayload<object>) => void): () => void;
     (event: "session/event", listener: DshCordisSessionEventListener): () => void;
   };
+}
+
+export interface DshSessionStore {
+  get(sessionId: string): { readonly header?: { readonly cwd?: string } } | undefined;
+}
+
+export interface DshSessionQuery {
+  listSessions(): Promise<readonly {
+    readonly header: { readonly id: string; readonly cwd?: string };
+  }[]>;
+}
+
+/** Resolve a DSH Session cwd from a live Agent or the cold Session query. */
+export async function resolveDshSessionWorkspacePath(input: {
+  agents: DshCordisAgentRegistry;
+  sessions?: DshSessionStore;
+  sessionQuery?: DshSessionQuery;
+}, sessionId: string): Promise<string | undefined> {
+  const storedPath = input.sessions?.get(sessionId)?.header?.cwd;
+  if (typeof storedPath === "string" && storedPath.trim() !== "") return storedPath;
+  const livePath = input.agents.get(sessionId)?.session?.header?.cwd;
+  if (typeof livePath === "string" && livePath.trim() !== "") return livePath;
+  if (!input.sessionQuery) return undefined;
+  const record = (await input.sessionQuery.listSessions()).find((candidate) => candidate.header.id === sessionId);
+  return record?.header.cwd;
 }
 
 /** Connects live DSH Agent lifecycle to persisted Room Project associations. */
@@ -99,13 +134,14 @@ export interface MountedDshCollabHost {
 
 export function createDshWorkspaceSnapshotProvider(input: {
   sessions: DshSessionService;
+  workspacePath?: (sessionId: string) => Promise<string | undefined>;
   fs: DshWorkspaceFileSystem;
   subprocess: DshRepositorySubprocess;
   store: WorkspaceSnapshotStore;
 }): WorkspaceSnapshotProvider {
   return {
     async capture(request) {
-      const cwd = input.sessions.workspacePath?.(request.hostSessionId);
+      const cwd = await input.workspacePath?.(request.hostSessionId) ?? input.sessions.workspacePath?.(request.hostSessionId);
       if (!cwd) throw new Error("Host session does not expose a workspace path");
       return await new WorkspaceSnapshotCapture({
         commands: createDshRepositoryCommandPort({ subprocess: input.subprocess, cwd }),
@@ -117,7 +153,7 @@ export function createDshWorkspaceSnapshotProvider(input: {
     readFile: (snapshotId, path) => input.store.readFile(snapshotId, path),
     readChunk: (snapshotId, path, offset, length) => input.store.readChunk(snapshotId, path, offset, length),
     async captureReviewDiffs(request) {
-      const cwd = input.sessions.workspacePath?.(request.snapshot.hostSessionId);
+      const cwd = await input.workspacePath?.(request.snapshot.hostSessionId) ?? input.sessions.workspacePath?.(request.snapshot.hostSessionId);
       if (!cwd) throw new Error("Host session does not expose a workspace path");
       return await captureReviewDiffs({
         ...request,
@@ -141,8 +177,9 @@ export function mountDshCollabCordisHost(context: DshCordisHostContext, config: 
   const snapshot = persistence?.loadSync();
   const workspaceSnapshots = context.fs && context.subprocess
     ? createDshWorkspaceSnapshotProvider({
-        sessions,
-        fs: context.fs,
+      sessions,
+      workspacePath: (sessionId) => resolveDshSessionWorkspacePath({ agents: context.agents, sessions: context.sessions, sessionQuery: context.sessionQuery }, sessionId),
+      fs: context.fs,
         subprocess: context.subprocess,
         store: new WorkspaceSnapshotStore(resolveDefaultCollabSnapshotDir()),
       })

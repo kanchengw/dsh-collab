@@ -39,7 +39,7 @@ export class ParticipantRoomWorkspaceJoiner {
         memberId: input.memberId,
         roomTitle: input.roomTitle,
         workspacePath: workspace.workspacePath,
-      }),
+      }, { replaceMember: true }),
       workspace,
     };
   }

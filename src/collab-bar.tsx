@@ -35,10 +35,11 @@ export function collabRoomMatchesScope(selection: DshCollabRoomSelection, scope:
     : selection.localSessionId === scope.sessionId;
 }
 
-function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnapshot["connection"] }): ReactNode {
+function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnapshot["connection"]; action?: { label: string; onClick: () => void } }): ReactNode {
   return <div className={css.empty} role="status" data-connection={props.connection ?? "offline"}>
     <span className={css.emptyMark} aria-hidden="true"><span /></span>
     <p>{props.children}</p>
+    {props.action ? <button type="button" className={css.emptyAction} onClick={props.action.onClick}>{props.action.label}</button> : null}
   </div>;
 }
 
@@ -82,13 +83,14 @@ export function CollabBarView(props: {
   reviewsPort?: CollabReviewsPort;
   initialTab?: CollabBarTab;
   t?: CollabTranslate;
+  onOpenRooms?: () => void;
 }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const [activeTab, setActiveTab] = useState<CollabBarTab>(props.initialTab ?? "activity");
   const id = useId();
   const selection = props.selection;
   if (!selection || !collabRoomMatchesScope(selection, props.scope)) {
-    return <aside className={css.bar} data-collab-bar="true" data-connection="offline"><EmptyState>{t("bar.noRoom")}</EmptyState></aside>;
+    return <aside className={css.bar} data-collab-bar="true" data-connection="offline"><EmptyState action={props.onOpenRooms ? { label: t("bar.openRooms"), onClick: props.onOpenRooms } : undefined}>{t("bar.noRoom")}</EmptyState></aside>;
   }
   const snapshot = props.roomSnapshot;
   const selectedRole = selection.kind === "owned" ? "host" : "participant";

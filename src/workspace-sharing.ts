@@ -20,6 +20,12 @@ export class WorkspaceSharingRegistry {
     return structuredClone(state);
   }
 
+  restore(state: WorkspaceSharingState): void {
+    const current = this.states.get(state.roomId);
+    if (current && state.revision < current.revision) throw new Error("Workspace Sharing restore revision must not go backwards");
+    this.states.set(state.roomId, structuredClone(state));
+  }
+
   clear(roomId: string): void {
     this.states.delete(roomId);
   }

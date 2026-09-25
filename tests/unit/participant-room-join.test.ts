@@ -123,6 +123,19 @@ describe("ParticipantRoomWorkspaceJoiner", () => {
     expect(fixture.snapshots).toHaveLength(1);
   });
 
+  it("replaces a stale local member mapping when the participant rejoins the same room", async () => {
+    const latest = await latestVersionFixture();
+    const fixture = await joinerFixture({ downloadLatest: async () => ({ record: latest.record }) });
+    const joiner = fixture.createJoiner(latest.artifacts);
+
+    await joiner.join({ roomId: "room-atlas", memberId: "stale-member", roomTitle: "Atlas", token: "room-token" });
+    const rejoined = await joiner.join({ roomId: "room-atlas", memberId: "current-member", roomTitle: "Atlas", token: "room-token" });
+
+    expect(rejoined.project.memberId).toBe("current-member");
+    expect(fixture.store.get("room-atlas")?.memberId).toBe("current-member");
+    expect(fixture.dshCalls).toHaveLength(1);
+  });
+
   it("does not create a local project before an explicit latest-version download succeeds", async () => {
     const latest = await latestVersionFixture();
     const fixture = await joinerFixture({

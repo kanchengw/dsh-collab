@@ -108,27 +108,6 @@
   background: var(--dsw-alias-bg-layer-3);
 }
 
-.workspaceSection {
-  padding: 2px 0 14px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-}
-
-.workspacePath {
-  display: block;
-  margin-top: 10px;
-  overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.workspaceForm {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 .sectionHead {
   display: flex;
   align-items: flex-start;
@@ -340,10 +319,6 @@
   .limitGrid {
     grid-template-columns: 1fr;
     gap: 0;
-  }
-
-  .workspaceForm {
-    grid-template-columns: 1fr;
   }
 
   .formFooter {

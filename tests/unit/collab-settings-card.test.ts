@@ -21,18 +21,12 @@ const port = {
 };
 
 describe("DSH-native collaboration settings", () => {
-  it("offers Collab workspace creation from the current DSH workspace before Gateway settings", () => {
-    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, {
-      port,
-      createOwnedRoom: vi.fn(),
-      currentWorkspacePath: "C:\\work\\atlas",
-    }));
+  it("keeps workspace creation out of plugin settings", () => {
+    const html = renderToStaticMarkup(createElement(DshCollabSettingsPanel, { port }));
 
-    expect(html).toContain("Create a Collab workspace from the current workspace");
-    expect(html).toContain("C:\\work\\atlas");
-    expect(html).toContain('name="ownedRoomTitle"');
-    expect(html).toContain("Create Collab workspace");
-    expect(html.indexOf("Create a Collab workspace from the current workspace")).toBeLessThan(html.indexOf("Collab Gateway"));
+    expect(html).not.toContain("Create a Collab workspace");
+    expect(html).not.toContain('name="ownedRoomTitle"');
+    expect(html).toContain("Collab Gateway");
   });
 
   it("owns the Gateway runtime switch inside the plugin settings", () => {
@@ -92,7 +86,7 @@ describe("DSH-native collaboration settings", () => {
     expect(html).toContain('value="5"');
     expect(html).toContain("Used the next time the Gateway starts");
     expect(html).not.toContain("trusted LAN/VPN");
-    expect(html.match(/<h3/g)).toHaveLength(2);
+    expect(html.match(/<h3/g)).toHaveLength(1);
   });
 
   it("warns when a running Gateway still uses the previous settings", () => {

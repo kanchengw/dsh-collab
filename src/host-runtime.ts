@@ -105,6 +105,14 @@ function ledgerHasEventTypes(ledger: EventLedger, types: ReadonlySet<string>): b
   return ledger.snapshot().rooms.some((room) => room.events.some((event) => types.has(event.type)));
 }
 
+function restoreWorkspaceSharing(ledger: EventLedger, registry: WorkspaceSharingRegistry): void {
+  for (const room of ledger.snapshot().rooms) {
+    for (const event of room.events) {
+      if (event.type === "workspace-sharing.changed") registry.restore(event.payload as Parameters<WorkspaceSharingRegistry["restore"]>[0]);
+    }
+  }
+}
+
 /** Build the Host runtime used by a DSH process or a local E2E harness. */
 export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions): DshCollabHostRuntime {
   const snapshot = options.snapshot
@@ -125,6 +133,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
   const activeRooms = new ActiveRoomRegistry();
   const workspaceSharing = new WorkspaceSharingRegistry();
+  restoreWorkspaceSharing(ledger, workspaceSharing);
   const workspace = new WorkspaceService({ rooms, ledger, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });
   const workspaceVersions = options.workspaceSnapshots?.readFile
     ? new WorkspaceVersionService({

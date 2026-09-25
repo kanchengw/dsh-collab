@@ -5,7 +5,7 @@ import { validateWorkspaceVersionRecord, type WorkspaceVersionRecord } from "./w
 
 export interface DshRoomProjectNavigationService {
   connectWorkspace(workspaceId: string): Promise<string>;
-  sessions: { open(sessionId: string): void };
+  openSession(sessionId: string): void;
 }
 
 export interface OwnerRoomWorkspaceBootstrapResult {
@@ -33,7 +33,7 @@ export class OwnerRoomWorkspaceBootstrapper {
     if (!prepared.project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
 
     const sessionId = await this.options.workspaceNavigation.connectWorkspace(prepared.project.nativeWorkspaceId);
-    this.options.workspaceNavigation.sessions.open(sessionId);
+    this.options.workspaceNavigation.openSession(sessionId);
     return {
       project: await this.complete({ roomId: prepared.project.roomId, sessionId }),
       workspace: prepared.workspace,

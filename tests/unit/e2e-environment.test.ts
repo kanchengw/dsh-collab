@@ -21,7 +21,7 @@ describe("isolated two-DSH browser environment", () => {
     expect(assets).not.toMatch(/nginx|127\.0\.0\.2|3182|3183|participantGatewayUrl|trustedProxy|localProxy/i);
   });
 
-  it("adds only the browser-test directory picker overlay to the released plugin", () => {
+  it("keeps the released plugin on DSH's native auto directory picker", () => {
     const clientPatch = read("e2e/dsh-client.patch.yml");
     const prepare = read("e2e/prepare.ps1");
     const start = read("e2e/start.ps1");
@@ -30,9 +30,9 @@ describe("isolated two-DSH browser environment", () => {
     expect(existsSync(resolve(root, "e2e/dsh-participant.patch.yml"))).toBe(false);
     expect(clientPatch).not.toContain("collab-host");
     expect(clientPatch).not.toMatch(/roomId|hostId|hostDisplayName|gatewayPort|__CLIENT_/);
-    expect(clientPatch).toMatch(/id: directory-picker\r?\n  disabled: true/);
-    expect(clientPatch).toContain("@deepseek-ai/dsh-host-directory-picker-browse");
-    expect(clientPatch).toContain("@deepseek-ai/dsh-client-ui-directory-picker-browse");
+    expect(clientPatch).not.toContain("directory-picker-browse");
+    expect(clientPatch).not.toContain("directory-picker-native");
+    expect(clientPatch).not.toContain("disabled: true");
 
     expect(prepare).toContain('Id = "client-a"');
     expect(prepare).toContain('Id = "client-b"');
@@ -67,17 +67,23 @@ describe("isolated two-DSH browser environment", () => {
   it("rejects a DSH repository that is not the supported runtime version", () => {
     const prepare = read("e2e/prepare.ps1");
 
-    expect(prepare).toContain('$ExpectedDshVersion = "0.1.3-alpha.1"');
+    expect(prepare).toContain('$ExpectedDshVersion = "0.1.7-rc.2"');
     expect(prepare).toContain('Join-Path $DshRepo "apps/cli/package.json"');
     expect(prepare).toContain("ConvertFrom-Json");
     expect(prepare).toContain("DSH runtime version mismatch");
   });
 
-  it("pins the verified sidebar contract and rejects experimental Agent Team dependencies", () => {
+  it("uses the official DSH Sidebar contract and rejects experimental Agent Team dependencies", () => {
     const prepare = read("e2e/prepare.ps1");
+    const manifest = JSON.parse(read("package.json")) as { dsh?: { client?: { inject?: string[] } }; peerDependencies?: Record<string, string> };
 
-    expect(prepare).toContain('peerDependencies."dsh-better-sidebar"');
-    expect(prepare).toContain('">=0.17.1 <0.19.0"');
+    expect(manifest.peerDependencies?.["dsh-better-sidebar"]).toBeUndefined();
+    expect(manifest.dsh?.client?.inject).toEqual(expect.arrayContaining([
+      "@deepseek-ai/dsh-client-ui-sidebar",
+      "@deepseek-ai/dsh-client-ui-sidebar-right",
+    ]));
+    expect(prepare).toContain('remove dsh-better-sidebar');
+    expect(prepare).toContain('$_ -ne "dsh-better-sidebar"');
     expect(prepare).toContain("experimental-agent-team");
     expect(prepare).toContain("experimental-tool-agent-team");
     expect(prepare).toContain("experimental-client-ui-agent-team");

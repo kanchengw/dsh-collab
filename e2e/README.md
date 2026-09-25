@@ -13,19 +13,19 @@ network` path; neither profile has a preassigned room role.
 
 The prepare script validates `apps/cli/package.json` before building or
 installing the plugin and rejects any DSH repository other than
-`0.1.3-alpha.1`.
+`0.1.7-rc.2`.
 
 Compatibility baseline:
 
 | Component | Required baseline | Evidence |
 | --- | --- | --- |
-| DSH runtime | `0.1.3-alpha.1` | `apps/cli/package.json` preflight |
-| Better Sidebar | `>=0.17.1 <0.19.0` optional peer | Collab manifest and provider contract |
+| DSH runtime | `0.1.7-rc.2` | `apps/cli/package.json` preflight |
+| DSH Sidebar | Official left/right Sidebar extensions from `dsh-web-app` | Collab manifest injection list and runtime registration |
 | Agent Team | Not used by Collab | prepare-time dependency rejection |
 
-The profile must still provide a real compatible Better Sidebar at runtime for
-the Collab Bar. This repository does not claim that an external Sidebar
-checkout or installation has been verified by `prepare.ps1`.
+The profile does not install or bundle `dsh-better-sidebar`. Collab registers its
+Rooms panel and session-scoped Collab tab through the official DSH Sidebar
+services shipped by `dsh-web-app`.
 
 Run the start commands in separate terminals. Client A opens at
 `http://127.0.0.1:3082`; Client B opens at `http://127.0.0.1:3083`.
@@ -41,9 +41,9 @@ role or client identity:
 
 The DSH UI listeners remain loopback at `3082` and `3083` and are never exposed
 by Collab. Generated DSH homes live under `e2e/.state/` and are excluded from
-Git. The Cordis overlay only replaces the native Windows directory picker for
-browser automation; the settings overlay selects the released Private network
-mode with the same preferred port for both profiles. The running plugin selects
+Git. The client patch is intentionally empty so the released runtime keeps DSH's
+native auto directory picker; the settings overlay selects the released Private
+network mode with the same preferred port for both profiles. The running plugin selects
 the private address when each Gateway starts, exactly as it does for users.
 Both profiles install the package from the project root, so release changes
 require only rebuilding and rerunning the prepare script; there is no copied

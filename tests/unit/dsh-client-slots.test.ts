@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, resolveDshCollabRoomSelection, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 import type { ParticipantResumeState } from "../../src/dsh-browser-client.js";
@@ -28,6 +28,35 @@ function memoryParticipantSecrets() {
 }
 
 describe("real DSH client slot adapter", () => {
+  it("restores an Owned room selection from the current DSH Session and persisted room list", () => {
+    expect(resolveDshCollabRoomSelection("session-owner", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-owner", title: "Release", sharing: true }],
+    } as never, {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host",
+      connection: "offline",
+      onlineCount: 0,
+      canSteer: true,
+    })).toEqual({ kind: "owned", roomId: "room-owner", hostSessionId: "session-owner", roomTitle: "Release" });
+  });
+
+  it("restores a Joined room selection for an offline participant Session", () => {
+    expect(resolveDshCollabRoomSelection("session-participant", {
+      listJoinedRooms: () => [{ gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-joined", memberId: "member-1", credential: "secret", roomTitle: "Design" }],
+    } as never, {
+      roomId: "room-joined",
+      gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+      roomTitle: "Design",
+      hostDisplayName: "Owner",
+      role: "participant",
+      connection: "offline",
+      onlineCount: 0,
+      canSteer: false,
+    })).toEqual({ kind: "joined", roomId: "room-joined", gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomTitle: "Design", hostDisplayName: "Owner", localSessionId: "session-participant" });
+  });
+
   it("reuses the registered native Room Workspace when the project already has an id", async () => {
     const order: string[] = [];
     const opener = createDshParticipantWorkspaceOpener({
@@ -42,10 +71,9 @@ describe("real DSH client slot adapter", () => {
           order.push(`connect-workspace:${workspaceId}`);
           return "session-room";
         },
+        openSession: () => { order.push("open-session"); },
       },
-      sessions: {
-        open: () => { order.push("open-session"); },
-      },
+      sessions: {},
       panelHost: () => ({
         register: () => () => {},
         open: () => { order.push("open-collab-bar"); },
@@ -78,6 +106,9 @@ describe("real DSH client slot adapter", () => {
       "workspaces",
       "uiWorkspace",
       "sessions",
+      "layout",
+      "sidebarRight",
+      "sidebarRightTabs",
     ]);
   });
 
@@ -384,30 +415,25 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
-  it("provides the Host Room Project creator to the registered Rooms overlay", () => {
-    let overlay: ((props: Record<string, unknown>) => unknown) | undefined;
+  it("provides the Host Room Project creator to the registered Rooms panel", () => {
+    let roomsPanel: ((props: Record<string, unknown>) => unknown) | undefined;
     let settingsItem: ((props: Record<string, unknown>) => unknown) | undefined;
-    const betterSidebar = {
-      version: "0.17.1",
-      features: ["targetedOpen"],
-      registerTab: vi.fn(() => () => {}),
-      openTab: vi.fn(),
-      getSnapshot: () => ({}),
-    };
     const context = {
       slots: {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
         register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
-          if (options.name === "shell.overlay") overlay = component;
+          if (options.name === "main") roomsPanel = component;
           if (options.name === "settings.plugin.item") settingsItem = component;
           return () => {};
         }),
       },
       get: vi.fn((name: string) => {
-        if (name === "betterSidebar") return betterSidebar;
+        if (name === "layout") return { selectPanel: vi.fn() };
+        if (name === "sidebarRight") return { openTab: vi.fn() };
+        if (name === "sidebarRightTabs") return { register: vi.fn(() => () => {}) };
         if (name === "connection") return { rpc: { call: vi.fn() } };
         if (name === "workspaces") return { create: vi.fn() };
-        if (name === "uiWorkspace") return { connectWorkspace: vi.fn() };
+        if (name === "uiWorkspace") return { connectWorkspace: vi.fn(), pickDirectory: vi.fn(async () => "C:\\work\\atlas") };
         if (name === "sessions") return {
           open: vi.fn(),
           list: {
@@ -424,17 +450,44 @@ describe("real DSH client slot adapter", () => {
 
     applyDshCollabClient(context as unknown as DshCollabClientContext);
 
-    const element = overlay?.({}) as React.ReactElement<{ createOwnedRoom?: unknown }> | undefined;
+    const element = roomsPanel?.({}) as React.ReactElement<{ createOwnedRoom?: unknown; pickDirectory?: unknown }> | undefined;
     expect(element?.props.createOwnedRoom).toEqual(expect.any(Function));
+    expect(element?.props.pickDirectory).toEqual(expect.any(Function));
     const settings = settingsItem?.({}) as React.ReactElement<{ createOwnedRoom?: unknown; currentWorkspacePath?: string }> | undefined;
-    expect(settings?.props.createOwnedRoom).toEqual(expect.any(Function));
-    expect(settings?.props.currentWorkspacePath).toBe("C:\\work\\atlas");
+    expect(settings?.props.createOwnedRoom).toBeUndefined();
+    expect(settings?.props.currentWorkspacePath).toBeUndefined();
+  });
+
+  it("keeps the official Rooms entry visible when the right Sidebar services are unavailable", () => {
+    const registrations: string[] = [];
+    const context = {
+      slots: {
+        inject: vi.fn((_name: string, register: () => unknown) => register()),
+        register: vi.fn((options: Record<string, unknown>) => {
+          registrations.push(String(options.name));
+          return () => {};
+        }),
+      },
+      get: vi.fn((name: string) => {
+        if (name === "layout") return { selectPanel: vi.fn() };
+        return undefined;
+      }),
+    };
+
+    applyDshCollabClient(context as DshCollabClientContext);
+
+    expect(registrations).toContain("sidebar.panellist");
+    expect(registrations).toContain("main");
+    expect(registrations).not.toContain("sidebar.footer.action");
+    expect(registrations).not.toContain("shell.overlay");
   });
 
   it("opens a Joined Room through the installed-plugin production composition", async () => {
+    vi.useFakeTimers();
+    try {
     const order: string[] = [];
     let connected = false;
-    let overlay: ((props: Record<string, unknown>) => unknown) | undefined;
+    let roomsPanel: ((props: Record<string, unknown>) => unknown) | undefined;
     const rpc = { call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
       expect(_channel).toBe("/dsh-collab");
       if (endpoint !== "participant/room-project/join") throw new Error("Unexpected RPC: " + endpoint);
@@ -481,31 +534,28 @@ describe("real DSH client slot adapter", () => {
       return "session-room-joined";
     });
     const openSession = vi.fn((sessionId: string) => { order.push("open-session:" + sessionId); });
-    const openTab = vi.fn((_seed: unknown, target: { sessionId: string; cwd?: string }) => {
-      order.push("open-collab-bar:" + target.sessionId);
+    const openTab = vi.fn((kind: string) => {
+      order.push("open-collab-bar:" + kind);
     });
-    const betterSidebar = {
-      version: "0.18.0",
-      features: ["targetedOpen"],
-      registerTab: vi.fn(() => () => {}),
-      openTab,
-    };
+    const sidebarRightTabs = { register: vi.fn(() => () => {}) };
     const context = {
       slots: {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
         register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
-          if (options.name === "shell.overlay") overlay = component;
+          if (options.name === "main") roomsPanel = component;
           return () => {};
         }),
       },
       get: vi.fn((name: string) => {
-        if (name === "betterSidebar") return betterSidebar;
+        if (name === "layout") return { selectPanel: vi.fn() };
+        if (name === "sidebarRight") return { openTab };
+        if (name === "sidebarRightTabs") return sidebarRightTabs;
         if (name === "collabClient") return { getSnapshot: () => snapshot, subscribe: () => () => {}, send: vi.fn() };
         if (name === "collabSettings") return collabSettings;
         if (name === "connection") return { rpc };
         if (name === "workspaces") return { create: createWorkspace };
-        if (name === "uiWorkspace") return { connectWorkspace };
-        if (name === "sessions") return { open: openSession };
+        if (name === "uiWorkspace") return { connectWorkspace, openSession };
+        if (name === "sessions") return {};
         return undefined;
       }),
       inject: vi.fn((_services: string[], callback: (scope: unknown) => void) => callback(context)),
@@ -513,7 +563,7 @@ describe("real DSH client slot adapter", () => {
 
     applyDshCollabClient(context as unknown as DshCollabClientContext);
 
-    const element = overlay?.({}) as React.ReactElement<{ openJoinedRoom?: (room: {
+    const element = roomsPanel?.({}) as React.ReactElement<{ openJoinedRoom?: (room: {
       roomId: string;
       gatewayEndpoint: string;
       roomTitle: string;
@@ -527,13 +577,15 @@ describe("real DSH client slot adapter", () => {
       roomTitle: "Release",
       hostDisplayName: "Host",
     });
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(order).toEqual([
       "connect-joined-room",
       "join-room-project",
       "connect-workspace:workspace-room-joined",
       "open-session:session-room-joined",
-      "open-collab-bar:session-room-joined",
+      "open-session:session-room-joined",
+      "open-collab-bar:dsh-collab",
     ]);
     expect(collabSettings.connectJoinedRoom).toHaveBeenCalledWith({
       gatewayEndpoint: "ws://192.168.1.3:4310/collab",
@@ -542,10 +594,10 @@ describe("real DSH client slot adapter", () => {
     expect(createWorkspace).not.toHaveBeenCalled();
     expect(connectWorkspace).toHaveBeenCalledWith("workspace-room-joined");
     expect(openSession).toHaveBeenCalledWith("session-room-joined");
-    expect(openTab).toHaveBeenCalledWith(
-      { type: "dsh-collab:room", url: "dsh-collab://panel" },
-      { sessionId: "session-room-joined", cwd: "C:\\rooms\\room-joined\\workspace" },
-    );
+    expect(openTab).toHaveBeenCalledWith("dsh-collab", { revealIfOpened: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("prepares an EasyTier Owner invitation through loopback RPC while preserving the Gateway invite token", async () => {
@@ -632,22 +684,27 @@ describe("real DSH client slot adapter", () => {
     expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/participant/start", { roomId: "room-1", gatewayPort: 4310, network });
   });
 
-  it("registers the Collab Bar with Better Sidebar without blocking the client plugin", () => {
+  it("registers the Collab Bar with the official right Sidebar without blocking the client plugin", () => {
     let panelHost: { register(input: { id: string; title: string; render(): null }): () => void; open(input: { sessionId: string }): void } | undefined;
-    let descriptor: { id: string; title: string | (() => string); component(input: { scope: { sessionId: string; cwd?: string }; visible: boolean }): unknown } | undefined;
-    const registerTab = vi.fn((input) => { descriptor = input; return () => {}; });
-    const betterSidebar = {
-      version: "0.17.1",
-      features: ["targetedOpen"],
-      registerTab,
-      openTab: vi.fn(),
-      getSnapshot: () => ({ sessionId: "session-current" }),
-    };
+    let descriptor: { id: string; component(input: { sessionId?: string; useTabInfo?: () => { tab: { visible: boolean } } }): unknown } | undefined;
+    const registerTab = vi.fn(() => () => {});
     let workspacePorts: unknown;
     const connection = { rpc: { call: vi.fn() } };
     const context = {
-      slots: { inject: vi.fn((_name: string, register: () => unknown) => register()), register: vi.fn(() => () => {}) },
-      get: vi.fn((name: string) => name === "betterSidebar" ? betterSidebar : name === "connection" ? connection : undefined),
+      slots: {
+        inject: vi.fn((_name: string, register: () => unknown) => register()),
+        register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
+          if (options.name === "sidebar.right.pane.tab") descriptor = { id: String(options.key), component };
+          return () => {};
+        }),
+      },
+      get: vi.fn((name: string) => {
+        if (name === "connection") return connection;
+        if (name === "layout") return { selectPanel: vi.fn() };
+        if (name === "sidebarRight") return { openTab: vi.fn() };
+        if (name === "sidebarRightTabs") return { register: registerTab };
+        return undefined;
+      }),
       provide: vi.fn((name: string, value: unknown) => {
         if (name === "collabPanelHost") panelHost = value as typeof panelHost;
         if (name === "collabWorkspacePorts") workspacePorts = value;
@@ -657,29 +714,24 @@ describe("real DSH client slot adapter", () => {
 
     applyDshCollabClient(context as unknown as DshCollabClientContext);
 
-    expect(inject).not.toContain("betterSidebar");
-    expect(context.inject).toHaveBeenCalledWith(["betterSidebar"], expect.any(Function));
     expect(panelHost).toBeDefined();
     expect(workspacePorts).toBeDefined();
     expect(registerTab).toHaveBeenCalledOnce();
-    expect(descriptor).toMatchObject({ id: "dsh-collab:room", single: true });
-    const html = renderToStaticMarkup(descriptor?.component({ scope: { sessionId: "session-current" }, visible: true }) as React.ReactElement);
+    expect(descriptor).toMatchObject({ id: "dsh-collab/right" });
+    const html = renderToStaticMarkup(descriptor?.component({ sessionId: "session-current" }) as React.ReactElement);
     expect(html).toContain('data-collab-bar="true"');
     expect(html).not.toContain("Changes are not connected");
     expect(html).not.toContain('data-collab-surface="room"');
   });
 
-  it("composes one native Room Project Session with the project-centric Collab Bar", () => {
+  it("composes one native Room Project Session with the project-centric Collab Bar", async () => {
+    vi.useFakeTimers();
     const slotNames: string[] = [];
     let panelHost: { register(input: { id: string; title: string; render(): null }): () => void; open(input: { sessionId: string; cwd?: string }): void } | undefined;
-    let descriptor: { id: string; component(input: { scope: { sessionId: string; cwd?: string }; visible: boolean }): unknown } | undefined;
-    const betterSidebar = {
-      version: "0.17.1",
-      features: ["targetedOpen"],
-      registerTab: vi.fn((input) => { descriptor = input; return () => {}; }),
-      openTab: vi.fn(),
-      getSnapshot: () => ({ sessionId: "session-room", cwd: "C:\\rooms\\release\\workspace" }),
-    };
+    let descriptor: { id: string; component(input: { sessionId?: string; useTabInfo?: () => { tab: { visible: boolean } } }): unknown } | undefined;
+    const openTab = vi.fn();
+    const selectPanel = vi.fn();
+    const registerTab = vi.fn(() => () => {});
     const collabClient = {
       getSnapshot: () => ({
         roomId: "room-1",
@@ -712,10 +764,16 @@ describe("real DSH client slot adapter", () => {
     const context = {
       slots: {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
-        register: vi.fn((options: Record<string, unknown>) => { slotNames.push(String(options.name)); return () => {}; }),
+        register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
+          slotNames.push(String(options.name));
+          if (options.name === "sidebar.right.pane.tab") descriptor = { id: String(options.key), component };
+          return () => {};
+        }),
       },
       get: vi.fn((name: string) => {
-        if (name === "betterSidebar") return betterSidebar;
+        if (name === "layout") return { selectPanel };
+        if (name === "sidebarRight") return { openTab };
+        if (name === "sidebarRightTabs") return { register: registerTab };
         if (name === "collabClient") return collabClient;
         if (name === "collabChanges") return changesPort;
         if (name === "collabReviews") return reviewsPort;
@@ -731,7 +789,8 @@ describe("real DSH client slot adapter", () => {
         sessionId: "session-room",
         cwd: "C:\\rooms\\release\\workspace",
       });
-      const panel = descriptor?.component({ scope: { sessionId: "session-room", cwd: "C:\\rooms\\release\\workspace" }, visible: true }) as React.ReactElement<{ changesPort?: unknown; reviewsPort?: unknown }>;
+      await vi.advanceTimersByTimeAsync(0);
+      const panel = descriptor?.component({ sessionId: "session-room", useTabInfo: () => ({ tab: { visible: true } }) }) as React.ReactElement<{ changesPort?: unknown; reviewsPort?: unknown }>;
       expect(panel.props.changesPort).toBe(changesPort);
       expect(panel.props.reviewsPort).toBe(reviewsPort);
 
@@ -745,17 +804,16 @@ describe("real DSH client slot adapter", () => {
       expect(html).toContain(">Activity<");
       expect(html).toContain(">Changes<");
       expect(html).toContain(">Reviews<");
-      expect(html).not.toContain("<textarea");
-      expect(html).not.toContain('name="collab-text"');
+      expect(html).toContain("<textarea");
+      expect(html).toContain('name="collab-text"');
       expect(html).not.toContain('data-collab-agent-queue="true"');
-      expect(slotNames).toEqual(["sidebar.footer.action", "shell.overlay", "settings.plugin.item"]);
+      expect(slotNames).toEqual(["sidebar.panellist", "main", "sidebar.right.pane.tab", "settings.plugin.item"]);
       expect(context.slots.inject).not.toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
-      expect(betterSidebar.openTab).toHaveBeenCalledWith(
-        { type: "dsh-collab:room", url: "dsh-collab://panel" },
-        { sessionId: "session-room", cwd: "C:\\rooms\\release\\workspace" },
-      );
+      expect(openTab).toHaveBeenCalledWith("dsh-collab", { revealIfOpened: true });
+      expect(selectPanel).toHaveBeenCalledWith(null);
     } finally {
       closeDshCollabRoom("session-room");
+      vi.useRealTimers();
     }
   });
 
@@ -765,8 +823,11 @@ describe("real DSH client slot adapter", () => {
       workspaces: {
         create: async () => { order.push("create-workspace"); return { workspaceId: "workspace-room" }; },
       },
-      workspaceNavigation: { connectWorkspace: async () => { order.push("connect-workspace"); return "session-room"; } },
-      sessions: { open: () => { order.push("open-session"); } },
+      workspaceNavigation: {
+        connectWorkspace: async () => { order.push("connect-workspace"); return "session-room"; },
+        openSession: () => { order.push("open-session"); },
+      },
+      sessions: {},
       panelHost: () => ({
         register: () => () => {},
         open: () => { order.push("open-collab-bar"); },

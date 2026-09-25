@@ -1,9 +1,9 @@
-import { createElement, useEffect, useState, type ReactNode } from "react";
+import { createElement, useEffect, useRef, useState, type ReactNode } from "react";
 import { MarkdownText, projectUserText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 import { type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, useDshCollabRoomSelection } from "./collab-rooms.js";
+import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom, useDshCollabRoomSelection, type DshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type CollabConnectionMethod, type DshCollabJoinedRoom, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
@@ -12,15 +12,16 @@ import type { RepositoryDiff, RepositoryInspection } from "./repository-inspecto
 import roomCss from "./collab-room.module.css";
 import type { LocalSideTaskSnapshot, LocalSnapshotAccess, StartExplainTaskInput, StartReviewTaskInput } from "./local-sidecar.js";
 import type { AgentQueueItem, RoomEvent } from "./types.js";
-import { resolveBetterSidebarHost, type BetterSidebarServicePort } from "./better-sidebar-host.js";
 import { CollabBarView } from "./collab-bar.js";
 import { projectCollabActivity, type CollabActivityItem } from "./collab-activity.js";
-import { COLLAB_PANEL_ID, type CollabPanelHost, type CollabPanelOpenTarget, type CollabPanelRenderScope } from "./collab-panel-host.js";
+import { type CollabPanelHost, type CollabPanelOpenTarget, type CollabPanelRenderScope } from "./collab-panel-host.js";
+import { collabPanelScopeFromTab, createOfficialCollabPanelHost, openOfficialCollabRooms, registerOfficialCollabSidebar, type DshLayoutPanelPort, type DshSidebarRightPort, type DshSidebarRightTabProps, type DshSidebarRightTabsPort } from "./dsh-sidebar-embedding.js";
 import type { CollabChangesPort } from "./collab-changes.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
 import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
 import type { CollabInvitationNetwork } from "./invitation.js";
 import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from "./collab-workspace-client.js";
+import { DshCollabComposer } from "./collab-composer.js";
 
 interface DshClientWorkspaces {
   create(input: { path: string }): Promise<{ workspaceId: string }>;
@@ -28,10 +29,11 @@ interface DshClientWorkspaces {
 
 interface DshClientWorkspaceNavigation {
   connectWorkspace(workspaceId: string): Promise<string>;
+  openSession(sessionId: string): void;
+  pickDirectory?(): Promise<string | null>;
 }
 
 interface DshClientSessions {
-  open(sessionId: string): void;
   list?: {
     getSnapshot(): {
       current?: string;
@@ -40,12 +42,22 @@ interface DshClientSessions {
   };
 }
 
-function currentDshSessionTarget(sessions: DshClientSessions): CollabPanelOpenTarget | undefined {
+function comparableWorkspacePath(path: string): string {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  return /^[A-Za-z]:[\\/]/.test(trimmed) ? trimmed.replace(/\//g, "\\").toLowerCase() : trimmed;
+}
+
+function sessionForWorkspacePath(sessions: DshClientSessions, sourcePath: string): string | undefined {
   const snapshot = sessions.list?.getSnapshot();
-  const sessionId = snapshot?.current;
-  if (typeof sessionId !== "string" || sessionId.trim() === "") return undefined;
-  const cwd = snapshot?.byId[sessionId]?.cwd;
-  return { sessionId, ...(typeof cwd === "string" && cwd.trim() !== "" ? { cwd } : {}) };
+  if (!snapshot) return undefined;
+  const expected = comparableWorkspacePath(sourcePath);
+  const matches = ([snapshot.current, ...Object.keys(snapshot.byId)] as Array<string | undefined>)
+    .filter((sessionId, index, values): sessionId is string => typeof sessionId === "string" && values.indexOf(sessionId) === index)
+    .find((sessionId) => {
+      const cwd = snapshot.byId[sessionId]?.cwd;
+      return typeof cwd === "string" && comparableWorkspacePath(cwd) === expected;
+    });
+  return matches;
 }
 
 export function createDshParticipantWorkspaceOpener(input: {
@@ -59,7 +71,7 @@ export function createDshParticipantWorkspaceOpener(input: {
     if (!panelHost) throw new Error("Collab Bar is unavailable");
     const workspaceId = room.nativeWorkspaceId ?? (await input.workspaces.create({ path: room.path })).workspaceId;
     const sessionId = await input.workspaceNavigation.connectWorkspace(workspaceId);
-    input.sessions.open(sessionId);
+    input.workspaceNavigation.openSession(sessionId);
     openDshCollabRoom({
       kind: "joined",
       roomId: room.roomId,
@@ -72,32 +84,37 @@ export function createDshParticipantWorkspaceOpener(input: {
 
 export function createDshOwnedRoomCreator(input: {
   rpc: DshClientConnectionRpc;
+  startGateway?(): Promise<unknown>;
+  workspaces: DshClientWorkspaces;
   workspaceNavigation: DshClientWorkspaceNavigation;
   sessions: DshClientSessions;
   panelHost(): CollabPanelHost | undefined;
-  getActiveTarget(): CollabPanelOpenTarget | undefined;
   refreshOwnedRooms?(): Promise<unknown>;
-}): (roomTitle: string) => Promise<boolean> {
-  return async (roomTitle) => {
+}): (roomTitle: string, sourcePath: string) => Promise<boolean> {
+  return async (roomTitle, sourcePath) => {
     const title = roomTitle.trim();
     if (title === "") throw new Error("Room title must not be blank");
-    const source = input.getActiveTarget();
-    if (!source?.cwd) throw new Error("Open a DSH workspace Session before creating a Collab Workspace");
     const panelHost = input.panelHost();
     if (!panelHost) throw new Error("Collab Bar is unavailable");
+    let sourceSessionId = sessionForWorkspacePath(input.sessions, sourcePath);
+    if (!sourceSessionId) {
+      const sourceWorkspace = await input.workspaces.create({ path: sourcePath });
+      sourceSessionId = await input.workspaceNavigation.connectWorkspace(sourceWorkspace.workspaceId);
+    }
+    await input.startGateway?.();
     const prepared = controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/prepare", {
-      sourcePath: source.cwd,
-      sourceSessionId: source.sessionId,
+      sourcePath,
+      sourceSessionId,
       roomTitle: title,
     }), "Owner Room Project preparation failed");
     if (typeof prepared.roomId !== "string" || typeof prepared.workspacePath !== "string" || typeof prepared.nativeWorkspaceId !== "string") {
       throw new Error("Invalid Owner Room Project response");
     }
     const hostPrimarySessionId = await input.workspaceNavigation.connectWorkspace(prepared.nativeWorkspaceId);
-    input.sessions.open(hostPrimarySessionId);
+    input.workspaceNavigation.openSession(hostPrimarySessionId);
     controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/complete", {
       roomId: prepared.roomId,
-      sourceSessionId: source.sessionId,
+      sourceSessionId,
       hostPrimarySessionId,
     }), "Owner Room Project completion failed");
     openDshCollabRoom({
@@ -280,6 +297,23 @@ export interface DshCollabSettingsPort {
   getLocalSnapshotAccess?(roomId: string): LocalSnapshotAccess;
 }
 
+export function resolveDshCollabRoomSelection(sessionId: string, settings: DshCollabSettingsPort | undefined, snapshot: DshCollabClientSnapshot): DshCollabRoomSelection | undefined {
+  const owned = settings?.getOwnedRooms?.().find((room) => room.roomId === snapshot.roomId && room.hostSessionId === sessionId);
+  if (owned) return { kind: "owned", roomId: owned.roomId, hostSessionId: owned.hostSessionId, roomTitle: owned.title };
+  if (snapshot.role !== "participant" || snapshot.roomId === "dsh-room") return undefined;
+  const joined = settings?.listJoinedRooms?.().find((room) => room.roomId === snapshot.roomId);
+  const gatewayEndpoint = joined?.gatewayEndpoint ?? snapshot.gatewayEndpoint;
+  if (!gatewayEndpoint) return undefined;
+  return {
+    kind: "joined",
+    roomId: snapshot.roomId,
+    gatewayEndpoint,
+    roomTitle: joined?.roomTitle ?? snapshot.roomTitle,
+    ...(joined?.hostDisplayName ?? snapshot.hostDisplayName ? { hostDisplayName: joined?.hostDisplayName ?? snapshot.hostDisplayName } : {}),
+    localSessionId: sessionId,
+  };
+}
+
 interface DshClientConnectionRpc {
   call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown>;
 }
@@ -299,7 +333,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope", "connection", "locale", "workspaces", "uiWorkspace", "sessions"];
+export const inject = ["slots", "settingsScope", "connection", "locale", "workspaces", "uiWorkspace", "sessions", "layout", "sidebarRight", "sidebarRightTabs"];
 
 interface DshCollabLocaleService {
   register(namespace: string, dictionaries: { zh: typeof zh; en: typeof en }): () => void;
@@ -1083,10 +1117,11 @@ export function DshCollabDock(props: { port?: DshCollabClientPort; fallback?: Ds
       currentMemberId: snapshot.memberId,
       t,
     }),
+    props.port ? createElement(DshCollabComposer, { port: props.port, snapshot, t }) : null,
   );
 }
 
-/** Small session-header action; the native conversation keeps its own single composer. */
+/** Render the Session-scoped Collab Bar inside the official right Sidebar. */
 function optionalService<T>(context: DshCollabClientContext, name: string): T | undefined {
   try { return context.get?.<T>(name); } catch { return undefined; }
 }
@@ -1097,14 +1132,49 @@ function DshCollabBarPanel(props: {
   workspacePorts?: DshCollabWorkspacePorts;
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
+  settings?: DshCollabSettingsPort;
+  panelHost?: CollabPanelHost;
+  openJoinedRoom?: (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string }) => void | Promise<void>;
+  openRooms?: () => void;
   t: CollabTranslate;
 }): ReactNode {
-  const selection = useDshCollabRoomSelection(props.scope.sessionId);
+  const rememberedSelection = useDshCollabRoomSelection(props.scope.sessionId);
   const snapshot = usePortSnapshot(props.port, fallbackSnapshot);
+  const selection = rememberedSelection ?? resolveDshCollabRoomSelection(props.scope.sessionId, props.settings, snapshot);
+  const autoOpenKey = useRef<string>();
   useEffect(() => {
     if (!props.workspacePorts || !selection || selection.roomId !== snapshot.roomId || snapshot.connection !== "online") return;
     void props.workspacePorts.activateSession(props.scope.sessionId, selection.roomId).catch(() => undefined);
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
+  useEffect(() => {
+    if (!selection) return;
+    const selectedRole = selection.kind === "owned" ? "host" : "participant";
+    const activeRoom = snapshot.roomId === selection.roomId && snapshot.role === selectedRole;
+    if (activeRoom && snapshot.connection !== "offline") return;
+    const key = `${props.scope.sessionId}:${selection.kind}:${selection.roomId}`;
+    if (autoOpenKey.current === key) return;
+    autoOpenKey.current = key;
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (selection.kind === "owned" && props.settings) {
+          const room = props.settings.getOwnedRooms?.().find((candidate) => candidate.roomId === selection.roomId);
+          if (!room) return;
+          if (room.sharing) {
+            if (!props.settings.bootstrap) throw new Error("Owned room connection is unavailable");
+            await props.settings.bootstrap(room.roomId);
+          } else {
+            await shareDshCollabOwnedRoom(props.settings, { roomId: room.roomId, hostSessionId: room.hostSessionId, title: room.title });
+          }
+        } else if (selection.kind === "joined" && props.openJoinedRoom) {
+          await props.openJoinedRoom(selection);
+        }
+      } catch {
+        if (!cancelled) autoOpenKey.current = undefined;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [props.openJoinedRoom, props.scope.sessionId, props.settings, selection, snapshot.connection, snapshot.roomId]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   return createElement(CollabBarView, {
@@ -1113,29 +1183,11 @@ function DshCollabBarPanel(props: {
     selection,
     roomSnapshot: snapshot,
     discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t }),
+    onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
     t: props.t,
   });
-}
-
-function installOptionalCollabPanelHost(
-  context: DshCollabClientContext,
-  render: (scope: CollabPanelRenderScope) => ReactNode,
-  title: () => string,
-  onResolution: (resolution: ReturnType<typeof resolveBetterSidebarHost>) => void,
-): void {
-  const install = (providerContext: DshCollabClientContext): void => {
-    const resolution = resolveBetterSidebarHost(optionalService<BetterSidebarServicePort>(providerContext, "betterSidebar"));
-    onResolution(resolution);
-    if (resolution.kind !== "ready") return;
-    providerContext.provide?.("collabPanelHost", resolution.host);
-    const register = (): (() => void) => resolution.host.register({ id: COLLAB_PANEL_ID, title, render });
-    if (providerContext.effect) providerContext.effect(register, "dsh-collab: Collab Bar registration");
-    else register();
-  };
-  if (context.inject) context.inject(["betterSidebar"], install);
-  else install(context);
 }
 
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
@@ -1179,15 +1231,25 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
   const workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   const sessions = optionalService<DshClientSessions>(context, "sessions");
-  let panelResolution = resolveBetterSidebarHost(undefined);
-  const createOwnedRoom = connection && workspaceNavigation && sessions
+  const layout = optionalService<DshLayoutPanelPort>(context, "layout");
+  const sidebarRight = optionalService<DshSidebarRightPort>(context, "sidebarRight");
+  const sidebarRightTabs = optionalService<DshSidebarRightTabsPort>(context, "sidebarRightTabs");
+  const panelHost = sidebarRight
+    ? createOfficialCollabPanelHost(
+        sidebarRight,
+        workspaceNavigation ? (sessionId) => { workspaceNavigation.openSession(sessionId); } : undefined,
+        layout ? (id) => { layout.selectPanel(id); } : undefined,
+      )
+    : undefined;
+  if (panelHost) context.provide?.("collabPanelHost", panelHost);
+  const createOwnedRoom = connection && workspaces && workspaceNavigation && sessions
     ? createDshOwnedRoomCreator({
         rpc: connection.rpc,
+        ...(settings?.startGateway ? { startGateway: () => settings.startGateway!() } : {}),
+        workspaces,
         workspaceNavigation,
         sessions,
-        panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
-        getActiveTarget: () => currentDshSessionTarget(sessions)
-          ?? (panelResolution.kind === "ready" ? panelResolution.getActiveTarget() : undefined),
+        panelHost: () => panelHost,
         ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
       })
     : undefined;
@@ -1195,7 +1257,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     workspaces,
     workspaceNavigation,
     sessions,
-    panelHost: () => panelResolution.kind === "ready" ? panelResolution.host : undefined,
+    panelHost: () => panelHost,
   }) : undefined;
   const openJoinedRoom = browserSettings && connection && openWorkspace
     && browserSettings.connectJoinedRoom && browserSettings.getRoomSnapshot && browserSettings.getLocalSnapshotAccess
@@ -1214,29 +1276,51 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     context.provide?.("collabWorkspacePorts", workspacePorts);
     context.effect?.(() => () => { workspacePorts.dispose(); }, "dsh-collab: workspace ports");
   }
-  installOptionalCollabPanelHost(context, (scope) => {
-    const scoped = workspacePorts?.forSession(scope.sessionId);
-    return createElement(DshCollabBarPanel, {
-      scope,
-      port: client,
-      workspacePorts,
-      changesPort: changesPort ?? scoped?.changes,
-      reviewsPort: reviewsPort ?? scoped?.reviews,
-      t: fallbackT,
-    });
-  }, () => fallbackT("bar.title"), (resolution) => { panelResolution = resolution; });
-  context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
-  context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsPanel, {
+  const roomPanel = (embedded: boolean, props: Record<string, unknown>): ReactNode => createElement(DshCollabRoomsPanel, {
+    embedded,
     port: settings,
-    panelHost: panelResolution,
+    panelHost,
     ...(createOwnedRoom ? { createOwnedRoom } : {}),
+    ...(workspaceNavigation?.pickDirectory ? { pickDirectory: workspaceNavigation.pickDirectory.bind(workspaceNavigation) } : {}),
     ...(openJoinedRoom ? { openJoinedRoom } : {}),
     t: translationFor(props),
-  })));
+  });
+  if (layout) {
+    registerOfficialCollabSidebar({
+      context,
+      layout,
+      ...(sidebarRight ? { sidebarRight } : {}),
+      ...(sidebarRightTabs ? { sidebarRightTabs } : {}),
+      label: fallbackT("rooms.title"),
+      guideDescription: () => fallbackT("bar.guideDescription"),
+      roomPanel: (embedded) => roomPanel(embedded, {}),
+      rightPanel: (props: DshSidebarRightTabProps) => {
+        const sessionId = props.sessionId;
+        if (!sessionId) return null;
+        const cwd = sessions?.list?.getSnapshot().byId[sessionId]?.cwd;
+        const scope = collabPanelScopeFromTab(props, cwd);
+        if (!scope) return null;
+        const scoped = workspacePorts?.forSession(scope.sessionId);
+        return createElement(DshCollabBarPanel, {
+          scope,
+          port: client,
+          settings,
+          panelHost,
+          ...(openJoinedRoom ? { openJoinedRoom } : {}),
+          openRooms: () => { openOfficialCollabRooms(layout, () => { setDshCollabRoomsOpen(true); }); },
+          workspacePorts,
+          changesPort: changesPort ?? scoped?.changes,
+          reviewsPort: reviewsPort ?? scoped?.reviews,
+          t: fallbackT,
+        });
+      },
+    });
+  } else {
+    context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
+    context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => roomPanel(false, props)));
+  }
   context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, {
     port: settings,
-    ...(createOwnedRoom ? { createOwnedRoom } : {}),
-    currentWorkspacePath: sessions ? currentDshSessionTarget(sessions)?.cwd : undefined,
     t: translationFor(props),
   })));
 }

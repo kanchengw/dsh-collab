@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost } from "../../src/dsh-cordis-host.js";
+import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, resolveDshSessionWorkspacePath } from "../../src/dsh-cordis-host.js";
 import { authenticateCollabRequest, isLoopbackAddress } from "../../src/http.js";
 import { apply, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_SETTINGS_NAMESPACE, EasyTierTransportCoordinator, HostSnapshotFile, type DshCollabPersistedSettings, type EasyTierRuntimeStatus } from "../../src/index.js";
 import { RoomStore } from "../../src/room.js";
@@ -41,6 +41,18 @@ async function waitUntilListening(port: number): Promise<void> {
 }
 
 describe("Cordis Host mount", () => {
+  it("resolves a cold Session workspace path through DSH sessionQuery", async () => {
+    const path = await resolveDshSessionWorkspacePath({
+      agents: { get: () => undefined },
+      sessions: { get: () => undefined },
+      sessionQuery: {
+        listSessions: async () => [{ header: { id: "cold-session", cwd: "E:\\projects\\dsh-collab" } }],
+      },
+    }, "cold-session");
+
+    expect(path).toBe("E:\\projects\\dsh-collab");
+  });
+
   const noPersistence = { stateFile: false as const };
 
   it("wires live Room Project Sessions to native Agent context with fail-closed safety", () => {
@@ -198,6 +210,22 @@ describe("Cordis Host mount", () => {
     expect(await canConnect(port)).toBe(true);
     await mounted!.dispose();
     expect(await canConnect(port)).toBe(false);
+  });
+
+  it("registers settings from an already injected Host service", () => {
+    const register = vi.fn((_namespace: string, _schema: unknown, options: { base?: DshCollabPersistedSettings }) => ({ get: () => options.base as DshCollabPersistedSettings, update: vi.fn(async () => {}) }));
+    const context = {
+      agents: { get: () => undefined },
+      settings: { register },
+    };
+
+    apply(context, {
+      roomId: "room-1", hostId: "host", title: "Room", hostDisplayName: "Host",
+      host: "127.0.0.1", port: 3080,
+    });
+
+    expect(register).toHaveBeenCalledWith(DSH_COLLAB_SETTINGS_NAMESPACE, expect.anything(), expect.anything());
+    expect(register).toHaveBeenCalledWith(DSH_COLLAB_PARTICIPANT_NAMESPACE, expect.anything(), expect.anything());
   });
 
   it("subscribes and unsubscribes the Host adapter to DSH session and assistant stream events", async () => {
@@ -492,6 +520,48 @@ describe("Cordis Host mount", () => {
       ok: false,
       error: { code: "internal", message: "Owner Room Project is unavailable", details: {} },
     });
+  });
+
+  it("keeps the outer Host Connection when the settings injection facade is narrow", () => {
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const persisted: DshCollabPersistedSettings = {
+      gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" },
+    };
+    const context = {
+      agents: { get: () => undefined },
+      inject: (_services: string[], callback: (ctx: { settings: { register: () => { get(): DshCollabPersistedSettings; update(patch: object): Promise<void> } } }) => void) => callback({ settings: { register: () => ({ get: () => persisted, update: async () => {} }) } }),
+    } as { agents: { get(): undefined }; inject: (services: string[], callback: (ctx: unknown) => void) => void; connection?: unknown };
+    Object.defineProperty(context, "connection", {
+      value: { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } },
+      enumerable: false,
+    });
+
+    apply(context as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", ...noPersistence });
+
+    expect(control).toBeDefined();
+  });
+
+  it("keeps the actual injected Cordis context for gateway setup", () => {
+    const agents = { get: () => undefined };
+    const runtimeContext = Object.create(null) as Record<string, unknown>;
+    Object.defineProperties(runtimeContext, {
+      agents: { value: agents, enumerable: false },
+      connection: { value: { rpc: { handle: vi.fn(() => async () => {}) } }, enumerable: false },
+      webServer: { value: {}, enumerable: false },
+    });
+    const settings = {
+      register: vi.fn((_namespace: string, _schema: unknown, options: { base?: DshCollabPersistedSettings }) => ({
+        get: () => options.base as DshCollabPersistedSettings,
+        update: vi.fn(async () => {}),
+      })),
+    };
+    const context = {
+      agents,
+      settings,
+      inject: vi.fn((_services: string[], callback: (ctx: typeof runtimeContext) => void) => callback(runtimeContext)),
+    };
+
+    expect(() => apply(context as unknown as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", ...noPersistence })).not.toThrow();
   });
 
   it("does not read an undeclared optional service through the Cordis context facade", () => {

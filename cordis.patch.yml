@@ -1,10 +1,13 @@
 # dsh-collab is one installable bundle. Its host row can start the gateway and its
 # browser row owns the participant/host room surface; the room role is resolved
 # from trusted session/token evidence at runtime.
+- id: connection
+  inject: [webRuntime, webServer]
+
 - insert:
     - id: collab-host
       name: dsh-collab
-      inject: [agentDefaultModel, agents, agentPresets, llm, settings, connection, credentials, fs, subprocess, workspaceRegistry, approval]
+      inject: [agentDefaultModel, agents, agentPresets, llm, settings, connection, webServer, sessions, sessionQuery, credentials, fs, subprocess, workspaceRegistry, approval]
       config:
         roomId: dsh-room
         hostId: local-host

@@ -26,22 +26,25 @@ describe("createDshOwnedRoomCreator", () => {
     };
     const create = createDshOwnedRoomCreator({
       rpc,
+      workspaces: { create: vi.fn() },
       workspaceNavigation: {
         connectWorkspace: async (workspaceId) => {
           order.push(`connect:${workspaceId}`);
           return "host-primary";
         },
+        openSession: (sessionId) => { order.push(`open:${sessionId}`); },
       },
-      sessions: { open: (sessionId) => { order.push(`open:${sessionId}`); } },
+      sessions: {
+        list: { getSnapshot: () => ({ byId: { "source-session": { cwd: "C:\\work\\atlas" } } }) },
+      },
       panelHost: () => ({
         register: () => () => {},
         open: (target) => { order.push(`panel:${target.sessionId}:${target.cwd ?? ""}`); },
       }),
-      getActiveTarget: () => ({ sessionId: "source-session", cwd: "C:\\work\\atlas" }),
       refreshOwnedRooms: async () => { order.push("refresh"); },
     });
 
-    await expect(create("Atlas")).resolves.toBe(true);
+    await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
 
     expect(order).toEqual([
       "owner/room-project/prepare",
@@ -53,17 +56,84 @@ describe("createDshOwnedRoomCreator", () => {
     ]);
   });
 
-  it("requires an active DSH workspace Session", async () => {
-    const rpc = { call: vi.fn() };
+  it("creates and connects a DSH workspace when the selected directory has no Session", async () => {
+    const order: string[] = [];
+    const rpc = {
+      call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
+        order.push(endpoint);
+        if (endpoint === "owner/room-project/prepare") {
+          expect(payload).toEqual({
+            sourcePath: "C:\\work\\atlas",
+            sourceSessionId: "source-session-created",
+            roomTitle: "Atlas",
+          });
+          return { ok: true, value: { roomId: "room-atlas", workspacePath: "C:\\rooms\\atlas", nativeWorkspaceId: "native-atlas" } };
+        }
+        expect(endpoint).toBe("owner/room-project/complete");
+        expect(payload).toEqual({
+          roomId: "room-atlas",
+          sourceSessionId: "source-session-created",
+          hostPrimarySessionId: "host-primary",
+        });
+        return { ok: true, value: { roomId: "room-atlas", hostPrimarySessionId: "host-primary" } };
+      }),
+    };
+    const createWorkspace = vi.fn(async (input: { path: string }) => {
+      order.push(`create:${input.path}`);
+      return { workspaceId: "source-workspace" };
+    });
+    const connectWorkspace = vi.fn(async (workspaceId: string) => {
+      order.push(`connect:${workspaceId}`);
+      return workspaceId === "source-workspace" ? "source-session-created" : "host-primary";
+    });
     const create = createDshOwnedRoomCreator({
       rpc,
-      workspaceNavigation: { connectWorkspace: vi.fn() },
-      sessions: { open: vi.fn() },
-      panelHost: () => ({ register: () => () => {}, open: vi.fn() }),
-      getActiveTarget: () => undefined,
+      workspaces: { create: createWorkspace },
+      workspaceNavigation: { connectWorkspace, openSession: vi.fn() },
+      sessions: {
+        list: { getSnapshot: () => ({ byId: { "source-session": { cwd: "C:\\work\\other" } } }) },
+      },
+      panelHost: () => ({ register: () => () => {}, open: (target) => { order.push(`panel:${target.sessionId}`); } }),
+      refreshOwnedRooms: async () => { order.push("refresh"); },
     });
 
-    await expect(create("Atlas")).rejects.toThrow("Open a DSH workspace Session");
-    expect(rpc.call).not.toHaveBeenCalled();
+    await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
+    expect(order).toEqual([
+      "create:C:\\work\\atlas",
+      "connect:source-workspace",
+      "owner/room-project/prepare",
+      "connect:native-atlas",
+      "owner/room-project/complete",
+      "panel:host-primary",
+      "refresh",
+    ]);
+    expect(createWorkspace).toHaveBeenCalledWith({ path: "C:\\work\\atlas" });
+  });
+
+  it("starts the Host Gateway before preparing an Owner Room Project", async () => {
+    const order: string[] = [];
+    const rpc = {
+      call: vi.fn(async (_channel: string, endpoint: string) => {
+        order.push(endpoint);
+        if (endpoint === "owner/room-project/prepare") {
+          return { ok: true, value: { roomId: "room-atlas", workspacePath: "C:\\rooms\\atlas", nativeWorkspaceId: "native-atlas" } };
+        }
+        expect(endpoint).toBe("owner/room-project/complete");
+        return { ok: true, value: { roomId: "room-atlas", hostPrimarySessionId: "host-primary" } };
+      }),
+    };
+    const create = createDshOwnedRoomCreator({
+      rpc,
+      startGateway: async () => { order.push("gateway:start"); },
+      workspaces: { create: vi.fn() },
+      workspaceNavigation: { connectWorkspace: async () => "host-primary", openSession: vi.fn() },
+      sessions: {
+        list: { getSnapshot: () => ({ byId: { "source-session": { cwd: "C:\\work\\atlas" } } }) },
+      },
+      panelHost: () => ({ register: () => () => {}, open: vi.fn() }),
+    });
+
+    await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
+    expect(order).toEqual(["gateway:start", "owner/room-project/prepare", "owner/room-project/complete"]);
   });
 });

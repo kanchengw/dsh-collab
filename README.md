@@ -1,3 +1,5 @@
+![dsh-collab GitHub header](assets/dsh-collab-github-header-roundtable-v9-chat-team.png)
+
 # dsh-collab
 
 `dsh-collab` is one installable package for human collaboration around one Host-side DSH Agent session. The same package has a Host face and a Participant face; a room's trusted local-session/token evidence selects the role. A Participant never replaces the room's Host Agent or directly accesses the Host workspace; explicitly started private Side Work uses the Participant's own local DSH Agent.

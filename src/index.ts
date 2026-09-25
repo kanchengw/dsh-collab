@@ -53,7 +53,7 @@ export * from "./dsh-workspace-control.js";
 export * from "./dsh-credentials.js";
 export * from "./room-summary.js";
 
-import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, type DshCordisHostConfig, type DshCordisHostContext } from "./dsh-cordis-host.js";
+import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, resolveDshSessionWorkspacePath, type DshCordisHostConfig, type DshCordisHostContext, type DshSessionQuery } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { gatewayHttpUrl, normalizeGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
@@ -89,6 +89,9 @@ interface DshSettingsRegistrationContext {
       update(patch: object): Promise<void>;
     };
   };
+  connection?: { rpc: DshConnectionRpc };
+  webServer?: unknown;
+  sessionQuery?: DshSessionQuery;
 }
 
 interface DshConnectionRpc {
@@ -114,6 +117,8 @@ export interface DshCollabCordisContext extends Omit<DshCordisHostContext, "agen
     list(): Array<{ readonly id: string; readonly path: string; attachSession(sessionId: string): Promise<void>; detachSession(sessionId: string): Promise<void> }>;
   };
 }
+
+type DshResolvedSettingsContext = DshCollabCordisContext & DshSettingsRegistrationContext;
 
 function participantGatewayTransport(endpoint: string): ParticipantGatewayTransport {
   const base = gatewayHttpUrl(endpoint).replace(/\/$/, "");
@@ -141,11 +146,11 @@ export function registerDshCollabSettings(
   onResolved?: (
     settings: DshCollabPersistedSettings,
     scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>,
-    settingsContext: DshSettingsRegistrationContext,
+    settingsContext: DshResolvedSettingsContext,
   ) => void,
 ): void {
   const gatewayHost = config.host ?? "127.0.0.1";
-  context.inject?.(["settings"], (settingsContext) => {
+  const register = (settingsContext: DshResolvedSettingsContext): void => {
     const scope = settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
       base: {
         gateway: {
@@ -177,7 +182,14 @@ export function registerDshCollabSettings(
     settingsContext.settings.register(DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
       validate: validateDshCollabParticipantSettings,
     });
-    onResolved?.(scope.get(), scope, settingsContext);
+    onResolved?.(scope.get() as DshCollabPersistedSettings, scope, settingsContext);
+  };
+  if (context.settings) {
+    register({ ...context, settings: context.settings } as DshResolvedSettingsContext);
+    return;
+  }
+  context.inject?.(["settings"], (settingsContext) => {
+    register({ ...context, ...settingsContext } as DshResolvedSettingsContext);
   });
 }
 
@@ -265,7 +277,7 @@ function registerGatewayControl(
     return new OwnerRoomProjectService({
       hostId: config.hostId!,
       hostDisplayName: config.hostDisplayName!,
-      sessions: { workspacePath: (sessionId) => context.agents.get(sessionId)?.session?.header?.cwd },
+      sessions: { workspacePath: (sessionId) => resolveDshSessionWorkspacePath({ agents: context.agents, sessions: context.sessions, sessionQuery: context.sessionQuery }, sessionId) },
       rooms: current.runtime.rooms,
       roomProjects,
       ledger: current.runtime.ledger,
@@ -381,7 +393,6 @@ function registerGatewayControl(
     if (!cwd) throw new Error("Host session does not expose a workspace path");
     return { inspector: new RepositoryInspector(createDshRepositoryCommandPort({ subprocess: context.subprocess, cwd })), input };
   };
-
   const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint, payload, signal) => {
     try {
       if (endpoint === "gateway/status") {
@@ -534,9 +545,19 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
     registerDshCollabSettings(context, config);
     return;
   }
-  if (context.inject) registerDshCollabSettings(context, config, (_settings, scope, settingsContext) => {
-    const scopedContext = settingsContext as unknown as DshCollabCordisContext;
-    registerGatewayControl(scopedContext.connection ? scopedContext : context, config, scope);
+  registerDshCollabSettings(context, config, (_settings, scope, settingsContext) => {
+    if (context.inject) {
+      context.inject(["connection", "webServer", "sessions", "sessionQuery"], (runtimeContext) => {
+        const gatewayContext = runtimeContext.connection && runtimeContext.webServer
+          ? runtimeContext
+          : settingsContext.connection
+          ? settingsContext
+          : context;
+        registerGatewayControl(gatewayContext as DshCollabCordisContext, config, scope);
+      });
+      return;
+    }
+    registerGatewayControl((settingsContext.connection ? settingsContext : context) as DshCollabCordisContext, config, scope);
   });
 }
 
