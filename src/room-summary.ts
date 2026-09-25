@@ -24,7 +24,7 @@ export interface RoomSummaryLlmMessage {
   id: string;
   role: "user";
   content: [{ type: "text"; text: string }];
-  source: { kind: "plugin"; plugin: "dsh-collab" };
+  source: { kind: "user" };
 }
 
 export interface RoomSummaryLlmOptions {
@@ -325,7 +325,7 @@ export class RoomSummaryService {
               id: `dsh-collab-room-summary-${run.input.context.roomId}-${run.input.context.appliedThroughSeq}`,
               role: "user",
               content: [{ type: "text", text: roomSummaryPrompt(run.input.context) }],
-              source: { kind: "plugin", plugin: "dsh-collab" },
+              source: { kind: "user" },
             }],
             system: "You are a Room-owned collaboration summary service. Use only the supplied Room Context.",
             maxTokens: this.maxTokens,

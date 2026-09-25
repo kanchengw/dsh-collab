@@ -68,7 +68,8 @@ describe("RoomSummaryService", () => {
       route: { provider: "deepseek", model: "deepseek-v4-flash" },
       disclosure: { kind: "room-public-only", sourceSeq: 7 },
     });
-    const options = provider.calls[0] as { messages: Array<{ content: Array<{ type: string; text: string }> }>; sessionId?: unknown; tools?: unknown };
+    const options = provider.calls[0] as { messages: Array<{ source: { kind: string }; content: Array<{ type: string; text: string }> }>; sessionId?: unknown; tools?: unknown };
+    expect(options.messages[0]?.source).toEqual({ kind: "user" });
     expect(options.sessionId).toBeUndefined();
     expect(options.tools).toBeUndefined();
     expect(options.messages[0]?.content[0]?.text).toContain('"roomId":"room-1"');
