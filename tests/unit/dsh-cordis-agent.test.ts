@@ -162,7 +162,7 @@ describe("real DSH Cordis Agent bridge", () => {
   it("waits for the Host turn and returns the assistant text for the matching request", async () => {
     const events: Array<{ seq: number; type: string; data: unknown }> = [];
     const agent = {
-      // DSH 0.1.2 exposes Session history through snapshotEvents(); the
+      // DSH 0.1.7-rc.2 exposes Session history through snapshotEvents(); the
       // legacy events property must not be required by the production adapter.
       session: { snapshotEvents: () => events },
       followup(message: DshUserMessage) {

@@ -24,7 +24,7 @@ export interface DshCordisAgent {
   inbox?: { remove(messageId: string): boolean };
   session?: {
     readonly header?: { readonly cwd?: string };
-    /** DSH 0.1.2 exposes the durable event log through this method. */
+    /** DSH 0.1.7-rc.2 exposes the durable event log through this method. */
     readonly snapshotEvents?: () => readonly DshCordisSessionEvent[];
     /** Test-only legacy shape; real DSH sessions use snapshotEvents(). */
     readonly events?: readonly DshCordisSessionEvent[];

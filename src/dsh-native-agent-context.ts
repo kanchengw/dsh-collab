@@ -13,7 +13,7 @@ export interface DshNativeAgentSessionEvent {
 export interface DshNativeAgentContextAgent {
   readonly id: string;
   readonly session: {
-    /** DSH 0.1.2 exposes the durable event log through this method. */
+    /** DSH 0.1.7-rc.2 exposes the durable event log through this method. */
     readonly snapshotEvents?: () => readonly DshNativeAgentSessionEvent[];
     /** Test-only legacy shape retained for narrow fakes. */
     readonly events?: readonly DshNativeAgentSessionEvent[];

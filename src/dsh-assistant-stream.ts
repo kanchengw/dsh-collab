@@ -1,4 +1,4 @@
-/** Structural subset of DSH 0.1.3 assistant stream frames used by Collab. */
+/** Structural subset of DSH 0.1.7-rc.2 assistant stream frames used by Collab. */
 export type DshAssistantStreamFrame =
   | {
       readonly type: "start";

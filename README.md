@@ -6,19 +6,16 @@
 
 ## What is ready
 
-Current development status (2026-09-06): CRP-U01 through U10 are complete;
-CRP-U11 is reopened for the missing production Host creation flow and the
-obsolete Participant Workspace adapter. CRP-U12 has a display foundation but
-is not complete until U11's Room Workspace lifecycle is wired. CRP-U13 remains
-pending for the real dual-client E2E and obsolete-path decision. See the
-[CRP plan](docs/plans/collab-room-project-mvp.md) and [DSH
-0.1.3-alpha.1 adaptation/design corrections](docs/plans/dsh-0.1.3-alpha.1-adaptation.md).
-Existing alpha.5 regression results do not establish alpha.1 runtime compatibility.
+Current development status (2026-09-25): the production Host/Participant Room
+Workspace path, official left/right Sidebar embedding, and DSH 0.1.7-rc.2
+contract adaptation are implemented and pass the source-level gates. Real
+dual-client UI/network acceptance remains pending. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
+and the [current DSH rc2 adaptation plan](docs/plans/dsh-0.1.7-rc.2-adaptation.md).
 
 - Versioned room protocol, HTTP Gateway, WebSocket stream, invite/join, permissions, message targeting, single Host Agent queue, steer/cancel, approval, limits, revocation, audit redaction, snapshot recovery and observability.
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
-- Session-scoped Collab Bar hosted by Better Sidebar, with Activity, Changes and Reviews beside each member's native DSH conversation. Collab Rooms remains a management overlay; selecting a room opens the Bar instead of replacing the conversation with a second full-screen chat UI.
+- Session-scoped Collab Bar hosted by the official DSH right Sidebar, with Activity, Changes and Reviews beside each member's native DSH conversation. Collab Rooms uses the official left Sidebar; selecting a room opens the Bar instead of replacing the conversation with a second full-screen chat UI.
 - Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers three released connection methods: `EasyTier virtual network`, direct `Private network` access, or a user-supplied `Custom WSS endpoint`. Participants get the selected transport from the invitation instead of persistent endpoint configuration.
 - The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. Room identity is now independent from the native Session ID; the Owner Room Workspace has a fresh Host Primary Session for public `@agent`. The legacy share-session UI is scheduled for replacement by the project creation flow in CRP-U11.
 - Host runtime settings now apply token lifetime, member/message/queue limits; Agent tool approvals remain on DSH's native Host approval chain. Runtime snapshots restore room, ledger, dispatcher and approval projection state while short-lived invites and room tokens are reissued after restart.
@@ -132,6 +129,7 @@ does not operate or promise availability for that node.
 ## Design and development log
 
 - Architecture, slot/service/patch boundaries, role model, UI states and phased plan: [design.md](./design.md)
-- Accepted native-Session, Better Sidebar, ChangeSet and EasyTier MVP: [Collab Workspace MVP v2](./docs/plans/collab-workspace-mvp-v2.md)
+- Accepted native-Session, official Sidebar, ChangeSet and EasyTier MVP: [Collab Workspace MVP v2](./docs/plans/collab-workspace-mvp-v2.md)
+- Current DSH compatibility and remaining runtime validation: [DSH 0.1.7-rc.2 adaptation](./docs/plans/dsh-0.1.7-rc.2-adaptation.md)
 - Unit-by-unit implementation records and commits: [dev_log.md](./dev_log.md)
 - HTTP/WebSocket wire contract: [protocol.md](./protocol.md)
