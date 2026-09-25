@@ -17,6 +17,8 @@ describe("dsh package manifest", () => {
     expect(manifest.devDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe("0.1.7-rc.2");
     expect(manifest.dependencies["@deepseek-ai/dsh-home-paths"]).toBe("0.1.7-rc.2");
     expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).not.toContain("dsh-client-ui-primitives/src/");
+    const clientSource = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
+    expect(clientSource.match(/export const inject = \[([^\]]+)\]/)?.[1]).not.toContain("settingsScope");
     expect(manifest.dsh.bundle.patch).toBe("./cordis.patch.yml");
     const patch = readFileSync(resolve(process.cwd(), "cordis.patch.yml"), "utf8");
     expect(patch).toContain("- id: connection\n  inject: [webRuntime, webServer]");

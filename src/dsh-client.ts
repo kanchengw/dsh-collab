@@ -331,7 +331,7 @@ export interface DshCollabClientContext {
 }
 
 /** DSH client runner service required by this browser contribution. */
-export const inject = ["slots", "settingsScope", "connection", "locale", "workspaces", "uiWorkspace", "sessions", "layout", "sidebarRight", "sidebarRightTabs"];
+export const inject = ["slots", "connection", "locale", "workspaces", "uiWorkspace", "sessions", "layout", "sidebarRight", "sidebarRightTabs"];
 
 interface DshCollabLocaleService {
   register(namespace: string, dictionaries: { zh: typeof zh; en: typeof en }): () => void;

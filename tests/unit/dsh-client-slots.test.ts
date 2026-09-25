@@ -100,7 +100,6 @@ describe("real DSH client slot adapter", () => {
     expect(apply).toBe(applyDshCollabClient);
     expect(inject).toEqual([
       "slots",
-      "settingsScope",
       "connection",
       "locale",
       "workspaces",
