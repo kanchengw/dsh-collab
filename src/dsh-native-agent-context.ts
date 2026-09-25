@@ -146,7 +146,7 @@ function contextMessage(messageId: string, text: string): DshNativeAgentContextM
     id: messageId as DshNativeAgentContextMessage["id"],
     role: "user",
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "dsh-collab" },
+    source: { kind: "user" },
   };
 }
 

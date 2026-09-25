@@ -140,7 +140,7 @@ describe("DSH native Agent context bridge", () => {
     expect(proveFixedDshContract).toBeTypeOf("function");
   });
 
-  it("injects plugin-sourced context into next-step without waking an idle Agent", () => {
+  it("injects room context as a native user message without waking an idle Agent", () => {
     const { agent, binding } = harness();
 
     const result = binding.deliver({ deliveryId: "room-1:7", text: "Team context" });
@@ -152,7 +152,7 @@ describe("DSH native Agent context bridge", () => {
       id: result.messageId,
       role: "user",
       content: [{ type: "text", text: "Team context" }],
-      source: { kind: "plugin", plugin: "dsh-collab" },
+      source: { kind: "user" },
     }]);
   });
 
