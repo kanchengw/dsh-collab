@@ -82,12 +82,14 @@ import type { ParticipantGatewayTransport } from "./participant.js";
 import { OwnerRoomProjectService } from "./owner-room-project.js";
 import { OwnerRoomWorkspaceBootstrapper } from "./owner-room-bootstrap.js";
 
+interface DshCollabSettingsScope {
+  get(): DshCollabPersistedSettings;
+  update(patch: object): Promise<void>;
+}
+
 interface DshSettingsRegistrationContext {
   settings: {
-    register(namespace: string, schema: unknown, options: Record<string, unknown>): {
-      get(): DshCollabPersistedSettings;
-      update(patch: object): Promise<void>;
-    };
+    register?(namespace: string, schema: unknown, options: Record<string, unknown>): DshCollabSettingsScope;
   };
   connection?: { rpc: DshConnectionRpc };
   webServer?: unknown;
@@ -140,49 +142,83 @@ function participantGatewayTransport(endpoint: string): ParticipantGatewayTransp
   };
 }
 
+function initialDshCollabSettings(config: Partial<DshCordisHostConfig>): DshCollabPersistedSettings {
+  const gatewayHost = config.host ?? defaultCollabSettings.gatewayHost;
+  const gatewayPort = config.port ?? defaultCollabSettings.gatewayPort;
+  return {
+    gateway: {
+      gatewayHost,
+      gatewayPort,
+      exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
+      advertisedEndpoint: "",
+    },
+    appliedGateway: {
+      gatewayHost,
+      gatewayPort,
+      exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
+      advertisedEndpoint: "",
+    },
+    security: {
+      tokenTtlMs: config.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : config.tokenTtlMs,
+      approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
+      maxMembers: config.maxMembers ?? defaultCollabSettings.maxMembers,
+      maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
+      maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
+    },
+    connectionMethod: defaultCollabSettings.connectionMethod,
+    easyTierSharedNode: defaultCollabSettings.easyTierSharedNode,
+    easyTierRooms: [],
+  };
+}
+
+function mergeDshCollabSettings(current: DshCollabPersistedSettings, patch: object): DshCollabPersistedSettings {
+  const next = {
+    ...current,
+    ...patch,
+    gateway: { ...current.gateway, ...(patch as { gateway?: object }).gateway },
+    appliedGateway: { ...current.appliedGateway, ...(patch as { appliedGateway?: object }).appliedGateway },
+    security: { ...current.security, ...(patch as { security?: object }).security },
+  } as DshCollabPersistedSettings;
+  validateDshCollabPersistedSettings(next);
+  return next;
+}
+
 export function registerDshCollabSettings(
   context: DshCollabCordisContext,
   config: Partial<DshCordisHostConfig>,
   onResolved?: (
     settings: DshCollabPersistedSettings,
-    scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>,
+    scope: DshCollabSettingsScope,
     settingsContext: DshResolvedSettingsContext,
   ) => void,
 ): void {
-  const gatewayHost = config.host ?? defaultCollabSettings.gatewayHost;
   const register = (settingsContext: DshResolvedSettingsContext): void => {
-    const scope = settingsContext.settings.register(DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
-      base: {
-        gateway: {
-          gatewayHost,
-          gatewayPort: config.port ?? defaultCollabSettings.gatewayPort,
-          exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
-          advertisedEndpoint: "",
-        },
-        appliedGateway: {
-          gatewayHost,
-          gatewayPort: config.port ?? defaultCollabSettings.gatewayPort,
-          exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
-          advertisedEndpoint: "",
-        },
-        security: {
-          tokenTtlMs: config.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : config.tokenTtlMs,
-          approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
-          maxMembers: config.maxMembers ?? defaultCollabSettings.maxMembers,
-          maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
-          maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
-        },
-        connectionMethod: defaultCollabSettings.connectionMethod,
-        easyTierSharedNode: defaultCollabSettings.easyTierSharedNode,
-        easyTierRooms: [],
+    const legacyRegister = settingsContext.settings.register;
+    if (legacyRegister) {
+      const scope = legacyRegister.call(settingsContext.settings, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, {
+        base: initialDshCollabSettings(config),
+        applies: "restart",
+        validate: validateDshCollabPersistedSettings,
+      });
+      legacyRegister.call(settingsContext.settings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
+        validate: validateDshCollabParticipantSettings,
+      });
+      onResolved?.(scope.get(), scope, settingsContext);
+      return;
+    }
+
+    // DSH 0.1.7 exposes SettingsForms instead of the removed registry API.
+    // The plugin config is the source of truth for this compatibility path;
+    // keep a validated in-memory scope for the Gateway lifecycle until the
+    // plugin is migrated to a native Config schema and settings form.
+    let current = initialDshCollabSettings(config);
+    const scope: DshCollabSettingsScope = {
+      get: () => current,
+      update: async (patch) => {
+        current = mergeDshCollabSettings(current, patch);
       },
-      applies: "restart",
-      validate: validateDshCollabPersistedSettings,
-    });
-    settingsContext.settings.register(DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
-      validate: validateDshCollabParticipantSettings,
-    });
-    onResolved?.(scope.get() as DshCollabPersistedSettings, scope, settingsContext);
+    };
+    onResolved?.(current, scope, settingsContext);
   };
   if (context.settings) {
     register({ ...context, settings: context.settings } as DshResolvedSettingsContext);
@@ -211,7 +247,7 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
 function registerGatewayControl(
   context: DshCollabCordisContext,
   config: Partial<DshCordisHostConfig>,
-  scope: ReturnType<DshSettingsRegistrationContext["settings"]["register"]>,
+  scope: ReturnType<NonNullable<DshSettingsRegistrationContext["settings"]["register"]>>,
 ): void {
   if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
