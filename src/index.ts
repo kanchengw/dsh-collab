@@ -238,6 +238,8 @@ function applyPersistedSettings(config: Partial<DshCordisHostConfig>, settings: 
     tokenTtlMs: security.tokenTtlMs,
     // MVP approval is always delegated to DSH's native Host approval chain.
     approvalPolicy: "host-only",
+    allowLoopbackPrincipal: config.allowLoopbackPrincipal ?? true,
+    trustedLoopbackOrigins: config.trustedLoopbackOrigins ?? ["dsh-app://app"],
     maxMembers: security.maxMembers,
     maxMessageBytes: security.maxMessageBytes,
     maxQueue: security.maxQueue,

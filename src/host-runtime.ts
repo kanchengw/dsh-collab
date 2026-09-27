@@ -49,6 +49,7 @@ export interface DshCollabHostRuntimeOptions {
   trustedPrincipalHeader?: string;
   trustedProxyMarkerHeader?: string;
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
+  trustedLoopbackOrigins?: readonly string[];
   approvalAnswerer?: object;
   workspaceSnapshots?: WorkspaceSnapshotProvider;
   changeSetRoot?: string;
@@ -291,6 +292,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       trustedPrincipalHeader: options.trustedPrincipalHeader,
       trustedProxyMarkerHeader: options.trustedProxyMarkerHeader,
       principalFromHeaders: options.principalFromHeaders,
+      trustedLoopbackOrigins: options.trustedLoopbackOrigins,
     }),
   });
   http.server.on("upgrade", upgrade.handleUpgrade);

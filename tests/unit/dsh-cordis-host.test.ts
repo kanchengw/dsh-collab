@@ -119,6 +119,7 @@ describe("Cordis Host mount", () => {
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: {}, remoteAddress: "::1" }, options)).toEqual({ principalId: "host" });
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { origin: "https://evil.example" }, remoteAddress: "::1" }, options)).toEqual({});
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { origin: "http://127.0.0.1:3080" }, remoteAddress: "::1" }, options)).toEqual({ principalId: "host" });
+    expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { origin: "dsh-app://app" }, remoteAddress: "::1" }, { ...options, trustedLoopbackOrigins: ["dsh-app://app"] })).toEqual({ principalId: "host" });
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9" }, remoteAddress: "10.0.0.5" }, options)).toEqual({});
     expect(authenticateCollabRequest({ method: "GET", path: "/", headers: { "x-forwarded-for": "203.0.113.9", "x-authenticated-user": "alice" }, remoteAddress: "10.0.0.5" }, options)).toEqual({ principalId: "alice" });
   });

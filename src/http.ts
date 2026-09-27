@@ -24,6 +24,7 @@ export interface CollabIdentityOptions {
   trustedPrincipalHeader?: string;
   trustedProxyMarkerHeader?: string;
   principalFromHeaders?: (headers: HttpHeaders) => string | undefined;
+  trustedLoopbackOrigins?: readonly string[];
 }
 
 function normalizeAddress(address: string | undefined): string | undefined {
@@ -57,7 +58,9 @@ export function authenticateCollabRequest(input: CollabAuthInput, options: Colla
   let loopbackOrigin = origin === undefined;
   if (origin) {
     try {
-      loopbackOrigin = isLoopbackAddress(new URL(origin).hostname.replace(/^\[|\]$/g, "")) || new URL(origin).hostname === "localhost";
+      const parsedOrigin = new URL(origin);
+      const trustedOrigin = options.trustedLoopbackOrigins?.some((candidate) => candidate.trim().toLowerCase() === origin.toLowerCase()) === true;
+      loopbackOrigin = trustedOrigin || isLoopbackAddress(parsedOrigin.hostname.replace(/^\[|\]$/g, "")) || parsedOrigin.hostname === "localhost";
     } catch { /* invalid browser origins are not trusted */ }
   }
   if (options.allowLoopbackPrincipal === true && isLoopbackAddress(remoteAddress) && loopbackOrigin) {
