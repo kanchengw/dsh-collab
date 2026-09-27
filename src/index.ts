@@ -477,7 +477,11 @@ function registerGatewayControl(
       }
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
       if (endpoint === "owner/room-project/prepare" || endpoint === "owner/room-project/complete") {
-        const service = ownerRoomProject();
+        let service = ownerRoomProject();
+        if (!service && endpoint.endsWith("/prepare") && roomProjectFile && context.workspaceRegistry?.create) {
+          await start();
+          service = ownerRoomProject();
+        }
         if (!service) throw new Error("Owner Room Project is unavailable");
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Owner Room Project request is invalid");
         const value = endpoint.endsWith("/prepare")
@@ -583,9 +587,9 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
   }
   registerDshCollabSettings(context, config, (_settings, scope, settingsContext) => {
     if (context.inject) {
-      context.inject(["connection", "webServer", "sessions", "sessionQuery"], (runtimeContext) => {
+      context.inject(["connection", "webServer", "sessions", "sessionQuery", "workspaceRegistry"], (runtimeContext) => {
         const gatewayContext = runtimeContext.connection && runtimeContext.webServer
-          ? runtimeContext
+          ? Object.assign(Object.create(context), runtimeContext)
           : settingsContext.connection
           ? settingsContext
           : context;

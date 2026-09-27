@@ -522,6 +522,36 @@ describe("Cordis Host mount", () => {
     });
   });
 
+  it("starts the Host runtime before preparing an Owner Room Project", async () => {
+    const gatewayPort = await freeTcpPort();
+    let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
+    const connection = { rpc: { handle: vi.fn((_channel: string, handler: NonNullable<typeof control>) => { control = handler; return async () => {}; }) } };
+    const agents = { get: () => undefined };
+    const fs = { resolve: async (path: string, options?: { cwd?: string }) => ({ targetKey: [options?.cwd, path], displayPath: path }), contains: () => true, lstat: async () => ({ type: "file" as const }), readBytes: async () => new Uint8Array() };
+    const subprocess = localDshSubprocess();
+    const workspaceRegistry = { create: vi.fn(), list: vi.fn() };
+    const settings = { register: undefined };
+    const context = {
+      agents,
+      settings,
+      workspaceRegistry,
+      inject: vi.fn((services: string[], callback: (scope: Record<string, unknown>) => void) => {
+        if (services.includes("connection")) callback({ agents, connection, webServer: {}, fs, subprocess, workspaceRegistry });
+        else callback({ settings });
+      }),
+    };
+
+    apply(context as unknown as Parameters<typeof apply>[0], {
+      hostId: "host",
+      hostDisplayName: "Host",
+      port: gatewayPort,
+      stateFile: join(tmpdir(), `dsh-collab-owner-prepare-${Date.now()}-${Math.random()}.json`),
+    });
+
+    const result = await control!("owner/room-project/prepare", {}, new AbortController().signal) as { ok: boolean; error?: { message?: string } };
+    expect(result).toMatchObject({ ok: false, error: { message: "sourceSessionId must not be blank" } });
+    await control!("gateway/stop", {}, new AbortController().signal);
+  });
   it("keeps the outer Host Connection when the settings injection facade is narrow", () => {
     let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     const persisted: DshCollabPersistedSettings = {
@@ -564,6 +594,29 @@ describe("Cordis Host mount", () => {
     expect(() => apply(context as unknown as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", ...noPersistence })).not.toThrow();
   });
 
+  it("preserves the native Workspace registry when refreshing runtime services", () => {
+    const connection = { rpc: { handle: vi.fn(() => async () => {}) } };
+    const workspaceRegistry = { create: vi.fn(), list: vi.fn() };
+    const settings = { register: undefined };
+    const inject = vi.fn((services: string[], callback: (scope: Record<string, unknown>) => void) => {
+      if (services.includes("connection")) {
+        callback({ agents: { get: () => undefined, create: undefined }, connection, webServer: {} });
+        return;
+      }
+      callback({ settings });
+    });
+    let workspaceRegistryReads = 0;
+    const context = { agents: { get: () => undefined }, settings, inject } as Record<string, unknown>;
+    Object.defineProperty(context, "workspaceRegistry", {
+      get: () => { workspaceRegistryReads += 1; return workspaceRegistry; },
+      enumerable: false,
+    });
+
+    apply(context as unknown as Parameters<typeof apply>[0], { hostId: "host", hostDisplayName: "Host", stateFile: join(tmpdir(), `dsh-collab-workspace-registry-${Date.now()}-${Math.random()}.json`) });
+
+    expect(inject).toHaveBeenCalledWith(expect.arrayContaining(["workspaceRegistry"]), expect.any(Function));
+    expect(workspaceRegistryReads).toBeGreaterThan(0);
+  });
   it("does not read an undeclared optional service through the Cordis context facade", () => {
     let control: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) | undefined;
     const persisted: DshCollabPersistedSettings = {
