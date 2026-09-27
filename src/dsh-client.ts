@@ -527,6 +527,32 @@ export function createDshParticipantPersistence(
   };
 }
 
+/**
+ * DSH 0.1.7 does not expose the legacy settings-scope binder to client bundles.
+ * Keep the current Desktop process usable by retaining a Joined room in memory;
+ * the room credential still lives only for this Desktop lifetime.
+ */
+export function createDshEphemeralParticipantPersistence(): ParticipantPersistence {
+  let current: ParticipantResumeState | undefined;
+  const listeners = new Set<() => void>();
+  const sameRoom = (ref: JoinedRoomRef, state: ParticipantResumeState): boolean =>
+    ref.gatewayEndpoint === state.gatewayEndpoint && ref.roomId === state.roomId;
+  const publish = (): void => { for (const listener of listeners) listener(); };
+  return {
+    prepare: async () => {},
+    load: (ref) => {
+      if (!current) return undefined;
+      return ref === undefined || sameRoom(ref, current) ? structuredClone(current) : undefined;
+    },
+    list: () => current ? [structuredClone(current)] : [],
+    subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    save: async (state) => { current = structuredClone(state); publish(); },
+    remove: async (ref) => {
+      if (current && sameRoom(ref, current)) { current = undefined; publish(); }
+    },
+  };
+}
+
 export function createDshParticipantSecretPort(rpc: DshClientConnectionRpc): DshParticipantSecretPort {
   return {
     async save(state) {
@@ -1205,8 +1231,10 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
   const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings });
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
-  const participantPersistence = participantScope && connection
-    ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc))
+  const participantPersistence = connection
+    ? participantScope
+      ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc))
+      : createDshEphemeralParticipantPersistence()
     : undefined;
   const prepareParticipantPersistence = (): void => { void participantPersistence?.prepare?.().catch(() => undefined); };
   prepareParticipantPersistence();

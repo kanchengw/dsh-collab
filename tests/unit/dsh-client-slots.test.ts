@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, resolveDshCollabRoomSelection, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshEphemeralParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, resolveDshCollabRoomSelection, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 import type { ParticipantResumeState } from "../../src/dsh-browser-client.js";
@@ -960,6 +960,26 @@ describe("real DSH client slot adapter", () => {
       exposeMode: "loopback",
       advertisedEndpoint: "wss://host.example/collab",
     })).rejects.toThrow(/not persisted/i);
+  });
+
+  it("keeps an ephemeral Joined room when DSH exposes no settings scope", async () => {
+    const persistence = createDshEphemeralParticipantPersistence();
+    const state = {
+      gatewayEndpoint: "ws://192.168.1.15:4310/collab",
+      roomId: "room-ephemeral",
+      memberId: "member-desktop-b",
+      credential: "resume-secret",
+      roomTitle: "resume",
+      hostDisplayName: "Local Host",
+    };
+
+    await persistence.save(state);
+
+    expect(persistence.list?.()).toEqual([state]);
+    expect(persistence.load?.({ gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId })).toEqual(state);
+
+    await persistence.remove?.({ gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId });
+    expect(persistence.list?.()).toEqual([]);
   });
 
   it("stores multiple Joined rooms and forgets only the selected membership", async () => {
