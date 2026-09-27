@@ -255,6 +255,22 @@ describe("Collab Rooms navigation", () => {
     }), "room-owned");
   });
 
+  it("creates invitations from the running Gateway endpoint when settings are not shared with the renderer", async () => {
+    const actions = port();
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "",
+      connectionMethod: "private-network",
+    });
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.15:4310/collab" });
+    actions.createInvite = vi.fn(async () => ({ invitation: "runtime-collab-invite" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("runtime-collab-invite");
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({
+      gatewayEndpoint: "ws://192.168.1.15:4310/collab",
+      expiresAt: expect.any(Number),
+    }), "room-owned");
+  });
+
   it("reconnects the browser projection before opening an Owned room that is already shared", async () => {
     const activePort = port();
     activePort.bootstrap = vi.fn(async () => {});

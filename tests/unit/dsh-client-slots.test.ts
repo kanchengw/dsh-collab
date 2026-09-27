@@ -131,6 +131,18 @@ describe("real DSH client slot adapter", () => {
     expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
   });
 
+  it("exposes the Host Gateway advertised endpoint returned by Connection RPC", async () => {
+    const base = { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "" }), save: vi.fn() };
+    const port = createDshGatewayControlPort(base, {
+      call: vi.fn(async (_channel: string, endpoint: string) => endpoint === "gateway/status"
+        ? { ok: true, value: { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.15:4310/collab" } }
+        : { ok: true, value: { rooms: [] } }),
+    });
+
+    await port.refreshGateway?.();
+    expect(port.getGatewaySnapshot?.()).toEqual({ status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.15:4310/collab" });
+  });
+
   it("inspects an Owned room repository through the loopback DSH control port", async () => {
     const rpc = { call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
       expect(endpoint).toBe("repository/inspect");

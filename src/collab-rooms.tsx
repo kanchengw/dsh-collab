@@ -71,7 +71,9 @@ export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input
 export async function createDshCollabInvitation(port: DshCollabSettingsPort, roomId: string): Promise<string> {
   if (!port.createInvite) throw new Error("Invitation creation is unavailable");
   const settings = port.getSnapshot();
-  const gatewayEndpoint = (settings.appliedGateway ?? settings).advertisedEndpoint;
+  const configuredGatewayEndpoint = (settings.appliedGateway ?? settings).advertisedEndpoint;
+  const runtimeGateway = port.getGatewaySnapshot?.();
+  const gatewayEndpoint = configuredGatewayEndpoint || (runtimeGateway?.status === "running" ? runtimeGateway.advertisedEndpoint : undefined);
   if (!gatewayEndpoint) throw new Error("Configure a private-network address before creating an invitation");
   const created = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, roomId);
   return created.invitation;

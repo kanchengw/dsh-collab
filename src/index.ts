@@ -253,7 +253,8 @@ function registerGatewayControl(
 ): void {
   if (!context.connection || typeof config.hostId !== "string" || typeof config.hostDisplayName !== "string") return;
   let mounted: ReturnType<typeof mountDshCollabCordisHost>;
-  let starting: Promise<{ status: "running"; port: number }> | undefined;
+  let runningAdvertisedEndpoint: string | undefined;
+  let starting: Promise<{ status: "running"; port: number; advertisedEndpoint?: string }> | undefined;
   const injectedEasyTier = (context.get
     ? context.get("easyTierTransport")
     : context.easyTierTransport) as EasyTierTransportCoordinator | undefined;
@@ -347,10 +348,14 @@ function registerGatewayControl(
     const current = mounted;
     mounted = undefined;
     await Promise.all([current?.dispose(), easyTier?.stop()]);
+    runningAdvertisedEndpoint = undefined;
     return { status: "stopped" };
   };
-  const start = async (): Promise<{ status: "running"; port: number }> => {
-    if (mounted && !starting) return { status: "running", port: await mounted.ready };
+  const start = async (): Promise<{ status: "running"; port: number; advertisedEndpoint?: string }> => {
+    if (mounted && !starting) {
+      const port = await mounted.ready;
+      return { status: "running", port, ...(runningAdvertisedEndpoint ? { advertisedEndpoint: runningAdvertisedEndpoint } : {}) };
+    }
     if (starting) return await starting;
     starting = (async () => {
       const settings = scope.get();
@@ -371,9 +376,11 @@ function registerGatewayControl(
         const configuredGateway = { ...settings.gateway, gatewayPort, advertisedEndpoint: settings.gateway.exposeMode === "network" ? "" : settings.gateway.advertisedEndpoint };
         const appliedGateway = { ...configuredGateway, advertisedEndpoint };
         await scope.update({ gateway: configuredGateway, appliedGateway });
-        return { status: "running", port: gatewayPort };
+        runningAdvertisedEndpoint = advertisedEndpoint;
+        return { status: "running", port: gatewayPort, advertisedEndpoint };
       } catch (error) {
         if (mounted === next) mounted = undefined;
+        runningAdvertisedEndpoint = undefined;
         await next.dispose().catch(() => undefined);
         throw error;
       }
@@ -435,7 +442,10 @@ function registerGatewayControl(
     try {
       if (endpoint === "gateway/status") {
         if (starting) return { ok: true, value: { status: "starting" } };
-        if (mounted) return { ok: true, value: { status: "running", port: await mounted.ready } };
+        if (mounted) {
+          const port = await mounted.ready;
+          return { ok: true, value: { status: "running", port, ...(runningAdvertisedEndpoint ? { advertisedEndpoint: runningAdvertisedEndpoint } : {}) } };
+        }
         return { ok: true, value: { status: "stopped" } };
       }
       if (endpoint === "gateway/start") return { ok: true, value: await start() };

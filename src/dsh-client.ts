@@ -229,7 +229,7 @@ export interface DshCollabGatewaySnapshot {
 export type DshCollabGatewayRuntimeSnapshot =
   | { status: "stopped" }
   | { status: "starting" }
-  | { status: "running"; port: number };
+  | { status: "running"; port: number; advertisedEndpoint?: string };
 
 export interface DshCollabOwnedRoom {
   roomId: string;
@@ -577,10 +577,14 @@ function decodeGatewayRuntimeResult(result: unknown): DshCollabGatewayRuntimeSna
   const envelope = result as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
   if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Host Gateway control failed");
   if (!envelope.value || typeof envelope.value !== "object" || Array.isArray(envelope.value)) throw new Error("Invalid Host Gateway state");
-  const value = envelope.value as { status?: unknown; port?: unknown };
+  const value = envelope.value as { status?: unknown; port?: unknown; advertisedEndpoint?: unknown };
   if (value.status === "stopped" || value.status === "starting") return { status: value.status };
   if (value.status === "running" && Number.isSafeInteger(value.port) && (value.port as number) >= 1 && (value.port as number) <= 65535) {
-    return { status: "running", port: value.port as number };
+    return {
+      status: "running",
+      port: value.port as number,
+      ...(typeof value.advertisedEndpoint === "string" && value.advertisedEndpoint.trim() !== "" ? { advertisedEndpoint: value.advertisedEndpoint } : {}),
+    };
   }
   throw new Error("Invalid Host Gateway state");
 }
