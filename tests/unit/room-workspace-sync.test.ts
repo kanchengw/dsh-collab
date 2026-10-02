@@ -200,6 +200,24 @@ describe("RoomWorkspaceSyncService", () => {
     expect(await readFile(join(workspace.root, backupName, "README.md"), "utf8")).toBe("one\n");
   });
 
+  it("initializes a clean participant baseline before the first sync", async () => {
+    const fixture = await versionFixture();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "dsh-collab-sync-unbound-rooms-"));
+    roots.push(workspaceRoot);
+    const materializer = new RoomWorkspaceMaterializer({ root: workspaceRoot, artifacts: fixture.artifacts });
+    const materialized = await materializer.materialize({ roomId: "room-1", record: fixture.current });
+    const subprocess = localDshSubprocess();
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: materializer, artifacts: fixture.artifacts, subprocess });
+
+    const result = await service.sync({ roomId: "room-1", target: fixture.target });
+
+    expect(result.status).toBe("advanced");
+    const opened = await materializer.open("room-1");
+    expect(opened?.record).toEqual(fixture.target);
+    expect((await gitCommand(subprocess, materialized.workspacePath, ["config", "--local", "--get", "collab.roomid"])).stdout.trim()).toBe("room-1");
+    expect((await gitCommand(subprocess, opened!.workspacePath, ["config", "--local", "--get", "collab.workspaceversion"])).stdout.trim()).toBe("version-2");
+    expect((await gitCommand(subprocess, opened!.workspacePath, ["status", "--short"])).stdout).toBe("");
+  });
   it("fast-forwards a clean workspace and amends the one local baseline", async () => {
     const fixture = await materializedFixture();
     const subprocess = localDshSubprocess();

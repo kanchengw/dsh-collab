@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { cp, lstat, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createDshRepositoryCommandPort, RepositoryInspector, type DshRepositorySubprocess, type RepositoryCommandPort, type RepositoryCommandResult } from "./repository-inspector.js";
+import { ensureRoomWorkspaceGitBaseline } from "./dsh-room-workspace.js";
 import { findRoomWorkspaceChangedPaths, removeRoomWorkspaceSyncJournal, RoomWorkspaceMaterializer, writeRoomWorkspaceSyncJournal, type RoomWorkspace } from "./room-workspace.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionArtifactStore, type WorkspaceVersionRecord } from "./workspace-versions.js";
 
@@ -117,6 +118,7 @@ export class RoomWorkspaceSyncService {
       throw new Error("Target Workspace Version is not a direct successor of the current base");
     }
 
+    await ensureRoomWorkspaceGitBaseline(current, this.options.subprocess);
     const currentDirtyPaths = await dirtyPaths(current, this.options.subprocess);
     if (!discardLocalChanges && currentDirtyPaths.length > 0) {
       return {
