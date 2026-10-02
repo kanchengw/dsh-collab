@@ -11,11 +11,11 @@ describe("dsh package manifest", () => {
     expect(manifest.dsh.client.platform).toBe("web");
     expect(manifest.dsh.client.inject).toContain("@deepseek-ai/dsh-client-locale");
     expect(manifest.dsh.client.inject).toContain("@deepseek-ai/dsh-client-ui-slots");
-    expect(manifest.peerDependencies["@deepseek-ai/dsh-agent"]).toBe(">=0.1.7-rc.2 <0.2.0");
-    expect(manifest.devDependencies["@deepseek-ai/dsh-agent"]).toBe("0.1.7-rc.2");
-    expect(manifest.peerDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe(">=0.1.7-rc.2 <0.2.0");
-    expect(manifest.devDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe("0.1.7-rc.2");
-    expect(manifest.dependencies["@deepseek-ai/dsh-home-paths"]).toBe("0.1.7-rc.2");
+    expect(manifest.peerDependencies["@deepseek-ai/dsh-agent"]).toBe(">=0.2.0-rc.2 <0.3.0");
+    expect(manifest.devDependencies["@deepseek-ai/dsh-agent"]).toBe("0.2.0-rc.2");
+    expect(manifest.peerDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe(">=0.2.0-rc.2 <0.3.0");
+    expect(manifest.devDependencies["@deepseek-ai/dsh-client-ui-primitives"]).toBe("0.2.0-rc.2");
+    expect(manifest.dependencies["@deepseek-ai/dsh-home-paths"]).toBe("0.2.0-rc.2");
     expect(readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8")).not.toContain("dsh-client-ui-primitives/src/");
     const clientSource = readFileSync(resolve(process.cwd(), "src/dsh-client.ts"), "utf8");
     expect(clientSource.match(/export const inject = \[([^\]]+)\]/)?.[1]).not.toContain("settingsScope");
