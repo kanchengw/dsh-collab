@@ -805,9 +805,10 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
           await rpc.call("/dsh-collab", "easytier/stop", {}).catch(() => undefined);
           throw error;
         }
-        return;
+      } else {
+        await shareHostRoom(input);
       }
-      await shareHostRoom(input);
+      await refreshOwnedRooms();
     } : undefined,
     stopSharing: stopSharing ? async (roomId: string) => {
       const transport = controlValue(await rpc.call("/dsh-collab", "easytier/status", {}), "Invalid EasyTier status response");
@@ -818,6 +819,7 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
           await rpc.call("/dsh-collab", "easytier/stop", {});
         }
       }
+      await refreshOwnedRooms();
     } : undefined,
     inspectRepository: async (roomId: string) => decodeRepositoryInspectionResult(await rpc.call("/dsh-collab", "repository/inspect", { roomId })),
     inspectRepositoryDiff: async (roomId: string, path: string, layer: "staged" | "unstaged") => decodeRepositoryDiffResult(await rpc.call("/dsh-collab", "repository/diff", { roomId, path, layer })),

@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, joinDshCollabRoom, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
-import type { DshCollabSettingsPort } from "../../src/dsh-client.js";
+import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort } from "../../src/dsh-client.js";
 import type { CollabPanelHost } from "../../src/collab-panel-host.js";
 import { encodeCollabInvitation } from "../../src/invitation.js";
 
@@ -271,6 +271,26 @@ describe("Collab Rooms navigation", () => {
     }), "room-owned");
   });
 
+  it("refreshes a running Gateway before creating an invitation after renderer reload", async () => {
+    const actions = port();
+    let runtime: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "", connectionMethod: "private-network",
+    });
+    actions.getGatewaySnapshot = () => runtime;
+    actions.refreshGateway = vi.fn(async () => {
+      runtime = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.15:4310/collab" };
+      return runtime;
+    });
+    actions.createInvite = vi.fn(async () => ({ invitation: "refreshed-runtime-collab-invite" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("refreshed-runtime-collab-invite");
+    expect(actions.refreshGateway).toHaveBeenCalledOnce();
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({
+      gatewayEndpoint: "ws://192.168.1.15:4310/collab",
+      expiresAt: expect.any(Number),
+    }), "room-owned");
+  });
   it("reconnects the browser projection before opening an Owned room that is already shared", async () => {
     const activePort = port();
     activePort.bootstrap = vi.fn(async () => {});

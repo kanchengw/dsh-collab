@@ -131,6 +131,31 @@ describe("real DSH client slot adapter", () => {
     expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
   });
 
+  it("refreshes Owned room sharing state after Host share and stop actions", async () => {
+    let sharing = false;
+    const shareHostRoom = vi.fn(async () => { sharing = true; });
+    const stopSharing = vi.fn(async () => { sharing = false; });
+    const base = {
+      getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "", connectionMethod: "private-network" as const }),
+      save: vi.fn(async () => {}),
+      shareHostRoom,
+      stopSharing,
+    };
+    const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing }] } };
+      if (endpoint === "easytier/status") return { ok: true, value: { active: false, role: "idle", runtime: { kind: "idle" } } };
+      throw new Error(endpoint);
+    }) };
+    const port = createDshGatewayControlPort(base, rpc);
+
+    await port.shareHostRoom?.({ roomId: "room-1", hostSessionId: "session-1", title: "Release" });
+    expect(port.getOwnedRooms?.()).toEqual([{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing: true }]);
+
+    await port.stopSharing?.("room-1");
+    expect(port.getOwnedRooms?.()).toEqual([{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing: false }]);
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "rooms/list", {});
+    expect(rpc.call).toHaveBeenCalledTimes(3);
+  });
   it("exposes the Host Gateway advertised endpoint returned by Connection RPC", async () => {
     const base = { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "" }), save: vi.fn() };
     const port = createDshGatewayControlPort(base, {
@@ -372,7 +397,7 @@ describe("real DSH client slot adapter", () => {
       }
     }
     const base = new BrowserSettings();
-    const port = createDshGatewayControlPort(base, { call: vi.fn() });
+    const port = createDshGatewayControlPort(base, { call: vi.fn(async () => ({ ok: true, value: { rooms: [] } })) });
 
     await port.shareHostRoom?.({ roomId: "room-current", hostSessionId: "session-current", title: "Current" });
 
@@ -670,6 +695,7 @@ describe("real DSH client slot adapter", () => {
     const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
       if (endpoint === "easytier/status") return { ok: true, value: { active: true, role: "owner", roomId: "room-1", runtime: { kind: "running" } } };
       if (endpoint === "easytier/stop") return { ok: true, value: { kind: "idle" } };
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
       throw new Error(endpoint);
     }) };
     const port = createDshGatewayControlPort(base, rpc);
