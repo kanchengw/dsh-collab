@@ -1370,14 +1370,8 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     context.provide?.("collabWorkspacePorts", workspacePorts);
     context.effect?.(() => () => { workspacePorts.dispose(); }, "dsh-collab: workspace ports");
   }
-  const pickCollabWorkspaceDirectory = async (): Promise<string | null> => {
-    const snapshot = sessions?.list?.getSnapshot();
-    const currentSessionId = snapshot?.current;
-    const currentPath = currentSessionId === undefined ? undefined : snapshot?.byId[currentSessionId]?.cwd;
-    const knownPath = currentPath ?? Object.values(snapshot?.byId ?? {}).map((session) => session.cwd).find((cwd): cwd is string => typeof cwd === "string" && cwd.trim() !== "");
-    if (typeof knownPath === "string" && knownPath.trim() !== "") return knownPath;
-    return workspaceNavigation?.pickDirectory?.() ?? null;
-  };
+  const pickCollabWorkspaceDirectory = async (): Promise<string | null> =>
+    workspaceNavigation?.pickDirectory?.() ?? null;
   const roomPanel = (embedded: boolean, props: Record<string, unknown>): ReactNode => createElement(DshCollabRoomsPanel, {
     embedded,
     port: settings,

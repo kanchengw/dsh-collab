@@ -538,9 +538,10 @@ describe("real DSH client slot adapter", () => {
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
-  it("provides the Host Room Project creator to the registered Rooms panel", () => {
+  it("provides the Host Room Project creator to the registered Rooms panel", async () => {
     let roomsPanel: ((props: Record<string, unknown>) => unknown) | undefined;
     let settingsItem: ((props: Record<string, unknown>) => unknown) | undefined;
+    const pickDirectory = vi.fn(async () => "C:\\work\\selected");
     const context = {
       slots: {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
@@ -556,7 +557,7 @@ describe("real DSH client slot adapter", () => {
         if (name === "sidebarRightTabs") return { register: vi.fn(() => () => {}) };
         if (name === "connection") return { rpc: { call: vi.fn() } };
         if (name === "workspaces") return { create: vi.fn() };
-        if (name === "uiWorkspace") return { connectWorkspace: vi.fn(), pickDirectory: vi.fn(async () => "C:\\work\\atlas") };
+        if (name === "uiWorkspace") return { connectWorkspace: vi.fn(), pickDirectory };
         if (name === "sessions") return {
           open: vi.fn(),
           list: {
@@ -576,6 +577,9 @@ describe("real DSH client slot adapter", () => {
     const element = roomsPanel?.({}) as React.ReactElement<{ createOwnedRoom?: unknown; pickDirectory?: unknown }> | undefined;
     expect(element?.props.createOwnedRoom).toEqual(expect.any(Function));
     expect(element?.props.pickDirectory).toEqual(expect.any(Function));
+    const selectedPath = await (element?.props.pickDirectory as (() => Promise<string | null>) | undefined)?.();
+    expect(selectedPath).toBe("C:\\work\\selected");
+    expect(pickDirectory).toHaveBeenCalledOnce();
     const settings = settingsItem?.({}) as React.ReactElement<{ createOwnedRoom?: unknown; currentWorkspacePath?: string }> | undefined;
     expect(settings?.props.createOwnedRoom).toBeUndefined();
     expect(settings?.props.currentWorkspacePath).toBeUndefined();
