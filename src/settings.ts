@@ -35,6 +35,7 @@ export const DSH_COLLAB_SETTINGS_SCHEMA: z<DshCollabPersistedSettings> = z.objec
   easyTierRooms: z.array(z.object({
     roomId: z.string().min(1).required(),
     credentialKey: z.string().min(1).required().hidden(),
+    configFingerprint: z.string().min(1).default(undefined as unknown as string).hidden(),
   })).default([]).hidden(),
 });
 

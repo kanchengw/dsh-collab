@@ -28,7 +28,7 @@ describe("Collab Bar production composition", () => {
     expect(registrations).toEqual([
       { name: "sidebar.footer.action", id: "dsh-collab", key: undefined },
       { name: "shell.overlay", id: "dsh-collab-rooms", key: undefined },
-      { name: "settings.plugin.item", id: undefined, key: "dsh-collab" },
+      { name: "settings.section", id: "dsh-collab", key: undefined },
     ]);
     expect(registrations.some(({ name, id }) => name === "shell.overlay" && id !== "dsh-collab-rooms")).toBe(false);
     expect(composerTargetForText("@agent summarize the upgrade")).toBe("dsh");

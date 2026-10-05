@@ -72,9 +72,19 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
   if (!port.createInvite) throw new Error("Invitation creation is unavailable");
   const settings = port.getSnapshot();
   const configuredGatewayEndpoint = (settings.appliedGateway ?? settings).advertisedEndpoint;
+  const privateNetwork = settings.connectionMethod === "private-network"
+    || (settings.connectionMethod === undefined && settings.exposeMode === "network");
   let runtimeGateway = port.getGatewaySnapshot?.();
-  if (!configuredGatewayEndpoint && port.refreshGateway) runtimeGateway = await port.refreshGateway();
-  const gatewayEndpoint = configuredGatewayEndpoint || (runtimeGateway?.status === "running" ? runtimeGateway.advertisedEndpoint : undefined);
+  if (privateNetwork && runtimeGateway?.status === "running" && port.stopGateway && port.startGateway) {
+    await port.stopGateway();
+    const restarted = await port.startGateway();
+    runtimeGateway = restarted?.status === "running" ? restarted : runtimeGateway;
+  }
+  if ((!configuredGatewayEndpoint || privateNetwork) && port.refreshGateway && runtimeGateway?.status !== "running") {
+    runtimeGateway = await port.refreshGateway();
+  }
+  const runtimeEndpoint = runtimeGateway?.status === "running" ? runtimeGateway.advertisedEndpoint : undefined;
+  const gatewayEndpoint = (privateNetwork ? runtimeEndpoint || configuredGatewayEndpoint : configuredGatewayEndpoint || runtimeEndpoint);
   if (!gatewayEndpoint) throw new Error("Configure a private-network address before creating an invitation");
   const created = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, roomId);
   return created.invitation;
@@ -194,7 +204,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const activeRoom = useActiveRoom(port);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
-  const [displayName, setDisplayName] = useState("");
+  const [displayName, setDisplayName] = useState(() => t("role.participant"));
   const [ownedRoomTitle, setOwnedRoomTitle] = useState("");
   const [ownedWorkspacePath, setOwnedWorkspacePath] = useState<string>();
   const [joinInvitation, setJoinInvitation] = useState("");
@@ -202,6 +212,9 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; message: string }>();
   const participantConnected = activeRoom?.role === "participant" && activeRoom.connection !== "offline";
+  const activeRoomConnected = activeRoom?.connection !== undefined && activeRoom.connection !== "offline";
+  const activeOwnedRoom = ownedRooms.find((room) => room.sharing);
+  const hasActiveRoom = activeRoomConnected || activeOwnedRoom !== undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -280,6 +293,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
           {embedded ? null : <button ref={closeRef} type="button" className={css.close} aria-label={t("rooms.close")} onClick={() => { setDshCollabRoomsOpen(false); }}><span className={css.closeIcon} aria-hidden="true" /></button>}
         </header>
         <div className={css.body}>
+          <div className={css.boundaryNotice} role="note" data-collab-room-boundary="single-active-room">{t("rooms.mvpBoundary")}</div>
           {!panelHost ? <div className={css.providerNotice} role="status" data-collab-panel-provider="official-sidebar">
             <strong>{t("panelHost.unavailable")}</strong>
             <span>{t("panelHost.install")}</span>
@@ -306,7 +320,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
                     <Action disabled={!port?.createInvite || busy !== undefined} onClick={() => { if (port) void perform(`invite:${room.roomId}`, async () => { setHostInvitation({ roomId: room.roomId, value: await createDshCollabInvitation(port, room.roomId) }); }, t("share.invitationCreatedNotice")); }}>{t(busy === `invite:${room.roomId}` ? "share.creating" : "share.createInvitation")}</Action>
                     <Action disabled={!stopSharing || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, async () => { await stopSharing?.(room.roomId); setHostInvitation(undefined); }, t("owned.stoppedNotice")); }}>{t("owned.stopSharing")}</Action>
                   </>
-                  : <Action primary disabled={!port?.shareHostRoom || busy !== undefined} onClick={() => { void perform(`owned:${room.roomId}`, () => startSharing(room), t("owned.startedNotice")); }}>{t("owned.startSharing")}</Action>}
+                  : <Action primary disabled={!port?.shareHostRoom || busy !== undefined || (hasActiveRoom && !room.sharing)} onClick={() => { void perform(`owned:${room.roomId}`, () => startSharing(room), t("owned.startedNotice")); }}>{t("owned.startSharing")}</Action>}
               </div>
               {hostInvitation?.roomId === room.roomId ? <div className={css.hostInvitation}>
                 <input type="text" value={hostInvitation.value} readOnly aria-label={t("share.invitationAria")} />
@@ -330,20 +344,20 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
                   {openJoinedRoom ? <Action disabled={busy !== undefined} onClick={() => { void perform(`open:${room.roomId}`, () => openJoinedRoom({ roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) })); }}>{t("joined.openRoom")}</Action> : null}
                   {active
                     ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { void perform(`disconnect:${room.roomId}`, async () => { await port?.disconnectJoinedRoom?.(); }); }}>{t("joined.disconnect")}</Action>
-                    : <Action primary disabled={!connectJoinedRoom || participantConnected || busy !== undefined} onClick={() => { void perform(`joined:${room.roomId}`, async () => { await connectJoinedRoom?.(ref); }); }}>{t("joined.connect")}</Action>}
+                    : <Action primary disabled={!connectJoinedRoom || hasActiveRoom || busy !== undefined} onClick={() => { void perform(`joined:${room.roomId}`, async () => { await connectJoinedRoom?.(ref); }); }}>{t("joined.connect")}</Action>}
                   <Action disabled={!forgetJoinedRoom || busy !== undefined} onClick={() => { void perform(`forget:${room.roomId}`, async () => { await forgetJoinedRoom?.(ref); }, t("joined.forgottenNotice")); }}>{t("joined.forget")}</Action>
                 </div>
               </li>;
             })}</ul>}
           </section>
 
-          <details className={css.joinDisclosure} data-collab-join-disclosure="true">
+          <details open className={css.joinDisclosure} data-collab-join-disclosure="true">
             <summary><span><strong>{t("join.title")}</strong><small>{t("join.description")}</small></span><span className={css.disclosureIcon} aria-hidden="true" /></summary>
             <form className={css.joinSection} onSubmit={(event) => { void join(event); }}>
-              <label className={css.field}>{t("join.displayName")}<input name="displayName" value={displayName} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
-              <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || participantConnected || busy !== undefined} /></label>
-              {participantConnected ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
-              <button type="submit" className={css.joinButton} disabled={!port?.join || participantConnected || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
+              <label className={css.field}>{t("join.displayName")}<input name="displayName" value={displayName} autoComplete="name" onChange={(event) => { setDisplayName(event.target.value); }} disabled={!port?.join || hasActiveRoom || busy !== undefined} /></label>
+              <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || hasActiveRoom || busy !== undefined} /></label>
+              {hasActiveRoom ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
+              <button type="submit" className={css.joinButton} disabled={!port?.join || hasActiveRoom || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(busy === "join" ? "join.joining" : "join.action")}</button>
             </form>
           </details>
           {notice ? <p className={notice.tone === "error" ? css.error : css.success} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}

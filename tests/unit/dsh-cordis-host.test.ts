@@ -734,9 +734,31 @@ describe("Cordis Host mount", () => {
 
     expect(started).toMatchObject({ ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: `ws://10.231.0.1:${String(gatewayPort)}/collab` } });
     expect(runtime.start).toHaveBeenCalledOnce();
-    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({ roomId: "room-1", credentialKey: expect.stringMatching(/^dsh-collab\/owner-/) })]);
+    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({
+      roomId: "room-1",
+      credentialKey: expect.stringMatching(/^dsh-collab\/owner-/),
+      configFingerprint: JSON.stringify({ connectionMethod: "easytier", easyTierSharedNode: "tcp://public.kkrainbow.top:11010" }),
+    })]);
     expect(JSON.stringify(persisted)).not.toContain("network-secret-room-1");
     expect(JSON.stringify([...credentialRecords.values()])).toContain("network-secret-room-1");
+    const oldCredentialKey = persisted.easyTierRooms![0]!.credentialKey;
+    await control!("easytier/stop", {}, new AbortController().signal);
+    persisted = {
+      ...persisted,
+      easyTierSharedNode: "tcp://other-shared-node.example:11010",
+      // Simulate a legacy room record written before the fingerprint field existed.
+      easyTierRooms: [{ roomId: "room-1", credentialKey: oldCredentialKey }],
+    };
+    const restarted = await control!("easytier/owner/start", { roomId: "room-1", gatewayPort }, new AbortController().signal);
+    expect(restarted).toMatchObject({ ok: true, value: { role: "owner", roomId: "room-1" } });
+    expect(runtime.start).toHaveBeenCalledTimes(2);
+    expect(runtime.start).toHaveBeenNthCalledWith(2, expect.objectContaining({ peers: ["tcp://other-shared-node.example:11010"] }), expect.any(AbortSignal));
+    expect(persisted.easyTierRooms).toEqual([expect.objectContaining({
+      roomId: "room-1",
+      credentialKey: expect.not.stringMatching(new RegExp(`^${oldCredentialKey}$`)),
+      configFingerprint: JSON.stringify({ connectionMethod: "easytier", easyTierSharedNode: "tcp://other-shared-node.example:11010" }),
+    })]);
+    expect(credentialRecords.has(oldCredentialKey)).toBe(false);
     await Promise.all(disposeEffects.map(async (dispose) => { await dispose(); }));
     expect(runtime.stop).toHaveBeenCalled();
   });

@@ -52,6 +52,13 @@ export const defaultCollabSettings: CollabSettings = {
   maxQueue: 5,
 };
 
+export function easyTierConfigFingerprint(input: Pick<DshCollabPersistedSettings, "connectionMethod" | "easyTierSharedNode">): string {
+  return JSON.stringify({
+    connectionMethod: input.connectionMethod ?? defaultCollabSettings.connectionMethod,
+    easyTierSharedNode: (input.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode).trim(),
+  });
+}
+
 export const DSH_COLLAB_SETTINGS_NAMESPACE = "dsh-collab";
 export const DSH_COLLAB_PARTICIPANT_NAMESPACE = "dsh-collab-participant";
 
@@ -82,6 +89,7 @@ export interface DshCollabPersistedSettings {
 export interface DshCollabEasyTierRoom {
   roomId: string;
   credentialKey: string;
+  configFingerprint?: string;
 }
 
 export interface DshCollabJoinedRoom {

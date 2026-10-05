@@ -61,11 +61,30 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Connect");
     expect(html).toContain("Forget");
     expect(html).toContain('name="participantInvitation"');
-    expect(html).toContain('name="displayName"');
+    expect(html).toMatch(/name="displayName"[^>]*value="Participant"/);
     expect(html).toContain('data-collab-join-disclosure="true"');
+    expect(html).toMatch(/<details open=""[^>]*data-collab-join-disclosure="true"/);
     expect(html).toContain("Join a room");
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain("Participating rooms");
+  });
+
+  it("shows the single-active-room boundary and blocks switching actions", () => {
+    const actions = port();
+    actions.getOwnedRooms = () => [
+      { roomId: "room-active", hostSessionId: "session-active", title: "Active room", sharing: true },
+      { roomId: "room-saved", hostSessionId: "session-saved", title: "Saved room", sharing: false },
+    ];
+    actions.getRoomSnapshot = () => ({ roomId: "room-active", roomTitle: "Active room", hostDisplayName: "Host", role: "host", connection: "online" });
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: actions }));
+    setDshCollabRoomsOpen(false);
+
+    expect(html).toContain('data-collab-room-boundary="single-active-room"');
+    expect(html).toContain("one Collab room at a time");
+    expect(html).toMatch(/Saved room[\s\S]*Start sharing<\/button>/);
+    expect(html).toContain('name="participantInvitation"');
+    expect(html).toMatch(/name="participantInvitation"[^>]*disabled=""/);
   });
 
   it("does not show an owned room again in Joined rooms", () => {
@@ -255,6 +274,24 @@ describe("Collab Rooms navigation", () => {
     }), "room-owned");
   });
 
+  it("restarts a running private-network Gateway before creating an invitation after the address changes", async () => {
+    const actions = port();
+    let runtime: DshCollabGatewayRuntimeSnapshot = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.4:4310/collab" };
+    const order: string[] = [];
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.4:4310/collab",
+      connectionMethod: "private-network",
+      appliedGateway: { gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.4:4310/collab" },
+    });
+    actions.getGatewaySnapshot = () => runtime;
+    actions.stopGateway = vi.fn(async () => { order.push("stop"); runtime = { status: "stopped" }; return runtime; });
+    actions.startGateway = vi.fn(async () => { order.push("start"); runtime = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.5:4310/collab" }; return runtime; });
+    actions.createInvite = vi.fn(async () => ({ invitation: "refreshed-after-address-change" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("refreshed-after-address-change");
+    expect(order).toEqual(["stop", "start"]);
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.5:4310/collab" }), "room-owned");
+  });
   it("creates invitations from the running Gateway endpoint when settings are not shared with the renderer", async () => {
     const actions = port();
     actions.getSnapshot = () => ({

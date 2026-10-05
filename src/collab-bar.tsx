@@ -43,7 +43,7 @@ function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnap
   </div>;
 }
 
-function ProjectOverview(props: { changesPort?: CollabChangesPort; members: readonly { memberId: string; displayName: string }[]; t: CollabTranslate }): ReactNode {
+function ProjectOverview(props: { changesPort?: CollabChangesPort; t: CollabTranslate }): ReactNode {
   const [changes, setChanges] = useState(() => props.changesPort?.getSnapshot());
   useEffect(() => {
     if (!props.changesPort) {
@@ -62,15 +62,12 @@ function ProjectOverview(props: { changesPort?: CollabChangesPort; members: read
         : workspace?.linked === false ? props.t("project.workspaceUnlinked")
           : workspace?.dirtyPaths.length ? props.t("project.workspaceDirty")
             : workspace ? props.t("project.workspaceReady") : props.t("project.workspacePending");
-  const memberNames = props.members.map((member) => member.displayName).join(" · ");
 
   return <section className={css.project} data-collab-project="true" aria-label={props.t("project.title")}>
     <div className={css.projectHeading}><strong>{props.t("project.title")}</strong><span>{props.t("project.version", { version: changes?.workspace.latestVersionId ?? props.t("project.versionPending") })}</span></div>
     <div className={css.projectDetails}>
       <span>{props.t("project.workspace", { state: workspaceLabel })}</span>
-      <span>{props.t("project.members", { count: props.members.length })}</span>
     </div>
-    {memberNames ? <p className={css.projectMembers}>{memberNames}</p> : null}
   </section>;
 }
 
@@ -127,7 +124,7 @@ export function CollabBarView(props: {
       </div>
       <span className={css.role}>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span>
     </header>
-    <ProjectOverview changesPort={props.changesPort} members={snapshot.members ?? []} t={t} />
+    <ProjectOverview changesPort={props.changesPort} t={t} />
     <nav className={css.tabs} role="tablist" aria-label={t("bar.navigation")}>
       {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
     </nav>

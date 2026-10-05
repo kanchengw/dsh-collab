@@ -559,12 +559,14 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async bootstrap(roomId?: string): Promise<void> {
     const nextRoomId = roomId?.trim() || this.roomId;
+    this.assertCanActivateRoom(nextRoomId, "opening another room");
     const data = roomData(parseEnvelope(await this.request("GET", `/v1/rooms/${encodeURIComponent(nextRoomId)}/bootstrap`, undefined, false, this.hostBase)), nextRoomId);
     await this.connect({ base: this.hostBase, roomId: nextRoomId, data });
   }
 
   async shareHostRoom(input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {
     const roomId = input.roomId.trim();
+    this.assertCanActivateRoom(roomId, "sharing another room");
     const hostSessionId = input.hostSessionId.trim();
     const title = input.title.trim();
     if (roomId === "") throw new Error("roomId must not be blank");
@@ -602,79 +604,89 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     const invitation = decodeCollabInvitation(input.invitation);
     let nextBase = normalizeBase(gatewayHttpUrl(invitation.gatewayEndpoint));
     const nextRoomId = invitation.roomId;
+    this.assertCanActivateRoom(nextRoomId, "joining another room");
     const ref = { gatewayEndpoint: invitation.gatewayEndpoint, roomId: invitation.roomId };
     const pendingKey = JSON.stringify({ ...ref, inviteId: invitation.inviteId, memberId: input.memberId?.trim(), displayName: input.displayName.trim() });
     const saved = this.options.participantPersistence?.load(ref);
     let easyTier = saved?.easyTier;
-    if (invitation.protocol === "dsh-collab.invitation.v2" && invitation.network.mode === "easytier") {
-      if (!this.options.easyTierTransport) throw new Error("EasyTier transport is unavailable on this DSH client");
-      const gateway = new URL(invitation.gatewayEndpoint);
-      const active = await this.options.easyTierTransport.startParticipant({
-        roomId: nextRoomId,
-        gatewayPort: Number(gateway.port || 80),
-        network: invitation.network,
-        ...(easyTier ? { localVirtualAddress: easyTier.localVirtualAddress } : {}),
-      });
-      nextBase = normalizeBase(gatewayHttpUrl(active.gatewayEndpoint));
-      easyTier = { network: invitation.network, localVirtualAddress: active.localVirtualAddress };
-    }
-    const binding = saved ?? this.pendingJoins.get(pendingKey) ?? {
-      memberId: input.memberId?.trim() || randomId("member"),
-      credential: randomCredential(),
+    let easyTierAttempted = false;
+    let temporaryCredentialSaved = false;
+    const cleanupFailedJoin = async (): Promise<void> => {
+      this.pendingJoins.delete(pendingKey);
+      if (!saved && temporaryCredentialSaved) {
+        if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
+        else await this.options.participantPersistence?.clear?.();
+      }
+      if (easyTierAttempted) await this.options.easyTierTransport?.stop().catch(() => undefined);
     };
-    this.pendingJoins.set(pendingKey, binding);
-    if (!saved && this.options.participantPersistence) {
-      await this.options.participantPersistence.save({ ...ref, memberId: binding.memberId, credential: binding.credential, ...(easyTier ? { easyTier } : {}) });
-    }
-    let data: RoomData;
     try {
-      data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(nextRoomId)}/join`, {
+      if (invitation.protocol === "dsh-collab.invitation.v2" && invitation.network.mode === "easytier") {
+        if (!this.options.easyTierTransport) throw new Error("EasyTier transport is unavailable on this DSH client");
+        const gateway = new URL(invitation.gatewayEndpoint);
+        easyTierAttempted = true;
+        const active = await this.options.easyTierTransport.startParticipant({
+          roomId: nextRoomId,
+          gatewayPort: Number(gateway.port || 80),
+          network: invitation.network,
+          ...(easyTier ? { localVirtualAddress: easyTier.localVirtualAddress } : {}),
+        });
+        nextBase = normalizeBase(gatewayHttpUrl(active.gatewayEndpoint));
+        easyTier = { network: invitation.network, localVirtualAddress: active.localVirtualAddress };
+      }
+      const binding = saved ?? this.pendingJoins.get(pendingKey) ?? {
+        memberId: input.memberId?.trim() || randomId("member"),
+        credential: randomCredential(),
+      };
+      this.pendingJoins.set(pendingKey, binding);
+      if (!saved && this.options.participantPersistence) {
+        await this.options.participantPersistence.save({ ...ref, memberId: binding.memberId, credential: binding.credential, ...(easyTier ? { easyTier } : {}) });
+        temporaryCredentialSaved = true;
+      }
+      const data = roomData(parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(nextRoomId)}/join`, {
         inviteId: invitation.inviteId,
         token: invitation.token,
         memberId: binding.memberId,
         displayName: input.displayName,
         resumeCredential: binding.credential,
       }, false, nextBase)), nextRoomId);
-    } catch (error) {
-      if (!saved && error instanceof GatewayRequestError && error.status >= 400 && error.status < 500) {
-        if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(ref);
-        else await this.options.participantPersistence?.clear?.();
-        this.pendingJoins.delete(pendingKey);
-        if (easyTier) await this.options.easyTierTransport?.stop().catch(() => undefined);
+      if (this.options.participantPersistence) {
+        if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
+        await this.options.participantPersistence.save({
+          ...ref,
+          memberId: data.member.memberId,
+          credential: data.resumeCredential,
+          roomTitle: data.room.title,
+          ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
+          ...(easyTier ? { easyTier } : {}),
+        });
       }
+      this.pendingJoins.delete(pendingKey);
+      await this.connect({
+        base: nextBase,
+        roomId: nextRoomId,
+        participantRef: ref,
+        data,
+      });
+    } catch (error) {
+      await cleanupFailedJoin();
       throw error;
     }
-    if (this.options.participantPersistence) {
-      if (typeof data.resumeCredential !== "string" || data.resumeCredential.trim() === "") throw new Error("Gateway join response is missing a resume credential");
-      await this.options.participantPersistence.save({
-        ...ref,
-        memberId: data.member.memberId,
-        credential: data.resumeCredential,
-        roomTitle: data.room.title,
-        ...(data.room.hostDisplayName ? { hostDisplayName: data.room.hostDisplayName } : {}),
-        ...(easyTier ? { easyTier } : {}),
-      });
-    }
-    this.pendingJoins.delete(pendingKey);
-    await this.connect({
-      base: nextBase,
-      roomId: nextRoomId,
-      participantRef: ref,
-      data,
-    });
   }
 
   async restoreParticipant(ref?: JoinedRoomRef): Promise<boolean> {
     await this.options.participantPersistence?.prepare?.();
     const state = this.options.participantPersistence?.load(ref);
     if (!state) return false;
+    this.assertCanActivateRoom(state.roomId, "reconnecting another room");
     const nextRef = { gatewayEndpoint: state.gatewayEndpoint, roomId: state.roomId };
     let nextBase = normalizeBase(gatewayHttpUrl(state.gatewayEndpoint));
     const preserveCurrentRoom = this.socket?.readyState === OPEN && this.snapshot.connection === "online";
+    let easyTierAttempted = false;
     try {
       if (state.easyTier) {
         if (!this.options.easyTierTransport) throw new EasyTierConnectionError("transport-failed", "EasyTier transport is unavailable on this DSH client");
         const gateway = new URL(state.gatewayEndpoint);
+        easyTierAttempted = true;
         const active = await this.options.easyTierTransport.startParticipant({
           roomId: state.roomId,
           gatewayPort: Number(gateway.port || 80),
@@ -698,6 +710,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         if (this.options.participantPersistence?.remove) await this.options.participantPersistence.remove(state);
         else await this.options.participantPersistence?.clear?.();
       }
+      if (easyTierAttempted && !preserveCurrentRoom) await this.options.easyTierTransport?.stop().catch(() => undefined);
       throw error;
     }
   }
@@ -735,6 +748,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async createInvite(input: DshBrowserInviteInput, roomId?: string): Promise<{ invitation: string }> {
     const inviteRoomId = roomId?.trim() || this.roomId;
+    if (this.snapshot.connection === "offline" || this.snapshot.role !== "host" || inviteRoomId !== this.roomId) {
+      throw new Error("create invitations are available only for the active Host room");
+    }
     const inviteId = input.inviteId?.trim() || randomId("invite");
     const data = parseEnvelope(await this.request("POST", `/v1/rooms/${encodeURIComponent(inviteRoomId)}/invites`, { inviteId, expiresAt: input.expiresAt }, false, this.hostBase));
     const created = data as { invite?: { inviteId?: unknown; roomId?: unknown; expiresAt?: unknown }; token?: unknown };
@@ -1218,6 +1234,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.emit();
   }
 
+  private assertCanActivateRoom(nextRoomId: string, action: string): void {
+    if (this.snapshot.connection !== "offline" && this.roomId !== nextRoomId) {
+      throw new Error(`another collaboration room is already active (${this.roomId}); disconnect it before ${action}`);
+    }
+  }
+
   private assertActiveRoom(roomId: string): void {
     if (roomId !== this.roomId || this.snapshot.roomId !== roomId || !this.token) throw new Error("connect to this collaboration room first");
   }
@@ -1249,7 +1271,11 @@ export class EasyTierConnectionError extends Error {
 }
 
 class DshBrowserCollabSettings implements DshBrowserSettingsPort {
-  constructor(private readonly client: DshBrowserCollabClient) {}
+  constructor(private readonly client: DshBrowserCollabClient) {
+    this.stopSharing = this.stopSharing.bind(this);
+    this.connectJoinedRoom = this.connectJoinedRoom.bind(this);
+    this.forgetJoinedRoom = this.forgetJoinedRoom.bind(this);
+  }
   getSnapshot(): { gatewayHost: string; gatewayPort: number; exposeMode: "loopback" | "network"; advertisedEndpoint: string } {
     return this.client.getSettingsSnapshot();
   }

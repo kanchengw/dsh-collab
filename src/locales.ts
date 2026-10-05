@@ -5,6 +5,7 @@ export const COLLAB_LOCALE_NAMESPACE = "dsh-collab";
 export const zh = {
   "rooms.title": "协作房间",
   "rooms.description": "每个人使用自己的本地 Agent，共享房间上下文与代码变更。",
+  "rooms.mvpBoundary": "当前版本每个 DSH 实例同时只能连接一个协作房间。其他房间可以保存，但切换前必须先停止或断开当前房间。",
   "rooms.close": "关闭协作房间",
   "rooms.backToDsh": "返回 DSH",
   "panelHost.unavailable": "协作侧栏不可用",
@@ -80,7 +81,7 @@ export const zh = {
   "join.description": "粘贴房间所有者发来的邀请；加入后可绑定自己的 DSH 会话和本地 Agent。",
   "join.displayName": "你的显示名称",
   "join.invitation": "邀请内容",
-  "join.disconnectFirst": "请先断开当前加入的房间，再加入另一个房间。",
+  "join.disconnectFirst": "请先停止或断开当前活动房间，再加入另一个房间。",
   "join.action": "加入房间",
   "join.joining": "正在加入...",
   "join.savedNotice": "房间已保存。你可以在“我加入的房间”中连接或断开。",
@@ -448,6 +449,7 @@ export type CollabLocaleKey = keyof typeof zh;
 export const en = {
   "rooms.title": "Collab Rooms",
   "rooms.description": "Each member uses a local Agent while sharing room context and code changes.",
+  "rooms.mvpBoundary": "This MVP connects one Collab room at a time per DSH instance. Other rooms can be saved, but stop or disconnect the current room before switching.",
   "rooms.close": "Close Collab Rooms",
   "rooms.backToDsh": "Back to DSH",
   "panelHost.unavailable": "Collab Bar unavailable",
@@ -523,7 +525,7 @@ export const en = {
   "join.description": "Paste an invitation from its Owner, then bind your own DSH session and local Agent.",
   "join.displayName": "Your display name",
   "join.invitation": "Invitation",
-  "join.disconnectFirst": "Disconnect the current Joined room before joining another.",
+  "join.disconnectFirst": "Stop or disconnect the current active room before joining another.",
   "join.action": "Join room",
   "join.joining": "Joining...",
   "join.savedNotice": "Joined room saved. Connect and disconnect from the Joined rooms list.",

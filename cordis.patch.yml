@@ -14,5 +14,10 @@
         allowLoopbackPrincipal: true
         host: 127.0.0.1
         port: 4310
+        gateway:
+          gatewayHost: 127.0.0.1
+          gatewayPort: 4310
+          exposeMode: loopback
+          advertisedEndpoint: ""
         title: DSH Collaboration
         hostDisplayName: Local Host

@@ -96,6 +96,47 @@ describe("real DSH client slot adapter", () => {
     ]);
   });
 
+  it("registers the materialized participant workspace when the native id is not visible to UI navigation yet", async () => {
+    const order: string[] = [];
+    const opener = createDshParticipantWorkspaceOpener({
+      workspaces: {
+        create: async ({ path }) => {
+          order.push(`create-workspace:${path}`);
+          return { workspaceId: "ui-visible-room-workspace" };
+        },
+      },
+      workspaceNavigation: {
+        connectWorkspace: async (workspaceId) => {
+          order.push(`connect-workspace:${workspaceId}`);
+          if (workspaceId === "registered-room-workspace") throw new Error(`uiWorkspace.connectWorkspace: unknown workspace ${workspaceId}`);
+          return "session-room";
+        },
+        openSession: () => { order.push("open-session"); },
+      },
+      sessions: {},
+      panelHost: () => ({
+        register: () => () => {},
+        open: () => { order.push("open-collab-bar"); },
+      }),
+    });
+
+    await opener({
+      roomId: "room-1",
+      path: "C:\\rooms\\room-1\\workspace",
+      nativeWorkspaceId: "registered-room-workspace",
+      gatewayEndpoint: "ws://10.0.0.1:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+    });
+
+    expect(order).toEqual([
+      "connect-workspace:registered-room-workspace",
+      "create-workspace:C:\\rooms\\room-1\\workspace",
+      "connect-workspace:ui-visible-room-workspace",
+      "open-session",
+      "open-collab-bar",
+    ]);
+  });
   it("exports the DSH client runner apply entry", () => {
     expect(apply).toBe(applyDshCollabClient);
     expect(inject).toEqual([
@@ -154,8 +195,54 @@ describe("real DSH client slot adapter", () => {
     await port.stopSharing?.("room-1");
     expect(port.getOwnedRooms?.()).toEqual([{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing: false }]);
     expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "rooms/list", {});
-    expect(rpc.call).toHaveBeenCalledTimes(3);
+    expect(rpc.call).toHaveBeenCalledTimes(4);
   });
+  it("unwraps volatile Client settings before selecting the EasyTier Owner path", async () => {
+    const volatile = <T>(value: T) => ({ get: () => value });
+    const shareHostRoom = vi.fn(async () => undefined);
+    const createInvite = vi.fn(async (input: unknown) => input);
+    const base = {
+      getSnapshot: () => ({
+        gatewayHost: "0.0.0.0",
+        gatewayPort: 4310,
+        exposeMode: "network" as const,
+        advertisedEndpoint: "",
+        connectionMethod: volatile("easytier"),
+      }),
+      save: vi.fn(),
+      shareHostRoom,
+      createInvite,
+    } as unknown as Parameters<typeof createDshGatewayControlPort>[0];
+    const rpc = {
+      call: vi.fn(async (_channel: string, endpoint: string) => {
+        if (endpoint === "gateway/status") return { ok: true, value: { status: "running", port: 4310 } };
+        if (endpoint === "easytier/owner/start") return {
+          ok: true,
+          value: {
+            role: "owner",
+            roomId: "room-1",
+            gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+            network: { mode: "easytier", version: 1, networkName: "dsh-room-1", networkSecret: "network-secret-room-1", ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010" },
+          },
+        };
+        if (endpoint === "rooms/list") return { ok: true, value: { rooms: [{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing: true }] } };
+        throw new Error(`unexpected endpoint ${endpoint}`);
+      }),
+    };
+    const port = createDshGatewayControlPort(base, rpc);
+
+    await port.refreshGateway?.();
+    await port.shareHostRoom?.({ roomId: "room-1", hostSessionId: "session-1", title: "Release" });
+
+    expect(rpc.call).toHaveBeenCalledWith("/dsh-collab", "easytier/owner/start", { roomId: "room-1", gatewayPort: 4310 });
+    expect(shareHostRoom).toHaveBeenCalledOnce();
+    await port.createInvite?.({ expiresAt: Date.now() + 60_000, gatewayEndpoint: "ws://192.168.1.15:4310/collab" }, "room-1");
+    expect(createInvite).toHaveBeenLastCalledWith(expect.objectContaining({
+      gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+      network: { mode: "easytier", version: 1, networkName: "dsh-room-1", networkSecret: "network-secret-room-1", ownerVirtualAddress: "10.231.0.1", sharedNode: "tcp://public.kkrainbow.top:11010" },
+    }), "room-1");
+  });
+
   it("exposes the Host Gateway advertised endpoint returned by Connection RPC", async () => {
     const base = { getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "" }), save: vi.fn() };
     const port = createDshGatewayControlPort(base, {
@@ -442,12 +529,12 @@ describe("real DSH client slot adapter", () => {
     expect(registrations).toEqual([
       { name: "sidebar.footer.action", options: expect.objectContaining({ id: "dsh-collab", order: 20, locale: "dsh-collab" }) },
       { name: "shell.overlay", options: expect.objectContaining({ id: "dsh-collab-rooms", order: 10, locale: "dsh-collab" }) },
-      { name: "settings.plugin.item", options: expect.objectContaining({ key: "dsh-collab", locale: "dsh-collab" }) },
+      { name: "settings.section", options: expect.objectContaining({ id: "dsh-collab", order: 80 }) },
     ]);
     expect(context.slots.inject).not.toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("sidebar.footer.action", expect.any(Function));
     expect(context.slots.inject).toHaveBeenCalledWith("shell.overlay", expect.any(Function));
-    expect(context.slots.inject).toHaveBeenCalledWith("settings.plugin.item", expect.any(Function));
+    expect(context.slots.inject).toHaveBeenCalledWith("settings.section", expect.any(Function));
     expect(context.slots.inject).not.toHaveBeenCalledWith("settings.plugins.tab", expect.any(Function));
   });
 
@@ -459,7 +546,7 @@ describe("real DSH client slot adapter", () => {
         inject: vi.fn((_name: string, register: () => unknown) => register()),
         register: vi.fn((options: Record<string, unknown>, component: (props: Record<string, unknown>) => unknown) => {
           if (options.name === "main") roomsPanel = component;
-          if (options.name === "settings.plugin.item") settingsItem = component;
+          if (options.name === "settings.section") settingsItem = component;
           return () => {};
         }),
       },
@@ -646,10 +733,10 @@ describe("real DSH client slot adapter", () => {
       getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network" as const, advertisedEndpoint: "ws://10.231.0.1:4310/collab", connectionMethod: "easytier" as const }),
       save: vi.fn(async () => {}),
       createInvite,
-    };
+    } as unknown as Parameters<typeof createDshGatewayControlPort>[0];
     const rpc = { call: vi.fn(async (_channel: string, endpoint: string) => {
       if (endpoint === "gateway/status") return { ok: true, value: { status: "running", port: 4310 } };
-      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
+      if (endpoint === "rooms/list") return { ok: true, value: { rooms: [{ roomId: "room-1", hostSessionId: "session-1", title: "Release", sharing: true }] } };
       if (endpoint === "easytier/owner/start") return { ok: true, value: { role: "owner", roomId: "room-1", gatewayEndpoint: "ws://10.231.0.1:4310/collab", localVirtualAddress: "10.231.0.1", network } };
       throw new Error(endpoint);
     }) };
@@ -844,7 +931,7 @@ describe("real DSH client slot adapter", () => {
       expect(html).toContain("<textarea");
       expect(html).toContain('name="collab-text"');
       expect(html).not.toContain('data-collab-agent-queue="true"');
-      expect(slotNames).toEqual(["sidebar.panellist", "main", "sidebar.right.pane.tab", "settings.plugin.item"]);
+      expect(slotNames).toEqual(["sidebar.panellist", "main", "sidebar.right.pane.tab", "settings.section"]);
       expect(context.slots.inject).not.toHaveBeenCalledWith("conversation.session.header.actions", expect.any(Function));
       expect(openTab).toHaveBeenCalledWith("dsh-collab", { revealIfOpened: true });
       expect(selectPanel).toHaveBeenCalledWith(null);

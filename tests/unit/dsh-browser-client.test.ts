@@ -69,6 +69,19 @@ describe("browser Gateway client", () => {
 
     await first.join({ invitation, displayName: "Bob" });
 
+    const secondInvitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+      roomId: "room-3",
+      inviteId: "invite-3",
+      token: "invite-token-3",
+      expiresAt: 100,
+      network,
+    });
+    await expect(first.join({ invitation: secondInvitation, displayName: "Bob" })).rejects.toThrow("another collaboration room is already active");
+    expect(transport.startParticipant).toHaveBeenCalledTimes(1);
+
     expect(transport.startParticipant).toHaveBeenCalledWith(expect.objectContaining({ roomId: "room-2", gatewayPort: 4310, network }));
     expect(urls.every((url) => url.startsWith("http://127.0.0.1:45231/collab"))).toBe(true);
     expect(persisted).toMatchObject({
@@ -91,6 +104,65 @@ describe("browser Gateway client", () => {
     await restarted.forgetJoinedRoom({ gatewayEndpoint: persisted!.gatewayEndpoint, roomId: persisted!.roomId });
     expect(transport.stop).toHaveBeenCalledTimes(2);
     expect(persisted).toBeUndefined();
+  });
+  it("rolls back EasyTier and temporary credentials when Participant join fails after transport startup", async () => {
+    const network = {
+      mode: "easytier" as const,
+      version: 1 as const,
+      networkName: "dsh-collab-room-failed",
+      networkSecret: "network-secret-failed",
+      ownerVirtualAddress: "10.231.0.1",
+      sharedNode: "tcp://public.kkrainbow.top:11010",
+    };
+    let persisted: ParticipantResumeState | undefined;
+    const transport = {
+      startParticipant: vi.fn(async () => ({ gatewayEndpoint: "ws://127.0.0.1:45231/collab", localVirtualAddress: "10.231.2.4" })),
+      stop: vi.fn(async () => {}),
+    };
+    const client = createDshBrowserCollabClient({
+      gatewayUrl: "http://127.0.0.1:4310/collab",
+      roomId: "dsh-room",
+      fetch: async (url) => url.endsWith("/join")
+        ? errorResponse("AUTH_INVALID", "invitation rejected", 401)
+        : (() => { throw new Error(`unexpected request: ${url}`); })(),
+      WebSocket: class {} as never,
+      participantPersistence: {
+        load: () => persisted,
+        save: async (state) => { persisted = state; },
+        remove: async () => { persisted = undefined; },
+      },
+      easyTierTransport: transport,
+    });
+
+    const invitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://10.231.0.1:4310/collab",
+      roomId: "room-failed",
+      inviteId: "invite-failed",
+      token: "invite-token-failed",
+      expiresAt: 100,
+      network,
+    });
+    await expect(client.join({ invitation, displayName: "Bob" })).rejects.toThrow("invitation rejected");
+
+    expect(transport.startParticipant).toHaveBeenCalledOnce();
+    expect(transport.stop).toHaveBeenCalledOnce();
+    expect(persisted).toBeUndefined();
+    expect(client.getSnapshot().connection).toBe("offline");
+  });
+
+  it("keeps settings-port room actions callable when passed as callbacks", async () => {
+    const fetch: BrowserFetch = async () => response({});
+    const WebSocket = class implements BrowserSocket {
+      readyState = 3;
+      send(): void {}
+      close(): void {}
+    };
+    const settings = createBrowserClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket }).settingsPort();
+    const forgetJoinedRoom = settings.forgetJoinedRoom;
+
+    await expect(forgetJoinedRoom({ gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomId: "room-1" })).resolves.toBeUndefined();
   });
   it("publishes, lists and accepts SideTask findings through validated contracts", async () => {
     const requests: Array<{ url: string; init?: BrowserRequestInit }> = [];
@@ -654,7 +726,7 @@ describe("browser Gateway client", () => {
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
 
-    await expect(client.shareHostRoom({ roomId: "room-denied", hostSessionId: "session-denied", title: "Denied" })).rejects.toThrow("403");
+    await expect(client.shareHostRoom({ roomId: "room-denied", hostSessionId: "session-denied", title: "Denied" })).rejects.toThrow("another collaboration room is already active");
     await client.createInvite({ inviteId: "invite-1", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" });
 
     expect(requests.at(-1)).toBe("http://127.0.0.1:4310/collab/v1/rooms/room-1/invites");
@@ -689,8 +761,8 @@ describe("browser Gateway client", () => {
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-active", fetch, WebSocket });
     await client.bootstrap();
 
-    await client.createInvite({ inviteId: "invite-other", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" }, "room-other");
-    await client.stopSharing("room-other");
+    await expect(client.createInvite({ inviteId: "invite-other", expiresAt: 100, gatewayEndpoint: "ws://192.168.1.20:4310/collab" }, "room-other"))
+      .rejects.toThrow("active Host room");
     await client.send({ text: "still active", target: "room" });
 
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-active", connection: "online" });
@@ -955,14 +1027,13 @@ describe("browser Gateway client", () => {
     await expect(client.join({
       invitation: JSON.stringify({ protocol: "dsh-collab.invitation.v2", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100, network: { mode: "lan", version: 1, endpoint: "ws://10.0.0.2:4312/collab" } }),
       displayName: "Host",
-    })).rejects.toThrow("invitation rejected");
+    })).rejects.toThrow("another collaboration room is already active");
     await client.send({ text: "still local", target: "room" });
 
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:4310/collab/v1/rooms/room-1/messages");
     expect(requests.at(-1)?.init?.headers?.authorization).toBe("Bearer host-token");
-    expect(requests.filter(({ url }) => url.startsWith("http://10.0.0.2:4312")))
-      .toEqual([expect.objectContaining({ init: expect.objectContaining({ headers: expect.not.objectContaining({ authorization: expect.anything() }) }) })]);
+    expect(requests.filter(({ url }) => url.startsWith("http://10.0.0.2:4312"))).toEqual([]);
     client.dispose();
   });
 
@@ -1008,11 +1079,11 @@ describe("browser Gateway client", () => {
     await expect(client.join({
       invitation: JSON.stringify({ protocol: "dsh-collab.invitation.v2", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100, network: { mode: "lan", version: 1, endpoint: "ws://10.0.0.2:4312/collab" } }),
       displayName: "Bob",
-    })).rejects.toThrow("room is not shared");
+    })).rejects.toThrow("another collaboration room is already active");
     await client.send({ text: "still local", target: "room" });
 
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
-    expect(persisted).toMatchObject({ roomId: "room-2", credential: "resume-room-2" });
+    expect(persisted).toBeUndefined();
     expect(originalSocket?.readyState).toBe(1);
     expect(requests.at(-1)).toMatchObject({
       url: "http://127.0.0.1:4310/collab/v1/rooms/room-1/messages",
@@ -1050,10 +1121,10 @@ describe("browser Gateway client", () => {
     await expect(client.join({
       invitation: JSON.stringify({ protocol: "dsh-collab.invitation.v2", type: "invite", gatewayEndpoint: "ws://10.0.0.2:4312/collab", roomId: "room-2", inviteId: "invite-2", token: "invite-token", expiresAt: 100, network: { mode: "lan", version: 1, endpoint: "ws://10.0.0.2:4312/collab" } }),
       displayName: "Bob",
-    })).rejects.toThrow("Gateway is unreachable");
+    })).rejects.toThrow("another collaboration room is already active");
 
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", role: "host", connection: "online" });
-    expect(sockets).toHaveLength(2);
+    expect(sockets).toHaveLength(1);
     expect(sockets[0]?.readyState).toBe(1);
     client.dispose();
   });

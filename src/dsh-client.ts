@@ -60,6 +60,9 @@ function sessionForWorkspacePath(sessions: DshClientSessions, sourcePath: string
   return matches;
 }
 
+function isUnknownWorkspaceNavigationError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("uiWorkspace.connectWorkspace: unknown workspace ");
+}
 export function createDshParticipantWorkspaceOpener(input: {
   workspaces: DshClientWorkspaces;
   workspaceNavigation: DshClientWorkspaceNavigation;
@@ -69,8 +72,15 @@ export function createDshParticipantWorkspaceOpener(input: {
   return async (room) => {
     const panelHost = input.panelHost();
     if (!panelHost) throw new Error("Collab Bar is unavailable");
-    const workspaceId = room.nativeWorkspaceId ?? (await input.workspaces.create({ path: room.path })).workspaceId;
-    const sessionId = await input.workspaceNavigation.connectWorkspace(workspaceId);
+    let workspaceId = room.nativeWorkspaceId ?? (await input.workspaces.create({ path: room.path })).workspaceId;
+    let sessionId: string;
+    try {
+      sessionId = await input.workspaceNavigation.connectWorkspace(workspaceId);
+    } catch (error) {
+      if (!room.nativeWorkspaceId || !isUnknownWorkspaceNavigationError(error)) throw error;
+      workspaceId = (await input.workspaces.create({ path: room.path })).workspaceId;
+      sessionId = await input.workspaceNavigation.connectWorkspace(workspaceId);
+    }
     input.workspaceNavigation.openSession(sessionId);
     openDshCollabRoom({
       kind: "joined",
@@ -347,6 +357,17 @@ interface DshSettingsScope<T> {
 
 interface DshSettingsScopeBinder {
   bind<T>(spec: { namespace: string; decode?: (value: unknown) => T | undefined }): DshSettingsScope<T>;
+}
+
+interface DshConfigForm<T> {
+  getSnapshot(): { status: "loading" | "ready" | "unavailable"; value?: T; writable: boolean };
+  subscribe(listener: () => void): () => void;
+  set(field: string, value: unknown): Promise<boolean>;
+  unset(field: string): Promise<boolean>;
+}
+
+interface DshConfigForms {
+  get<T>(entryId: string): DshConfigForm<T>;
 }
 
 interface PersistedCollabSettings {
@@ -693,6 +714,13 @@ function decodeLocalSideTaskResult(
   return value as LocalSideTaskSnapshot;
 }
 
+function unwrapDshClientSettingsValue<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  const candidate = value as { get?: unknown };
+  if (typeof candidate.get === "function") return unwrapDshClientSettingsValue(candidate.get.call(value) as T);
+  if (Array.isArray(value)) return value.map((item) => unwrapDshClientSettingsValue(item)) as T;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unwrapDshClientSettingsValue(item)])) as T;
+}
 function controlValue(result: unknown, message: string): Record<string, unknown> {
   if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error(message);
   const envelope = result as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
@@ -766,6 +794,16 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     for (const listener of roomListeners) listener();
     return ownedRooms;
   };
+  const assertOwnedRoomCanActivate = async (roomId: string, action: string): Promise<void> => {
+    const rooms = await refreshOwnedRooms();
+    const active = rooms.find((room) => room.sharing && room.roomId !== roomId);
+    if (active) throw new Error(`another collaboration room is already active (${active.title} / ${active.roomId}); stop it before ${action}`);
+  };
+  const assertOwnedRoomIsActive = async (roomId: string, action: string): Promise<void> => {
+    const rooms = await refreshOwnedRooms();
+    const active = rooms.find((room) => room.roomId === roomId && room.sharing);
+    if (!active) throw new Error(`room ${roomId} is not active; start sharing it before ${action}`);
+  };
   const transientSnapshotAccess = (roomId: string): LocalSnapshotAccess | undefined => {
     const room = base.getRoomSnapshot?.();
     if (room?.role !== "participant" || room.roomId !== roomId || room.connection === "offline") return undefined;
@@ -774,7 +812,7 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
   };
   const startEasyTierOwner = async (roomId: string): Promise<{ gatewayEndpoint: string; network: ReturnType<typeof decodeEasyTierInvitationNetwork> }> => {
     if (gateway.status !== "running") throw new Error("Start the Host Gateway before sharing through EasyTier");
-    const settings = base.getSnapshot();
+    const settings = unwrapDshClientSettingsValue(base.getSnapshot());
     if ((settings.appliedGateway ?? settings).gatewayHost !== "0.0.0.0") throw new Error("Restart the Host Gateway before sharing through EasyTier");
     const value = controlValue(await rpc.call("/dsh-collab", "easytier/owner/start", { roomId, gatewayPort: gateway.port }), "Invalid EasyTier Owner response");
     if (value.role !== "owner" || value.roomId !== roomId || typeof value.gatewayEndpoint !== "string") throw new Error("Invalid EasyTier Owner response");
@@ -790,14 +828,16 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     subscribeOwnedRooms: (listener: () => void) => { roomListeners.add(listener); return () => { roomListeners.delete(listener); }; },
     refreshOwnedRooms,
     createInvite: createInvite ? async (input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string; network?: CollabInvitationNetwork }, roomId?: string) => {
-      const settings = base.getSnapshot();
+      const settings = unwrapDshClientSettingsValue(base.getSnapshot());
       if (settings.connectionMethod !== "easytier") return createInvite(input, roomId);
       if (!roomId || gateway.status !== "running") throw new Error("Start sharing this room before creating an EasyTier invitation");
+      await assertOwnedRoomIsActive(roomId, "creating an EasyTier invitation");
       const active = await startEasyTierOwner(roomId);
       return createInvite({ ...input, gatewayEndpoint: active.gatewayEndpoint, network: active.network }, roomId);
     } : undefined,
     shareHostRoom: shareHostRoom ? async (input: { roomId: string; hostSessionId: string; title: string }) => {
-      if (base.getSnapshot().connectionMethod === "easytier") {
+      await assertOwnedRoomCanActivate(input.roomId, "sharing another room");
+      if (unwrapDshClientSettingsValue(base.getSnapshot()).connectionMethod === "easytier") {
         try {
           await startEasyTierOwner(input.roomId);
           await shareHostRoom(input);
@@ -884,9 +924,25 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
   });
 }
 
+function configFormScope<T>(form: DshConfigForm<T>): DshSettingsScope<T> {
+  return {
+    getSnapshot: () => {
+      const snapshot = form.getSnapshot();
+      return { status: snapshot.status, ...(snapshot.value === undefined ? {} : { value: snapshot.value }), writable: snapshot.writable };
+    },
+    subscribe: (listener) => form.subscribe(listener),
+    set: async (field, value) => {
+      if (!await form.set(field, value)) throw new Error(`DSH settings rejected field ${field}`);
+    },
+    unset: async (field) => {
+      if (!await form.unset(field)) throw new Error(`DSH settings rejected field ${field}`);
+    },
+  };
+}
+
 export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSettings>, actions: DshCollabSettingsPort): DshCollabSettingsPort {
   const syncGateway = (): void => {
-    const persisted = scope.getSnapshot().value;
+    const persisted = unwrapDshClientSettingsValue(scope.getSnapshot().value);
     const gateway = persisted?.appliedGateway ?? persisted?.gateway;
     if (gateway) actions.configureGateway?.(gateway);
   };
@@ -1234,11 +1290,17 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const fallbackT = locale?.bind(COLLAB_LOCALE_NAMESPACE) ?? defaultCollabTranslate;
   const translationFor = (props: Record<string, unknown>): CollabTranslate => typeof props.t === "function" ? props.t as CollabTranslate : fallbackT;
   const existing = optionalService<DshCollabClientPort>(context, "collabClient");
-  const settingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings });
-  const participantScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope")?.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings });
+  const legacySettingsScope = optionalService<DshSettingsScopeBinder>(context, "settingsScope");
+  const configForms = optionalService<DshConfigForms>(context, "configForms");
+  const settingsScope = legacySettingsScope
+    ? legacySettingsScope.bind<PersistedCollabSettings>({ namespace: "dsh-collab", decode: decodePersistedSettings })
+    : configForms ? configFormScope(configForms.get<PersistedCollabSettings>("collab-host")) : undefined;
+  const participantScope = legacySettingsScope
+    ? legacySettingsScope.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings })
+    : configForms ? configFormScope(configForms.get<DshCollabParticipantSettings>(DSH_COLLAB_PARTICIPANT_NAMESPACE)) : undefined;
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
   const participantPersistence = connection
-    ? participantScope
+    ? participantScope && participantScope.getSnapshot().status === "ready"
       ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc))
       : createDshEphemeralParticipantPersistence()
     : undefined;
@@ -1254,8 +1316,8 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   });
   const client = existing ?? browserClient;
   const rawBrowserSettings = optionalService<DshCollabSettingsPort>(context, "collabSettings") ?? browserClient?.settingsPort();
-  const browserSettings = rawBrowserSettings && connection ? createDshGatewayControlPort(rawBrowserSettings, connection.rpc) : rawBrowserSettings;
-  const settings = settingsScope && browserSettings ? createDshSettingsPort(settingsScope, browserSettings) : browserSettings;
+  const scopedSettings = settingsScope && rawBrowserSettings ? createDshSettingsPort(settingsScope, rawBrowserSettings) : rawBrowserSettings;
+  const settings = scopedSettings && connection ? createDshGatewayControlPort(scopedSettings, connection.rpc) : scopedSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
   if (settings) context.provide?.("collabSettings", settings);
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
@@ -1291,10 +1353,10 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     sessions,
     panelHost: () => panelHost,
   }) : undefined;
-  const openJoinedRoom = browserSettings && connection && openWorkspace
-    && browserSettings.connectJoinedRoom && browserSettings.getRoomSnapshot && browserSettings.getLocalSnapshotAccess
+  const openJoinedRoom = settings && connection && openWorkspace
+    && settings.connectJoinedRoom && settings.getRoomSnapshot && settings.getLocalSnapshotAccess
     ? createDshJoinedRoomOpener({
-        settings: browserSettings as DshJoinedRoomOpenerSettings,
+        settings: settings as DshJoinedRoomOpenerSettings,
         rpc: connection.rpc,
         openWorkspace,
       })
@@ -1308,12 +1370,20 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     context.provide?.("collabWorkspacePorts", workspacePorts);
     context.effect?.(() => () => { workspacePorts.dispose(); }, "dsh-collab: workspace ports");
   }
+  const pickCollabWorkspaceDirectory = async (): Promise<string | null> => {
+    const snapshot = sessions?.list?.getSnapshot();
+    const currentSessionId = snapshot?.current;
+    const currentPath = currentSessionId === undefined ? undefined : snapshot?.byId[currentSessionId]?.cwd;
+    const knownPath = currentPath ?? Object.values(snapshot?.byId ?? {}).map((session) => session.cwd).find((cwd): cwd is string => typeof cwd === "string" && cwd.trim() !== "");
+    if (typeof knownPath === "string" && knownPath.trim() !== "") return knownPath;
+    return workspaceNavigation?.pickDirectory?.() ?? null;
+  };
   const roomPanel = (embedded: boolean, props: Record<string, unknown>): ReactNode => createElement(DshCollabRoomsPanel, {
     embedded,
     port: settings,
     panelHost,
     ...(createOwnedRoom ? { createOwnedRoom } : {}),
-    ...(workspaceNavigation?.pickDirectory ? { pickDirectory: workspaceNavigation.pickDirectory.bind(workspaceNavigation) } : {}),
+    ...(workspaceNavigation ? { pickDirectory: pickCollabWorkspaceDirectory } : {}),
     ...(openJoinedRoom ? { openJoinedRoom } : {}),
     t: translationFor(props),
   });
@@ -1351,7 +1421,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     context.slots.inject("sidebar.footer.action", () => context.slots.register({ name: "sidebar.footer.action", id: "dsh-collab", order: 20, locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabRoomsLauncher, { wide: props.wide === true, t: translationFor(props) })));
     context.slots.inject("shell.overlay", () => context.slots.register({ name: "shell.overlay", id: "dsh-collab-rooms", order: 10, locale: COLLAB_LOCALE_NAMESPACE }, (props) => roomPanel(false, props)));
   }
-  context.slots.inject("settings.plugin.item", () => context.slots.register({ name: "settings.plugin.item", key: "dsh-collab", locale: COLLAB_LOCALE_NAMESPACE }, (props) => createElement(DshCollabSettingsCard, {
+  context.slots.inject("settings.section", () => context.slots.register({ name: "settings.section", id: "dsh-collab", order: 80, locale: COLLAB_LOCALE_NAMESPACE, label: () => fallbackT("rooms.title") }, (props) => createElement(DshCollabSettingsCard, {
     port: settings,
     t: translationFor(props),
   })));

@@ -54,7 +54,7 @@ export * from "./dsh-credentials.js";
 export * from "./room-summary.js";
 
 import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, resolveDshSessionWorkspacePath, type DshCordisHostConfig, type DshCordisHostContext, type DshSessionQuery } from "./dsh-cordis-host.js";
-import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
+import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, easyTierConfigFingerprint, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { gatewayHttpUrl, normalizeGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
 import { HostSnapshotFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
@@ -62,6 +62,7 @@ import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
 import type { DshCordisSessionEventListener } from "./dsh-cordis-agent.js";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
+import z from "@deepseek-ai/schemastery";
 import { LocalSidecarService, type StartExplainTaskInput, type StartReviewTaskInput } from "./local-sidecar.js";
 import { LocalSideTaskFile } from "./local-sidecar-store.js";
 import { DshLocalSidecarWorkspace } from "./local-sidecar-workspace.js";
@@ -87,7 +88,50 @@ interface DshCollabSettingsScope {
   update(patch: object): Promise<void>;
 }
 
+/** Native DSH 0.2.x Config for the profile-owned dsh-collab host entry.
+ * The collaboration settings are volatile so DSH SettingsForms exposes them
+ * to the browser without making ordinary runtime identity fields editable.
+ */
+export const Config: z<Record<string, unknown>, Record<string, unknown>> = z.object({
+  roomId: z.string().default("dsh-room"),
+  hostId: z.string().required(),
+  hostSessionId: z.string().default(""),
+  title: z.string().default("DSH Collaboration"),
+  hostDisplayName: z.string().required(),
+  host: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]).default("0.0.0.0"),
+  port: z.number().step(1).min(1).max(65535).default(4310),
+  enabled: z.boolean().default(true),
+  allowLoopbackPrincipal: z.boolean().default(true),
+  gateway: z.object({
+    gatewayHost: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]),
+    gatewayPort: z.number().step(1).min(1).max(65535),
+    exposeMode: z.union([z.const("loopback"), z.const("network")]),
+    advertisedEndpoint: z.string().default(""),
+  }).extra("volatile", true),
+  appliedGateway: z.object({
+    gatewayHost: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]),
+    gatewayPort: z.number().step(1).min(1).max(65535),
+    exposeMode: z.union([z.const("loopback"), z.const("network")]),
+    advertisedEndpoint: z.string().default(""),
+  }).hidden(),
+  security: z.object({
+    tokenTtlMs: z.union([z.number().step(1).min(1), z.const(null)]),
+    approvalPolicy: z.union([z.const("host-only"), z.const("disabled")]),
+    maxMembers: z.number().step(1).min(1),
+    maxMessageBytes: z.number().step(1).min(1),
+    maxQueue: z.number().step(1).min(0),
+  }).extra("volatile", true),
+  connectionMethod: z.union([z.const("unconfigured"), z.const("private-network"), z.const("easytier"), z.const("custom-wss")]).default("private-network").extra("volatile", true),
+  easyTierSharedNode: z.string().default(defaultCollabSettings.easyTierSharedNode).extra("volatile", true),
+  easyTierRooms: z.array(z.object({
+    roomId: z.string().min(1).required(),
+    credentialKey: z.string().min(1).required().hidden(),
+    configFingerprint: z.string().min(1).default(undefined as unknown as string).hidden(),
+  })).default([]).hidden(),
+});
+
 interface DshSettingsRegistrationContext {
+  agents?: DshCordisHostContext["agents"];
   settings: {
     register?(namespace: string, schema: unknown, options: Record<string, unknown>): DshCollabSettingsScope;
   };
@@ -142,38 +186,48 @@ function participantGatewayTransport(endpoint: string): ParticipantGatewayTransp
   };
 }
 
+function unwrapDshSettingsValue<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  const candidate = value as { get?: unknown };
+  if (typeof candidate.get === "function") return unwrapDshSettingsValue(candidate.get.call(value) as T);
+  if (Array.isArray(value)) return value.map((item) => unwrapDshSettingsValue(item)) as T;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unwrapDshSettingsValue(item)])) as T;
+}
+
+function unwrapDshCollabSettings(settings: DshCollabPersistedSettings): DshCollabPersistedSettings {
+  return unwrapDshSettingsValue(settings);
+}
+
 function initialDshCollabSettings(config: Partial<DshCordisHostConfig>): DshCollabPersistedSettings {
-  const gatewayHost = config.host ?? defaultCollabSettings.gatewayHost;
-  const gatewayPort = config.port ?? defaultCollabSettings.gatewayPort;
+  const source = config as Partial<DshCordisHostConfig> & Partial<DshCollabPersistedSettings>;
+  const gatewayHost = config.host ?? source.gateway?.gatewayHost ?? defaultCollabSettings.gatewayHost;
+  const gatewayPort = config.port ?? source.gateway?.gatewayPort ?? defaultCollabSettings.gatewayPort;
+  const gateway = source.gateway ?? {
+    gatewayHost,
+    gatewayPort,
+    exposeMode: gatewayHost === "127.0.0.1" ? "loopback" as const : "network" as const,
+    advertisedEndpoint: "",
+  };
   return {
-    gateway: {
-      gatewayHost,
-      gatewayPort,
-      exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
-      advertisedEndpoint: "",
-    },
-    appliedGateway: {
-      gatewayHost,
-      gatewayPort,
-      exposeMode: gatewayHost === "127.0.0.1" ? "loopback" : "network",
-      advertisedEndpoint: "",
-    },
-    security: {
+    gateway,
+    appliedGateway: source.appliedGateway ?? { ...gateway },
+    security: source.security ?? {
       tokenTtlMs: config.tokenTtlMs === undefined ? defaultCollabSettings.tokenTtlMs : config.tokenTtlMs,
       approvalPolicy: config.approvalPolicy ?? defaultCollabSettings.approvalPolicy,
       maxMembers: config.maxMembers ?? defaultCollabSettings.maxMembers,
       maxMessageBytes: config.maxMessageBytes ?? defaultCollabSettings.maxMessageBytes,
       maxQueue: config.maxQueue ?? defaultCollabSettings.maxQueue,
     },
-    connectionMethod: defaultCollabSettings.connectionMethod,
-    easyTierSharedNode: defaultCollabSettings.easyTierSharedNode,
-    easyTierRooms: [],
+    connectionMethod: source.connectionMethod ?? defaultCollabSettings.connectionMethod,
+    easyTierSharedNode: source.easyTierSharedNode ?? defaultCollabSettings.easyTierSharedNode,
+    easyTierRooms: source.easyTierRooms ?? [],
   };
 }
 
 function mergeDshCollabSettings(current: DshCollabPersistedSettings, patch: object): DshCollabPersistedSettings {
+  const resolvedCurrent = unwrapDshCollabSettings(current);
   const next = {
-    ...current,
+    ...resolvedCurrent,
     ...patch,
     gateway: { ...current.gateway, ...(patch as { gateway?: object }).gateway },
     appliedGateway: { ...current.appliedGateway, ...(patch as { appliedGateway?: object }).appliedGateway },
@@ -203,7 +257,7 @@ export function registerDshCollabSettings(
       legacyRegister.call(settingsContext.settings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, {
         validate: validateDshCollabParticipantSettings,
       });
-      onResolved?.(scope.get(), scope, settingsContext);
+      onResolved?.(unwrapDshCollabSettings(scope.get()), scope, settingsContext);
       return;
     }
 
@@ -358,7 +412,7 @@ function registerGatewayControl(
     }
     if (starting) return await starting;
     starting = (async () => {
-      const settings = scope.get();
+      const settings = unwrapDshCollabSettings(scope.get());
       const next = mountDshCollabCordisHost(context, applyPersistedSettings(config, settings) as DshCordisHostConfig);
       if (!next) throw new Error("Host Gateway is disabled");
       mounted = next;
@@ -407,9 +461,11 @@ function registerGatewayControl(
   const ownerEasyTierNetwork = async (roomId: string, gatewayPort: number, signal: AbortSignal): Promise<ActiveEasyTierTransport> => {
     if (!easyTier) throw new Error("EasyTier is unavailable on this DSH runtime");
     if (!credentialStore) throw new Error("DSH credentials service is unavailable");
-    const settings = scope.get();
+    const settings = unwrapDshCollabSettings(scope.get());
     if (settings.connectionMethod !== "easytier") throw new Error("Select EasyTier virtual network before sharing this room");
-    const saved = settings.easyTierRooms?.find((room) => room.roomId === roomId)?.credentialKey;
+    const configFingerprint = easyTierConfigFingerprint(settings);
+    const savedRoom = settings.easyTierRooms?.find((room) => room.roomId === roomId);
+    const saved = savedRoom?.configFingerprint === configFingerprint ? savedRoom.credentialKey : undefined;
     const network = saved ? await credentialStore.loadOwnerNetwork(saved) : undefined;
     const active = await easyTier.startOwner({
       roomId,
@@ -419,9 +475,10 @@ function registerGatewayControl(
     });
     if (!saved) {
       const credentialKey = await credentialStore.saveOwnerNetwork(active.network);
-      const easyTierRooms = [...(settings.easyTierRooms ?? []).filter((room) => room.roomId !== roomId), { roomId, credentialKey }];
+      const easyTierRooms = [...(settings.easyTierRooms ?? []).filter((room) => room.roomId !== roomId), { roomId, credentialKey, configFingerprint }];
       try { await scope.update({ easyTierRooms }); }
       catch (error) { await credentialStore.deleteOwnerNetwork(credentialKey).catch(() => undefined); throw error; }
+      if (savedRoom?.credentialKey && savedRoom.credentialKey !== credentialKey) await credentialStore.deleteOwnerNetwork(savedRoom.credentialKey).catch(() => undefined);
     }
     return active;
   };
@@ -613,7 +670,6 @@ export function apply(context?: DshCollabCordisContext, config?: Partial<DshCord
   });
 }
 
-export default apply;
 export * from "./easytier-artifacts.js";
 export * from "./easytier-invitation.js";
 export * from "./easytier-runtime.js";

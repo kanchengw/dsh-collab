@@ -212,6 +212,17 @@
   font-weight: 500;
 }
 
+.boundaryNotice {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-fill-tertiary);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .gatewaySection,
 .workspaceCreator,
 .roomSection {

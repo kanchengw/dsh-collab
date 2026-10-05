@@ -138,10 +138,6 @@
 
 .projectDetails span:last-child { flex: none; }
 
-.projectMembers {
-  margin: 0;
-  color: var(--dsw-alias-label-quaternary, var(--dsw-alias-label-tertiary));
-}
 
 .tabs {
   display: grid;

@@ -61,7 +61,7 @@ function changesPort(workspace: CollabChangesPort["getSnapshot"] extends () => i
 }
 
 describe("Collab Bar", () => {
-  it("shows the Room Project version, local workspace state, and member summary", () => {
+  it("shows the Room Project version without duplicating the connection summary", () => {
     const html = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },
       selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "Release planning" },
@@ -80,7 +80,7 @@ describe("Collab Bar", () => {
     expect(html).toContain("Room Project");
     expect(html).toContain("version-1");
     expect(html).toContain("Owner workspace");
-    expect(html).toContain("2 members");
+    expect(html.match(/2 members/g)).toHaveLength(1);
     expect(html).toContain("Owner");
     expect(html).toContain("Alice");
   });
