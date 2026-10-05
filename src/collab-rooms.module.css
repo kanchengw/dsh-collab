@@ -342,6 +342,28 @@
   white-space: nowrap;
 }
 
+.pathDetail {
+  display: flex !important;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pathDetail > span {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
+.pathDetail code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font: 11px/18px var(--dsw-font-family-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

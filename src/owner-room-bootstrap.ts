@@ -25,6 +25,7 @@ export class OwnerRoomWorkspaceBootstrapper {
     roomId: string;
     memberId: string;
     roomTitle: string;
+    sourcePath?: string;
     initialVersion: WorkspaceVersionRecord;
   }): Promise<OwnerRoomWorkspaceBootstrapResult> {
     if (!this.options.workspaceNavigation) throw new Error("DSH Workspace navigation is unavailable");
@@ -44,6 +45,7 @@ export class OwnerRoomWorkspaceBootstrapper {
     roomId: string;
     memberId: string;
     roomTitle: string;
+    sourcePath?: string;
     nativeWorkspaceTitle?: string;
     initialVersion: WorkspaceVersionRecord;
   }): Promise<OwnerRoomWorkspaceBootstrapResult> {
@@ -59,6 +61,7 @@ export class OwnerRoomWorkspaceBootstrapper {
       roomTitle: input.roomTitle,
       ...(input.nativeWorkspaceTitle ? { nativeWorkspaceTitle: input.nativeWorkspaceTitle } : {}),
       workspacePath: workspace.workspacePath,
+      ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}),
     });
     return { project, workspace };
   }

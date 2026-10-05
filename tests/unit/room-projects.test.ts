@@ -32,6 +32,7 @@ describe("RoomProjectStore", () => {
       memberId: " member-1 ",
       roomTitle: "  Atlas  ",
       workspacePath: workspacePath + "/.",
+      sourcePath: workspacePath + "/../source",
     });
 
     expect(project).toEqual({
@@ -39,6 +40,7 @@ describe("RoomProjectStore", () => {
       memberId: "member-1",
       roomTitle: "Atlas",
       workspacePath,
+      sourcePath: join(workspacePath, "..", "source"),
     });
     expect(store.get("room-1")).toEqual(project);
     expect(store.getByWorkspacePath(workspacePath)).toEqual(project);

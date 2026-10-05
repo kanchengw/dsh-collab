@@ -15,6 +15,7 @@ describe("createDshJoinedRoomOpener", () => {
       connection: connected ? "online" as const : "offline" as const,
     }));
     const openWorkspace = vi.fn(async () => {});
+    const setJoinedRoomWorkspacePath = vi.fn(async (_ref: { gatewayEndpoint: string; roomId: string }, _path: string) => {});
     const rpc = {
       call: vi.fn(async () => ({
         ok: true,
@@ -35,6 +36,7 @@ describe("createDshJoinedRoomOpener", () => {
           await connectJoinedRoom(ref);
         }),
         getRoomSnapshot,
+        setJoinedRoomWorkspacePath,
         getLocalSnapshotAccess: (_roomId: string) => ({
           gatewayEndpoint: "ws://127.0.0.1:4310/collab",
           roomToken: "room-token",
@@ -74,5 +76,9 @@ describe("createDshJoinedRoomOpener", () => {
       roomTitle: "Release",
       hostDisplayName: "Host",
     });
+    expect(setJoinedRoomWorkspacePath).toHaveBeenCalledWith(
+      { gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomId: "room-1" },
+      "C:\\rooms\\room-1\\workspace",
+    );
   });
 });

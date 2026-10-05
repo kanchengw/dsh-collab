@@ -445,18 +445,23 @@ function registerGatewayControl(
       starting = undefined;
     }
   };
-  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean }> => {
+  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean; workspacePath?: string; sourcePath?: string }> => {
     const rooms = mounted?.runtime.rooms.snapshot()
       ?? (config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile()).loadSync()?.rooms);
     return (rooms?.rooms ?? []).filter(({ room }) => {
       const project = roomProjects.get(room.roomId);
       return !project || project.hostPrimarySessionId === room.hostSessionId;
-    }).map(({ room }) => ({
-      roomId: room.roomId,
-      hostSessionId: room.hostSessionId,
-      title: room.title,
-      sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
-    }));
+    }).map(({ room }) => {
+      const project = roomProjects.get(room.roomId);
+      return {
+        roomId: room.roomId,
+        hostSessionId: room.hostSessionId,
+        title: room.title,
+        sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
+        ...(project?.workspacePath ? { workspacePath: project.workspacePath } : {}),
+        ...(project?.sourcePath ? { sourcePath: project.sourcePath } : {}),
+      };
+    });
   };
   const ownerEasyTierNetwork = async (roomId: string, gatewayPort: number, signal: AbortSignal): Promise<ActiveEasyTierTransport> => {
     if (!easyTier) throw new Error("EasyTier is unavailable on this DSH runtime");

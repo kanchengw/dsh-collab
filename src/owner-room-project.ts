@@ -30,6 +30,7 @@ interface OwnerRoomProjectBootstrap {
     roomId: string;
     memberId: string;
     roomTitle: string;
+    sourcePath: string;
     nativeWorkspaceTitle: string;
     initialVersion: WorkspaceVersionRecord;
   }): Promise<{
@@ -96,6 +97,7 @@ export class OwnerRoomProjectService {
       roomId,
       memberId: "member-host",
       roomTitle,
+      sourcePath,
       nativeWorkspaceTitle: basename(sourcePath) + " \u00b7 " + roomTitle,
       initialVersion: version.record,
     });

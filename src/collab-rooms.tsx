@@ -201,6 +201,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const joinedRooms = useJoinedRooms(port);
   const ownedRoomIds = new Set(ownedRooms.map((room) => room.roomId));
   const visibleJoinedRooms = joinedRooms.filter((room) => !ownedRoomIds.has(room.roomId));
+  const pathDetail = (label: string, value: string | undefined): ReactNode => { const displayed = value ?? t("rooms.pathNotRecorded"); return <span className={css.pathDetail}><span>{label}</span><code title={displayed}>{displayed}</code></span>; };
   const activeRoom = useActiveRoom(port);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -312,7 +313,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
           <section className={css.roomSection} aria-labelledby="owned-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="owned-rooms-title">{t("owned.title")}</h3><p>{t("owned.description")}</p></div><span className={css.count}>{ownedRooms.length}</span></div>
             {ownedRooms.length === 0 ? <p className={css.empty}>{t("owned.empty")}</p> : <ul className={css.roomList}>{ownedRooms.map((room) => <li key={room.roomId} className={css.roomRow}>
-              <div className={css.roomHead}><div><strong>{room.title}</strong><span>{room.hostSessionId}</span></div><Status tone={room.sharing ? "active" : "neutral"}>{t(room.sharing ? "owned.sharing" : "owned.notSharing")}</Status></div>
+              <div className={css.roomHead}><div><strong>{room.title}</strong><span>{room.hostSessionId}</span>{pathDetail(t("owned.localWorkspacePath"), room.workspacePath)}{pathDetail(t("owned.sourcePath"), room.sourcePath)}</div><Status tone={room.sharing ? "active" : "neutral"}>{t(room.sharing ? "owned.sharing" : "owned.notSharing")}</Status></div>
               <div className={css.actions}>
                 <Action disabled={busy !== undefined || !panelHost} onClick={() => { if (port && panelHost) void perform(`open:${room.roomId}`, () => openDshCollabOwnedRoom(port, room, panelHost)); }}>{t("owned.openRoom")}</Action>
                 {room.sharing
@@ -339,7 +340,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
                 && (activeRoom.gatewayEndpoint === undefined || activeRoom.gatewayEndpoint === room.gatewayEndpoint);
               const ref: JoinedRoomRef = { gatewayEndpoint: room.gatewayEndpoint, roomId: room.roomId };
               return <li key={`${room.gatewayEndpoint}:${room.roomId}`} className={css.roomRow}>
-                <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span></div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>
+                <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span>{pathDetail(t("joined.localWorkspacePath"), room.workspacePath)}</div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>
                 <div className={css.actions}>
                   {openJoinedRoom ? <Action disabled={busy !== undefined} onClick={() => { void perform(`open:${room.roomId}`, () => openJoinedRoom({ roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}) })); }}>{t("joined.openRoom")}</Action> : null}
                   {active

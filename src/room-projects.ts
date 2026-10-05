@@ -9,6 +9,7 @@ export interface RoomProject {
   memberId: string;
   roomTitle: string;
   workspacePath: string;
+  sourcePath?: string;
   nativeWorkspaceId?: string;
   hostPrimarySessionId?: string;
 }
@@ -23,6 +24,7 @@ export interface RegisterRoomProjectInput {
   memberId: string;
   roomTitle: string;
   workspacePath: string;
+  sourcePath?: string;
 }
 
 export interface RoomProjectRegistrationOptions {
@@ -54,6 +56,7 @@ function normalizeRegistration(input: RegisterRoomProjectInput): RoomProject {
     memberId: requiredText(input.memberId, "memberId"),
     roomTitle: requiredText(input.roomTitle, "roomTitle"),
     workspacePath: absolutePath(input.workspacePath, "workspacePath"),
+    ...(input.sourcePath === undefined ? {} : { sourcePath: absolutePath(input.sourcePath, "sourcePath") }),
   };
 }
 
@@ -133,6 +136,7 @@ export class RoomProjectStore {
         });
       }
       existing.roomTitle = next.roomTitle;
+      if (next.sourcePath !== undefined) existing.sourcePath = next.sourcePath;
       return copy(existing);
     }
     if ([...this.projects.values()].some((project) => samePath(project.workspacePath, next.workspacePath))) {

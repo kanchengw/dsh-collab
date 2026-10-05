@@ -99,6 +99,7 @@ export interface DshCollabJoinedRoom {
   credentialKey: string;
   roomTitle?: string;
   hostDisplayName?: string;
+  workspacePath?: string;
 }
 
 export interface DshCollabParticipantSettings {

@@ -63,6 +63,7 @@ export interface ParticipantResumeState {
   credential: string;
   roomTitle?: string;
   hostDisplayName?: string;
+  workspacePath?: string;
   easyTier?: { network: EasyTierInvitationNetwork; localVirtualAddress: string };
 }
 
@@ -717,6 +718,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   listJoinedRooms(): readonly ParticipantResumeState[] {
     return this.options.participantPersistence?.list?.() ?? [];
+  }
+
+  async setJoinedRoomWorkspacePath(ref: JoinedRoomRef, workspacePath: string): Promise<void> {
+    await this.options.participantPersistence?.prepare?.();
+    const saved = this.options.participantPersistence?.load(ref);
+    if (!saved) throw new Error("Joined room is not saved");
+    await this.options.participantPersistence?.save({ ...saved, workspacePath });
   }
 
   subscribeJoinedRooms(listener: () => void): () => void {

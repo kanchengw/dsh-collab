@@ -1100,6 +1100,7 @@ describe("real DSH client slot adapter", () => {
       credential: "resume-secret",
       roomTitle: "resume",
       hostDisplayName: "Local Host",
+      workspacePath: "C:\\rooms\\resume\\workspace",
     };
 
     await persistence.save(state);
@@ -1196,9 +1197,10 @@ describe("real DSH client slot adapter", () => {
 
   it("decodes only credential-backed Joined room metadata", () => {
     const inline = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
-    const current = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credentialKey: "dsh-collab/participant-fixed" };
+    const current = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credentialKey: "dsh-collab/participant-fixed", workspacePath: "C:\\rooms\\saved\\workspace" };
     expect(decodeDshParticipantSettings({ resume: inline })).toEqual({});
     expect(decodeDshParticipantSettings({ joinedRooms: [inline] })).toEqual({});
+    expect(decodeDshParticipantSettings({ joinedRooms: [current] })?.joinedRooms?.[0]?.workspacePath).toBe("C:\\rooms\\saved\\workspace");
     expect(decodeDshParticipantSettings({ joinedRooms: [current] })).toEqual({ joinedRooms: [current] });
   });
 

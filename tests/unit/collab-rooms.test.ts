@@ -19,8 +19,8 @@ function port(): DshCollabSettingsPort {
   return {
     getSnapshot: () => ({ gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.20:4310/collab" }),
     getGatewaySnapshot: () => ({ status: "stopped" }),
-    getOwnedRooms: () => [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: false }],
-    listJoinedRooms: () => [{ gatewayEndpoint: "wss://alice.example/collab", roomId: "room-joined", memberId: "member-bob", credential: "resume-secret", roomTitle: "Design review", hostDisplayName: "Alice" }],
+    getOwnedRooms: () => [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: false, workspacePath: "C:\\rooms\\release\\workspace", sourcePath: "C:\\projects\\release" }],
+    listJoinedRooms: () => [{ gatewayEndpoint: "wss://alice.example/collab", roomId: "room-joined", memberId: "member-bob", credential: "resume-secret", roomTitle: "Design review", hostDisplayName: "Alice", workspacePath: "C:\\rooms\\design\\workspace" }],
     getRoomSnapshot: () => ({ roomId: "", roomTitle: "", hostDisplayName: "", role: "participant", connection: "offline" }),
     save: vi.fn(),
     startGateway: vi.fn(),
@@ -51,11 +51,14 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Stop Gateway");
     expect(html).toContain("Owned rooms");
     expect(html).toContain("Release planning");
+    expect(html).toContain("C:\\rooms\\release\\workspace");
+    expect(html).toContain("C:\\projects\\release");
     expect(html).toContain("Not sharing");
     expect(html).toContain("Open room");
     expect(html).toContain("Start sharing");
     expect(html).toContain("Joined rooms");
     expect(html).toContain("Design review");
+    expect(html).toContain("C:\\rooms\\design\\workspace");
     expect(html).toContain("Hosted by Alice");
     expect(html).toContain("Disconnected");
     expect(html).toContain("Connect");

@@ -140,6 +140,7 @@ interface DshJoinedRoomOpenerSettings {
   connectJoinedRoom(ref: JoinedRoomRef): Promise<void>;
   getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
+  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string): Promise<void>;
 }
 
 interface DshJoinedRoomProjectRecord {
@@ -200,6 +201,10 @@ export function createDshJoinedRoomOpener(input: {
       roomTitle: project.roomTitle,
       hostDisplayName: connected.hostDisplayName,
     });
+    await input.settings.setJoinedRoomWorkspacePath?.(
+      { gatewayEndpoint: connected.gatewayEndpoint, roomId: room.roomId },
+      project.workspacePath,
+    );
   };
 }
 
@@ -246,6 +251,8 @@ export interface DshCollabOwnedRoom {
   hostSessionId: string;
   title: string;
   sharing: boolean;
+  workspacePath?: string;
+  sourcePath?: string;
 }
 
 export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
@@ -269,6 +276,7 @@ export interface DshCollabSettingsPort {
   listJoinedRooms?(): readonly ParticipantResumeState[];
   subscribeJoinedRooms?(listener: () => void): () => void;
   connectJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
+  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string): Promise<void>;
   disconnectJoinedRoom?(): Promise<void>;
   forgetJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
@@ -410,6 +418,7 @@ export function decodeParticipantResumeState(value: unknown): ParticipantResumeS
     credential: candidate.credential as string,
     ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
     ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
+    ...(typeof candidate.workspacePath === "string" && candidate.workspacePath.trim() !== "" ? { workspacePath: candidate.workspacePath } : {}),
     ...(easyTier ? { easyTier } : {}),
   };
 }
@@ -464,6 +473,7 @@ function participantMetadata(state: ParticipantResumeState, credentialKey: strin
     credentialKey,
     ...(state.roomTitle ? { roomTitle: state.roomTitle } : {}),
     ...(state.hostDisplayName ? { hostDisplayName: state.hostDisplayName } : {}),
+    ...(state.workspacePath ? { workspacePath: state.workspacePath } : {}),
   };
 }
 
@@ -619,7 +629,16 @@ function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Owned room");
     const room = value as Record<string, unknown>;
     if ([room.roomId, room.hostSessionId, room.title].some((field) => typeof field !== "string" || field.trim() === "") || typeof room.sharing !== "boolean") throw new Error("Invalid Owned room");
-    return { roomId: room.roomId as string, hostSessionId: room.hostSessionId as string, title: room.title as string, sharing: room.sharing };
+    if (room.workspacePath !== undefined && (typeof room.workspacePath !== "string" || room.workspacePath.trim() === "")) throw new Error("Invalid Owned room workspace path");
+    if (room.sourcePath !== undefined && (typeof room.sourcePath !== "string" || room.sourcePath.trim() === "")) throw new Error("Invalid Owned room source path");
+    return {
+      roomId: room.roomId as string,
+      hostSessionId: room.hostSessionId as string,
+      title: room.title as string,
+      sharing: room.sharing,
+      ...(typeof room.workspacePath === "string" ? { workspacePath: room.workspacePath } : {}),
+      ...(typeof room.sourcePath === "string" ? { sourcePath: room.sourcePath } : {}),
+    };
   });
 }
 
@@ -770,6 +789,7 @@ function decodeParticipantSetting(value: unknown): DshCollabJoinedRoom | undefin
     credentialKey,
     ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
     ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
+    ...(typeof candidate.workspacePath === "string" && candidate.workspacePath.trim() !== "" ? { workspacePath: candidate.workspacePath } : {}),
   };
 }
 
@@ -1025,6 +1045,7 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     listJoinedRooms: actions.listJoinedRooms?.bind(actions),
     subscribeJoinedRooms: actions.subscribeJoinedRooms?.bind(actions),
     connectJoinedRoom: actions.connectJoinedRoom?.bind(actions),
+    setJoinedRoomWorkspacePath: actions.setJoinedRoomWorkspacePath?.bind(actions),
     disconnectJoinedRoom: actions.disconnectJoinedRoom?.bind(actions),
     forgetJoinedRoom: actions.forgetJoinedRoom?.bind(actions),
     configureGateway: actions.configureGateway?.bind(actions),
