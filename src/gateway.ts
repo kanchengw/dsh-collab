@@ -413,20 +413,28 @@ export class CollabGateway {
     if (!this.options.ownsHostSession || !(await this.options.ownsHostSession(hostSessionId))) {
       throw new CollabError("ACTION_FORBIDDEN", "host session is not owned by this DSH runtime", { hostSessionId });
     }
-    const room = this.options.rooms.ensureHostRoom({
-      roomId,
-      hostId: principalId,
-      hostSessionId,
-      title,
-      hostDisplayName: this.options.hostDisplayName ?? "Host",
-      now: this.now(),
-    });
-    await this.options.commitCriticalState?.();
-    this.options.activeRooms?.activate(roomId);
-    void this.dispatcher.processQueue();
-    const member = this.options.rooms.authorize(roomId, principalId, "read");
-    const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
-    return { status: 200, body: { room, member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
+    // Reserve the runtime slot before mutating the saved room. A DSH runtime may
+    // keep multiple room records, but the MVP only permits one active room.
+    const wasActive = this.options.activeRooms?.isActive(roomId) ?? false;
+    if (!wasActive) this.options.activeRooms?.activate(roomId);
+    try {
+      const room = this.options.rooms.ensureHostRoom({
+        roomId,
+        hostId: principalId,
+        hostSessionId,
+        title,
+        hostDisplayName: this.options.hostDisplayName ?? "Host",
+        now: this.now(),
+      });
+      await this.options.commitCriticalState?.();
+      void this.dispatcher.processQueue();
+      const member = this.options.rooms.authorize(roomId, principalId, "read");
+      const roomToken = this.tokens.issue({ roomId, member, now: this.now() });
+      return { status: 200, body: { room, member, roomToken: roomToken.token, expiresAt: roomToken.expiresAt } };
+    } catch (error) {
+      if (!wasActive) this.options.activeRooms?.deactivate(roomId);
+      throw error;
+    }
   }
 
   private stopSharing(roomId: string, request: GatewayRequest): GatewayResponse {

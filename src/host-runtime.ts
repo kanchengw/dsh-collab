@@ -132,7 +132,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const approvals = snapshot?.approvals
     ? ApprovalStore.fromSnapshot({ rooms, ledger, answerer: options.approvalAnswerer, snapshot: snapshot.approvals })
     : new ApprovalStore({ rooms, ledger, answerer: options.approvalAnswerer });
-  const activeRooms = new ActiveRoomRegistry();
+  // The protocol can model multiple saved rooms, but one DSH runtime owns one active room in the MVP.
+  const activeRooms = new ActiveRoomRegistry({ maxActiveRooms: 1 });
   const workspaceSharing = new WorkspaceSharingRegistry();
   restoreWorkspaceSharing(ledger, workspaceSharing);
   const workspace = new WorkspaceService({ rooms, ledger, registry: workspaceSharing, snapshots: options.workspaceSnapshots, now: options.now });

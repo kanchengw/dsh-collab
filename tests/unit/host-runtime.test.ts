@@ -5,6 +5,39 @@ import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 
 describe("host runtime factory", () => {
+  it("allows saved rooms but rejects a second active room in one DSH runtime", async () => {
+    const runtime = createDshCollabHostRuntime({
+      roomId: "room-1",
+      hostId: "host",
+      hostSessionId: "session-1",
+      title: "Room 1",
+      hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+    });
+    runtime.rooms.createRoom({
+      roomId: "room-2",
+      hostId: "host",
+      hostSessionId: "session-2",
+      title: "Room 2",
+      hostDisplayName: "Host",
+    });
+
+    const response = await runtime.gateway.handle({
+      method: "POST",
+      path: "/v1/rooms/room-2/host",
+      auth: { principalId: "host" },
+      body: { hostSessionId: "session-2", title: "Room 2" },
+    });
+
+    expect(response).toMatchObject({
+      status: 409,
+      body: { error: { code: "REQUEST_CONFLICT", message: "another collaboration room is already active; stop it before activating another room" } },
+    });
+    expect(runtime.activeRooms.getActiveRoomId()).toBe("room-1");
+    expect(runtime.rooms.getRoom("room-2").title).toBe("Room 2");
+    await runtime.dispose();
+  });
+
   it("wires WorkspaceVersion publication and restores its Ledger index", async () => {
     const content = Buffer.from("app");
     const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update(content).digest("hex"), size: content.byteLength, source: "tracked" as const }];
