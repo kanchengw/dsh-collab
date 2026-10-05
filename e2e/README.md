@@ -13,13 +13,13 @@ network` path; neither profile has a preassigned room role.
 
 The prepare script validates `apps/cli/package.json` before building or
 installing the plugin and rejects any DSH repository other than
-`0.1.7-rc.2`.
+`0.2.0-rc.2`.
 
 Compatibility baseline:
 
 | Component | Required baseline | Evidence |
 | --- | --- | --- |
-| DSH runtime | `0.1.7-rc.2` | `apps/cli/package.json` preflight |
+| DSH runtime | `0.2.0-rc.2` | `apps/cli/package.json` preflight |
 | DSH Sidebar | Official left/right Sidebar extensions from `dsh-web-app` | Collab manifest injection list and runtime registration |
 | Agent Team | Not used by Collab | prepare-time dependency rejection |
 

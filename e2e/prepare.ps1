@@ -25,7 +25,7 @@ $agentTeamDependencies = @($dependencySections | ForEach-Object {
 if ($agentTeamDependencies.Count -gt 0) {
   throw "Experimental Agent Team dependencies are not supported: $($agentTeamDependencies -join ", ")"
 }
-$ExpectedDshVersion = "0.1.7-rc.2"
+$ExpectedDshVersion = "0.2.0-rc.2"
 $dshManifestPath = Join-Path $DshRepo "apps/cli/package.json"
 if (-not (Test-Path $dshManifestPath)) {
   throw "DSH CLI manifest not found: $dshManifestPath"
