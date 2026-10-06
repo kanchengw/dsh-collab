@@ -99,6 +99,7 @@ export function createDshOwnedRoomCreator(input: {
   sessions: DshClientSessions;
   panelHost(): CollabPanelHost | undefined;
   refreshOwnedRooms?(): Promise<unknown>;
+  activateHostRoom?(input: { roomId: string; hostSessionId: string; title: string }): Promise<void>;
 }): (roomTitle: string, sourcePath: string) => Promise<boolean> {
   return async (roomTitle, sourcePath) => {
     const title = roomTitle.trim();
@@ -125,6 +126,7 @@ export function createDshOwnedRoomCreator(input: {
       sourceSessionId,
       hostPrimarySessionId,
     }), "Owner Room Project completion failed");
+    await input.activateHostRoom?.({ roomId: prepared.roomId as string, hostSessionId: hostPrimarySessionId, title });
     openDshCollabRoom({
       kind: "owned",
       roomId: prepared.roomId,
@@ -1366,6 +1368,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
         sessions,
         panelHost: () => panelHost,
         ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
+        ...(settings?.shareHostRoom ? { activateHostRoom: (input: { roomId: string; hostSessionId: string; title: string }) => shareDshCollabOwnedRoom(settings, input) } : {}),
       })
     : undefined;
   const openWorkspace = workspaces && workspaceNavigation && sessions ? createDshParticipantWorkspaceOpener({

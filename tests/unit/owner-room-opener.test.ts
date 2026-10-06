@@ -42,6 +42,7 @@ describe("createDshOwnedRoomCreator", () => {
         open: (target) => { order.push(`panel:${target.sessionId}:${target.cwd ?? ""}`); },
       }),
       refreshOwnedRooms: async () => { order.push("refresh"); },
+      activateHostRoom: async (input) => { expect(input).toEqual({ roomId: "room-atlas", hostSessionId: "host-primary", title: "Atlas" }); order.push("activate"); },
     });
 
     await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
@@ -51,6 +52,7 @@ describe("createDshOwnedRoomCreator", () => {
       "connect:native-atlas",
       "open:host-primary",
       "owner/room-project/complete",
+      "activate",
       "panel:host-primary:C:\\rooms\\atlas",
       "refresh",
     ]);
@@ -110,7 +112,7 @@ describe("createDshOwnedRoomCreator", () => {
     expect(createWorkspace).toHaveBeenCalledWith({ path: "C:\\work\\atlas" });
   });
 
-  it("does not start the Host Gateway while creating an Owner Room Project", async () => {
+  it("keeps creation usable without an activation callback", async () => {
     const order: string[] = [];
     const rpc = {
       call: vi.fn(async (_channel: string, endpoint: string) => {
