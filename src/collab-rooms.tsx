@@ -75,7 +75,8 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
   const privateNetwork = settings.connectionMethod === "private-network"
     || (settings.connectionMethod === undefined && settings.exposeMode === "network");
   let runtimeGateway = port.getGatewaySnapshot?.();
-  if ((!configuredGatewayEndpoint || privateNetwork) && port.refreshGateway && runtimeGateway?.status !== "running") {
+  const runtimeEndpointMissing = runtimeGateway?.status === "running" && !runtimeGateway.advertisedEndpoint;
+  if ((!configuredGatewayEndpoint || privateNetwork) && port.refreshGateway && (runtimeGateway?.status !== "running" || runtimeEndpointMissing)) {
     runtimeGateway = await port.refreshGateway();
   }
   const runtimeEndpoint = runtimeGateway?.status === "running" ? runtimeGateway.advertisedEndpoint : undefined;

@@ -295,6 +295,22 @@ describe("Collab Rooms navigation", () => {
     expect(actions.startGateway).not.toHaveBeenCalled();
     expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.4:4310/collab" }), "room-owned");
   });
+  it("refreshes a running Gateway when its renderer snapshot lacks the private-network endpoint", async () => {
+    const actions = port();
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "",
+      connectionMethod: "private-network",
+    });
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310 });
+    actions.refreshGateway = vi.fn(async () => ({ status: "running" as const, port: 4310, advertisedEndpoint: "ws://192.168.1.16:4310/collab" }));
+    actions.createInvite = vi.fn(async () => ({ invitation: "refreshed-running-room-invite" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("refreshed-running-room-invite");
+    expect(actions.refreshGateway).toHaveBeenCalledOnce();
+    expect(actions.stopGateway).not.toHaveBeenCalled();
+    expect(actions.startGateway).not.toHaveBeenCalled();
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.16:4310/collab" }), "room-owned");
+  });
   it("creates invitations from the running Gateway endpoint when settings are not shared with the renderer", async () => {
     const actions = port();
     actions.getSnapshot = () => ({
