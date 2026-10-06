@@ -39,6 +39,7 @@ describe("Collab Rooms navigation", () => {
     expect(collabRoomNoticeScope("pick-directory")).toBe("workspace");
     expect(collabRoomNoticeScope("create-owned")).toBe("workspace");
     expect(collabRoomNoticeScope("join")).toBe("global");
+    expect(collabRoomNoticeScope("invite:room-owned")).toBe("room");
   });
 
   it("matches the DSH sidebar footer action in wide and rail layouts", () => {
@@ -76,6 +77,18 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Join a room");
     expect(html).not.toContain("resume-secret");
     expect(html).not.toContain("Participating rooms");
+  });
+
+  it("shows invitation preflight inside each shared room", () => {
+    const actions = port();
+    actions.getGatewaySnapshot = () => ({ status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.20:4310/collab" });
+    actions.getOwnedRooms = () => [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true }];
+    setDshCollabRoomsOpen(true);
+    const html = renderToStaticMarkup(createElement(DshCollabRoomsPanel, { port: actions }));
+    setDshCollabRoomsOpen(false);
+
+    expect(html).toContain("data-collab-invitation-preflight=\"room-owned\"");
+    expect(html).toContain("Invitation preflight ready: ws://192.168.1.20:4310/collab");
   });
 
   it("shows the single-active-room boundary and blocks switching actions", () => {
@@ -266,6 +279,25 @@ describe("Collab Rooms navigation", () => {
     await shareDshCollabOwnedRoom(actions, { roomId: "room-current", hostSessionId: "session-current", title: "Release planning" });
 
     expect(order).toEqual(["stop", "start", "share"]);
+  });
+
+  it("recovers a persisted shared room before creating an invitation", async () => {
+    const actions = port();
+    let runtime: DshCollabGatewayRuntimeSnapshot = { status: "stopped" };
+    const order: string[] = [];
+    actions.getSnapshot = () => ({
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "", connectionMethod: "private-network",
+      appliedGateway: { gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "" },
+    });
+    actions.getGatewaySnapshot = () => runtime;
+    actions.getOwnedRooms = () => [{ roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true }];
+    actions.startGateway = vi.fn(async () => { order.push("start"); runtime = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.20:4310/collab" }; return runtime; });
+    actions.shareHostRoom = vi.fn(async () => { order.push("share"); });
+    actions.createInvite = vi.fn(async () => ({ invitation: "recovered-invite" }));
+
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("recovered-invite");
+    expect(order).toEqual(["start", "share"]);
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.20:4310/collab" }), "room-owned");
   });
 
   it("creates invitations from the applied private-network endpoint", async () => {

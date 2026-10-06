@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { DshBrowserJoinInput, JoinedRoomRef, ParticipantResumeState } from "./dsh-browser-client.js";
-import type { DshCollabClientSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
+import type { DshCollabClientSnapshot, DshCollabGatewayRuntimeSnapshot, DshCollabOwnedRoom, DshCollabSettingsPort } from "./dsh-client.js";
 import { decodeCollabInvitation } from "./invitation.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-rooms.module.css";
@@ -76,12 +76,29 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
     || (settings.connectionMethod === undefined && settings.exposeMode === "network");
   let runtimeGateway = port.getGatewaySnapshot?.();
   const runtimeEndpointMissing = runtimeGateway?.status === "running" && !runtimeGateway.advertisedEndpoint;
+  const ownedRoom = port.getOwnedRooms?.().find((room) => room.roomId === roomId);
+  if (runtimeGateway?.status !== "running" && ownedRoom && port.shareHostRoom) {
+    await shareDshCollabOwnedRoom(port, {
+      roomId: ownedRoom.roomId,
+      hostSessionId: ownedRoom.hostSessionId,
+      title: ownedRoom.title,
+    });
+    runtimeGateway = port.getGatewaySnapshot?.();
+  }
   if ((!configuredGatewayEndpoint || privateNetwork) && port.refreshGateway && (runtimeGateway?.status !== "running" || runtimeEndpointMissing)) {
     runtimeGateway = await port.refreshGateway();
   }
+  if (privateNetwork && runtimeGateway?.status === "running" && !runtimeGateway.advertisedEndpoint && ownedRoom && port.shareHostRoom) {
+    await shareDshCollabOwnedRoom(port, {
+      roomId: ownedRoom.roomId,
+      hostSessionId: ownedRoom.hostSessionId,
+      title: ownedRoom.title,
+    });
+    runtimeGateway = port.getGatewaySnapshot?.();
+  }
   const runtimeEndpoint = runtimeGateway?.status === "running" ? runtimeGateway.advertisedEndpoint : undefined;
   const gatewayEndpoint = (privateNetwork ? runtimeEndpoint || configuredGatewayEndpoint : configuredGatewayEndpoint || runtimeEndpoint);
-  if (!gatewayEndpoint) throw new Error("Configure a private-network address before creating an invitation");
+  if (!gatewayEndpoint) throw new Error("Invitation preflight failed: the Host Gateway has no private-network address yet");
   const created = await port.createInvite({ expiresAt: Date.now() + 60 * 60 * 1000, gatewayEndpoint }, roomId);
   return created.invitation;
 }
@@ -165,6 +182,16 @@ function useActiveRoom(port: DshCollabSettingsPort | undefined): Pick<DshCollabC
   return room;
 }
 
+function useGateway(port: DshCollabSettingsPort | undefined): DshCollabGatewayRuntimeSnapshot | undefined {
+  const [gateway, setGateway] = useState(() => port?.getGatewaySnapshot?.());
+  useEffect(() => {
+    const update = (): void => { setGateway(port?.getGatewaySnapshot?.()); };
+    update();
+    return port?.subscribeGateway?.(update);
+  }, [port]);
+  return gateway;
+}
+
 function Status({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "active" | "pending" }): ReactNode {
   return <span className={css.status} data-tone={tone}>{children}</span>;
 }
@@ -173,10 +200,12 @@ function Action(props: { children: ReactNode; disabled?: boolean; onClick: () =>
   return <button type="button" className={props.primary ? css.primaryAction : css.action} disabled={props.disabled} onClick={props.onClick}>{props.children}</button>;
 }
 
-export type CollabRoomNoticeScope = "workspace" | "global";
+export type CollabRoomNoticeScope = "workspace" | "room" | "global";
 
 export function collabRoomNoticeScope(key: string): CollabRoomNoticeScope {
-  return key === "pick-directory" || key === "create-owned" ? "workspace" : "global";
+  if (key === "pick-directory" || key === "create-owned") return "workspace";
+  if (key.startsWith("invite:")) return "room";
+  return "global";
 }
 
 /** Additive action rendered in DSH's official sidebar footer slot. */
@@ -205,6 +234,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const visibleJoinedRooms = joinedRooms.filter((room) => !ownedRoomIds.has(room.roomId));
   const pathDetail = (label: string, value: string | undefined): ReactNode => { const displayed = value ?? t("rooms.pathNotRecorded"); return <span className={css.pathDetail}><span>{label}</span><code title={displayed}>{displayed}</code></span>; };
   const activeRoom = useActiveRoom(port);
+  const gateway = useGateway(port);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const [displayName, setDisplayName] = useState(() => t("role.participant"));
@@ -215,6 +245,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; message: string }>();
   const [workspaceNotice, setWorkspaceNotice] = useState<{ tone: "error" | "success"; message: string }>();
+  const [roomNotices, setRoomNotices] = useState<Record<string, { tone: "error" | "success"; message: string }>>({});
   const participantConnected = activeRoom?.role === "participant" && activeRoom.connection !== "offline";
   const activeRoomConnected = activeRoom?.connection !== undefined && activeRoom.connection !== "offline";
   const activeOwnedRoom = ownedRooms.find((room) => room.sharing);
@@ -223,7 +254,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   useEffect(() => {
     if (!open) return;
     closeRef.current?.focus();
-    void Promise.resolve(port?.refreshOwnedRooms?.()).catch((cause) => {
+    void Promise.all([port?.refreshOwnedRooms?.(), port?.refreshGateway?.()]).catch((cause) => {
       setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.refreshError") });
     });
   }, [embedded, open, port]);
@@ -232,13 +263,16 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
 
   const perform = async (key: string, action: () => void | boolean | Promise<void | boolean>, success?: string): Promise<void> => {
     const scope = collabRoomNoticeScope(key);
+    const roomId = scope === "room" ? key.slice("invite:".length) : undefined;
     const updateNotice = (value: { tone: "error" | "success"; message: string } | undefined): void => {
       if (scope === "workspace") setWorkspaceNotice(value);
+      else if (roomId && value) setRoomNotices((current) => ({ ...current, [roomId]: value }));
       else setNotice(value);
     };
     setBusy(key);
     setNotice(undefined);
     setWorkspaceNotice(undefined);
+    setRoomNotices({});
     try {
       const completed = await action();
       if (success && completed !== false) updateNotice({ tone: "success", message: success });
@@ -333,6 +367,8 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
                   </>
                   : <Action primary disabled={!port?.shareHostRoom || busy !== undefined || (hasActiveRoom && !room.sharing)} onClick={() => { void perform(`owned:${room.roomId}`, () => startSharing(room), t("owned.startedNotice")); }}>{t("owned.startSharing")}</Action>}
               </div>
+              {room.sharing ? <p className={css.invitationPreflight} data-collab-invitation-preflight={room.roomId} role="status">{gateway?.status === "running" && gateway.advertisedEndpoint ? t("share.invitationPreflightReady", { endpoint: gateway.advertisedEndpoint }) : t("share.invitationPreflightPending")}</p> : null}
+              {roomNotices[room.roomId] ? <p className={roomNotices[room.roomId]?.tone === "error" ? css.error : css.success} data-collab-room-notice={room.roomId} role={roomNotices[room.roomId]?.tone === "error" ? "alert" : "status"}>{roomNotices[room.roomId]?.message}</p> : null}
               {hostInvitation?.roomId === room.roomId ? <div className={css.hostInvitation}>
                 <input type="text" value={hostInvitation.value} readOnly aria-label={t("share.invitationAria")} />
                 <div className={css.actions}>
