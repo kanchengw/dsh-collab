@@ -213,7 +213,7 @@ describe("Workspace Snapshot transport", () => {
     vi.mocked(snapshots.capture).mockRejectedValueOnce(new WorkspaceSnapshotError("WORKSPACE_LIMIT", "private file is too large"));
     await expect(gateway.handle({
       method: "POST", path: "/v1/rooms/room-1/workspace-snapshots", headers: capabilityHeaders, body: { clientRequestId: "too-large" },
-    })).resolves.toMatchObject({ status: 429, body: { error: { code: "RESOURCE_LIMIT", message: "Workspace Snapshot exceeds the configured limit" } } });
+    })).resolves.toMatchObject({ status: 429, body: { error: { code: "RESOURCE_LIMIT", message: "private file is too large" } } });
   });
 
   it("downloads, verifies and idempotently materializes a read-only local workspace", async () => {

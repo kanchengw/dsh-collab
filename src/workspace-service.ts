@@ -97,7 +97,7 @@ export class WorkspaceService {
       const raced = await provider.load(snapshotId);
       if (raced) return this.assertRoomSnapshot(raced, room.roomId, room.hostSessionId);
       if (error instanceof WorkspaceSnapshotError) {
-        if (error.code === "WORKSPACE_LIMIT") throw new CollabError("RESOURCE_LIMIT", "Workspace Snapshot exceeds the configured limit");
+        if (error.code === "WORKSPACE_LIMIT") throw new CollabError("RESOURCE_LIMIT", error.message);
         throw new CollabError("SNAPSHOT_INVALID", "Unable to capture Workspace Snapshot");
       }
       throw error;

@@ -5,11 +5,12 @@ import type { StagedChangeSet } from "./change-set-staging.js";
 import type { ParticipantGatewayTransport } from "./participant.js";
 import { SnapshotWorkspaceMaterializer, type MaterializedSnapshotWorkspace } from "./snapshot-workspace.js";
 import { validateWorkspaceSnapshotPackage } from "./workspace-snapshot-store.js";
+import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES, DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
 
 const DEFAULT_CHUNK_BYTES = 64 * 1024;
 const MAX_CHUNK_BYTES = 256 * 1024;
-const DEFAULT_MAX_FILES = 10_000;
-const DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_FILES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES;
+const DEFAULT_MAX_TOTAL_BYTES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES;
 const DEFAULT_CHANGE_SET_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_MAX_CHANGE_SET_PATCH_BYTES = 16 * 1024 * 1024;
 

@@ -3,11 +3,12 @@ import { WORKSPACE_VERSION_CAPABILITY, type WorkspaceSnapshotChunk, type Workspa
 import type { ParticipantGatewayTransport } from "./participant.js";
 import { validateWorkspaceSnapshotPackage, WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionRecord } from "./workspace-versions.js";
+import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES, DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
 
 const DEFAULT_CHUNK_BYTES = 64 * 1024;
 const MAX_CHUNK_BYTES = 256 * 1024;
-const DEFAULT_MAX_FILES = 10_000;
-const DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_FILES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES;
+const DEFAULT_MAX_TOTAL_BYTES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES;
 
 export interface DownloadedWorkspaceVersion {
   record: WorkspaceVersionRecord;

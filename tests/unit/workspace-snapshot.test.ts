@@ -167,6 +167,29 @@ describe("WorkspaceSnapshotCapture", () => {
     await expect(new WorkspaceSnapshotStore(root).load("snapshot-1")).rejects.toThrow("manifest is malformed");
   });
 
+  it("supports a repository with more than ten thousand small files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-collab-snapshots-"));
+    temporaryDirectories.push(root);
+    const paths = Array.from({ length: 10_001 }, (_, index) => `src/file-${String(index).padStart(5, "0")}.txt`);
+    const commands = commandPort({
+      "rev-parse --show-toplevel": { exitCode: 0, stdout: "C:/repo\n" },
+      "rev-parse --verify --quiet HEAD": { exitCode: 1 },
+      "ls-files -z --cached": { exitCode: 0, stdout: paths.join("\0") + "\0" },
+      "ls-files -z --others --exclude-standard": { exitCode: 0, stdout: "" },
+    });
+    const capture = new WorkspaceSnapshotCapture({
+      commands: commands.port,
+      files: { inspect: async () => "file", read: async () => new Uint8Array() },
+      store: new WorkspaceSnapshotStore(root),
+      snapshotIdFactory: () => "many-files",
+    });
+
+    const snapshot = await capture.capture({ roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 0 });
+    expect(snapshot.snapshotId).toBe("many-files");
+    expect(snapshot.files).toHaveLength(10_001);
+    expect(snapshot.files.at(-1)).toMatchObject({ path: "src/file-10000.txt", size: 0, source: "tracked" });
+  });
+
   it("bounds Host capture before an oversized repository can become a transport artifact", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-snapshots-"));
     temporaryDirectories.push(root);
