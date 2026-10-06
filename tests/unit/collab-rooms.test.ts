@@ -277,23 +277,23 @@ describe("Collab Rooms navigation", () => {
     }), "room-owned");
   });
 
-  it("restarts a running private-network Gateway before creating an invitation after the address changes", async () => {
+  it("does not stop a running private-network Gateway while creating an invitation", async () => {
     const actions = port();
-    let runtime: DshCollabGatewayRuntimeSnapshot = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.4:4310/collab" };
-    const order: string[] = [];
+    const runtime: DshCollabGatewayRuntimeSnapshot = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.4:4310/collab" };
     actions.getSnapshot = () => ({
-      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.4:4310/collab",
+      gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "",
       connectionMethod: "private-network",
       appliedGateway: { gatewayHost: "0.0.0.0", gatewayPort: 4310, exposeMode: "network", advertisedEndpoint: "ws://192.168.1.4:4310/collab" },
     });
     actions.getGatewaySnapshot = () => runtime;
-    actions.stopGateway = vi.fn(async () => { order.push("stop"); runtime = { status: "stopped" }; return runtime; });
-    actions.startGateway = vi.fn(async () => { order.push("start"); runtime = { status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.5:4310/collab" }; return runtime; });
-    actions.createInvite = vi.fn(async () => ({ invitation: "refreshed-after-address-change" }));
+    actions.stopGateway = vi.fn(async () => ({ status: "stopped" as const }));
+    actions.startGateway = vi.fn(async () => runtime);
+    actions.createInvite = vi.fn(async () => ({ invitation: "running-room-invite" }));
 
-    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("refreshed-after-address-change");
-    expect(order).toEqual(["stop", "start"]);
-    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.5:4310/collab" }), "room-owned");
+    await expect(createDshCollabInvitation(actions, "room-owned")).resolves.toBe("running-room-invite");
+    expect(actions.stopGateway).not.toHaveBeenCalled();
+    expect(actions.startGateway).not.toHaveBeenCalled();
+    expect(actions.createInvite).toHaveBeenCalledWith(expect.objectContaining({ gatewayEndpoint: "ws://192.168.1.4:4310/collab" }), "room-owned");
   });
   it("creates invitations from the running Gateway endpoint when settings are not shared with the renderer", async () => {
     const actions = port();
