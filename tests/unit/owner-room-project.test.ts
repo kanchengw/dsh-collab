@@ -26,6 +26,7 @@ async function fixture(input: {
   const rooms = new RoomStore();
   const roomProjects = new RoomProjectStore();
   const sessionPaths = new Map([["source-session", sourcePath]]);
+  let workspaceCaptureError: Error | undefined;
   const snapshot = {
     snapshotId: "snapshot-initial",
     roomId: "room-fixed",
@@ -52,13 +53,14 @@ async function fixture(input: {
     },
   };
   const bootstrap = {
-    prepare: vi.fn(async (input: { roomId: string; memberId: string; roomTitle: string }) => {
+    prepare: vi.fn(async (input: { roomId: string; memberId: string; roomTitle: string; sourcePath: string }) => {
       calls.push("bootstrap");
       let project = roomProjects.register({
         roomId: input.roomId,
         memberId: input.memberId,
         roomTitle: input.roomTitle,
         workspacePath,
+        sourcePath: input.sourcePath,
       });
       project = roomProjects.setNativeWorkspaceId({ roomId: input.roomId, nativeWorkspaceId: "native-room" });
       return { project, workspace: { roomId: input.roomId, workspacePath, snapshotId: snapshot.snapshotId } };
@@ -74,10 +76,11 @@ async function fixture(input: {
     sessions: { workspacePath: input.workspacePath ?? ((sessionId: string) => sessionPaths.get(sessionId)) },
     rooms,
     roomProjects,
-    ledger: { latestSeq: () => { calls.push("ledger"); return 1; } },
+    ledger: { latestSeq: () => { calls.push("ledger"); return 1; }, discardRoom: () => { calls.push("discard"); } },
     workspace: {
       setSharing: () => { calls.push("sharing"); return {} as never; },
-      captureLatest: async () => { calls.push("snapshot"); return snapshot; },
+      clearRoom: () => { calls.push("clear-sharing"); },
+      captureLatest: async () => { calls.push("snapshot"); if (workspaceCaptureError) throw workspaceCaptureError; return snapshot; },
     },
     workspaceVersions: {
       create: async () => { calls.push("version"); return { record: initialVersion } as never; },
@@ -87,7 +90,7 @@ async function fixture(input: {
     createRoomId: () => "room-fixed",
   });
 
-  return { bootstrap, calls, roomProjects, rooms, service, sessionPaths, sourcePath, workspacePath };
+  return { bootstrap, calls, roomProjects, rooms, service, sessionPaths, sourcePath, workspacePath, get workspaceCaptureError() { return workspaceCaptureError; }, set workspaceCaptureError(value: Error | undefined) { workspaceCaptureError = value; } };
 }
 
 describe("OwnerRoomProjectService", () => {
@@ -119,6 +122,7 @@ describe("OwnerRoomProjectService", () => {
       roomTitle: "Atlas",
       nativeWorkspaceTitle: "source \u00b7 Atlas",
     }));
+    expect(value.roomProjects.get("room-fixed")).toMatchObject({ workspacePath: value.workspacePath, sourcePath: value.sourcePath });
     expect(value.calls).toEqual(["room", "sharing", "ledger", "snapshot", "version", "bootstrap", "commit"]);
   });
 
@@ -139,6 +143,19 @@ describe("OwnerRoomProjectService", () => {
     expect(value.calls).toEqual([]);
   });
 
+  it("rolls back the provisional Room when the initial Snapshot capture fails", async () => {
+    const value = await fixture();
+    value.workspaceCaptureError = new Error("Workspace Snapshot exceeds the file count limit");
+
+    await expect(value.service.prepare({
+      sourcePath: value.sourcePath,
+      sourceSessionId: "source-session",
+      roomTitle: "Atlas",
+    })).rejects.toThrow("Workspace Snapshot exceeds the file count limit");
+
+    expect(value.rooms.snapshot().rooms).toHaveLength(0);
+    expect(value.roomProjects.list()).toHaveLength(0);
+  });
   it("accepts a source Session workspace path resolved from the cold Session query", async () => {
     const value = await fixture({ workspacePath: async (sessionId) => value.sessionPaths.get(sessionId) });
 

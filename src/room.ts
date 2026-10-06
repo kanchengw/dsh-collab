@@ -66,6 +66,12 @@ export class RoomStore {
     return copy(room);
   }
 
+  removeRoom(roomId: string): void {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    if (!this.rooms.delete(normalizedRoomId)) return;
+    this.emit();
+  }
+
   ensureHostRoom(input: CreateRoomInput): Room {
     const roomId = requiredText(input.roomId, "roomId");
     const existing = this.rooms.get(roomId);

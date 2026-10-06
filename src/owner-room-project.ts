@@ -56,8 +56,8 @@ export class OwnerRoomProjectService {
     sessions: { workspacePath?(sessionId: string): string | Promise<string | undefined> | undefined };
     rooms: RoomStore;
     roomProjects: RoomProjectStore;
-    ledger: Pick<EventLedger, "latestSeq">;
-    workspace: Pick<WorkspaceService, "setSharing" | "captureLatest">;
+    ledger: Pick<EventLedger, "latestSeq" | "discardRoom">;
+    workspace: Pick<WorkspaceService, "setSharing" | "clearRoom" | "captureLatest">;
     workspaceVersions: Pick<WorkspaceVersionService, "create">;
     bootstrap: OwnerRoomProjectBootstrap;
     commitCriticalState(): Promise<void>;
@@ -80,34 +80,43 @@ export class OwnerRoomProjectService {
       title: roomTitle,
       hostDisplayName: this.options.hostDisplayName,
     });
-    this.options.workspace.setSharing({ roomId, principalId: this.options.hostId, enabled: true });
-    const snapshot = await this.options.workspace.captureLatest({
-      roomId,
-      principalId: this.options.hostId,
-      clientRequestId: `owner-room-project:${roomId}`,
-      purpose: "workspace-version",
-      roomEventSeq: this.options.ledger.latestSeq(roomId),
-    });
-    const version = await this.options.workspaceVersions.create({
-      roomId,
-      principalId: this.options.hostId,
-      snapshotId: snapshot.snapshotId,
-    });
-    const prepared = await this.options.bootstrap.prepare({
-      roomId,
-      memberId: "member-host",
-      roomTitle,
-      sourcePath,
-      nativeWorkspaceTitle: basename(sourcePath) + " \u00b7 " + roomTitle,
-      initialVersion: version.record,
-    });
-    if (!prepared.project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
-    await this.options.commitCriticalState();
-    return {
-      roomId,
-      workspacePath: prepared.workspace.workspacePath,
-      nativeWorkspaceId: prepared.project.nativeWorkspaceId,
-    };
+    try {
+      this.options.workspace.setSharing({ roomId, principalId: this.options.hostId, enabled: true });
+      const snapshot = await this.options.workspace.captureLatest({
+        roomId,
+        principalId: this.options.hostId,
+        clientRequestId: `owner-room-project:${roomId}`,
+        purpose: "workspace-version",
+        roomEventSeq: this.options.ledger.latestSeq(roomId),
+      });
+      const version = await this.options.workspaceVersions.create({
+        roomId,
+        principalId: this.options.hostId,
+        snapshotId: snapshot.snapshotId,
+      });
+      const prepared = await this.options.bootstrap.prepare({
+        roomId,
+        memberId: "member-host",
+        roomTitle,
+        sourcePath,
+        nativeWorkspaceTitle: basename(sourcePath) + " · " + roomTitle,
+        initialVersion: version.record,
+      });
+      if (!prepared.project.nativeWorkspaceId) throw new Error("Native Workspace registration is missing");
+      await this.options.commitCriticalState();
+      return {
+        roomId,
+        workspacePath: prepared.workspace.workspacePath,
+        nativeWorkspaceId: prepared.project.nativeWorkspaceId,
+      };
+    } catch (error) {
+      this.options.roomProjects.remove(roomId);
+      this.options.workspace.clearRoom(roomId);
+      this.options.ledger.discardRoom(roomId);
+      this.options.rooms.removeRoom(roomId);
+      await this.options.commitCriticalState().catch(() => undefined);
+      throw error;
+    }
   }
 
   async complete(input: OwnerRoomProjectCompleteInput): Promise<{ roomId: string; hostPrimarySessionId: string }> {

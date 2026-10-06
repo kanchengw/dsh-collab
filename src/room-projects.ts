@@ -163,6 +163,10 @@ export class RoomProjectStore {
     return copy(project);
   }
 
+  remove(roomId: string): void {
+    this.projects.delete(requiredText(roomId, "roomId"));
+  }
+
   setHostPrimarySessionId(input: { roomId: string; sessionId: string }): RoomProject {
     const roomId = requiredText(input.roomId, "roomId");
     const sessionId = requiredText(input.sessionId, "sessionId");

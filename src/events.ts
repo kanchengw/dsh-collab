@@ -156,6 +156,16 @@ export class EventLedger {
     return this.committedSeq.get(normalizedRoomId) ?? 0;
   }
 
+  discardRoom(roomId: string): void {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    if ((this.committedSeq.get(normalizedRoomId) ?? 0) !== 0) {
+      throw new CollabError("REQUEST_CONFLICT", "Committed Room events cannot be discarded", { roomId: normalizedRoomId });
+    }
+    for (const event of this.rooms.get(normalizedRoomId) ?? []) this.eventsById.delete(event.eventId);
+    this.rooms.delete(normalizedRoomId);
+    this.committedSeq.delete(normalizedRoomId);
+  }
+
   snapshot(): LedgerSnapshot {
     return {
       version: 1,
