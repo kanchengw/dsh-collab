@@ -145,13 +145,13 @@ describe("OwnerRoomProjectService", () => {
 
   it("rolls back the provisional Room when the initial Snapshot capture fails", async () => {
     const value = await fixture();
-    value.workspaceCaptureError = new Error("Workspace Snapshot exceeds the file count limit");
+    value.workspaceCaptureError = new Error("Workspace Snapshot exceeds the byte limit (maximum 1073741824 bytes total)");
 
     await expect(value.service.prepare({
       sourcePath: value.sourcePath,
       sourceSessionId: "source-session",
       roomTitle: "Atlas",
-    })).rejects.toThrow("Workspace Snapshot exceeds the file count limit");
+    })).rejects.toThrow("Workspace Snapshot exceeds the byte limit (maximum 1073741824 bytes total)");
 
     expect(value.rooms.snapshot().rooms).toHaveLength(0);
     expect(value.roomProjects.list()).toHaveLength(0);

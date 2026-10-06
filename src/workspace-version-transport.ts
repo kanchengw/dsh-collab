@@ -3,11 +3,10 @@ import { WORKSPACE_VERSION_CAPABILITY, type WorkspaceSnapshotChunk, type Workspa
 import type { ParticipantGatewayTransport } from "./participant.js";
 import { validateWorkspaceSnapshotPackage, WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import { validateWorkspaceVersionRecord, type WorkspaceVersionRecord } from "./workspace-versions.js";
-import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES, DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
+import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
 
 const DEFAULT_CHUNK_BYTES = 64 * 1024;
 const MAX_CHUNK_BYTES = 256 * 1024;
-const DEFAULT_MAX_FILES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES;
 const DEFAULT_MAX_TOTAL_BYTES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES;
 
 export interface DownloadedWorkspaceVersion {
@@ -52,21 +51,18 @@ function validateBinding(roomId: string, rawRecord: unknown, rawSnapshot: unknow
 
 export class WorkspaceVersionClient {
   private readonly chunkBytes: number;
-  private readonly maxFiles: number;
   private readonly maxTotalBytes: number;
 
   constructor(private readonly options: {
     transport: ParticipantGatewayTransport;
     artifacts: WorkspaceSnapshotStore;
     chunkBytes?: number;
-    maxFiles?: number;
     maxTotalBytes?: number;
   }) {
     this.chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
-    this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
     this.maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
     if (!Number.isSafeInteger(this.chunkBytes) || this.chunkBytes < 1 || this.chunkBytes > MAX_CHUNK_BYTES) throw new Error("Workspace Version chunk limit is invalid");
-    if (!Number.isSafeInteger(this.maxFiles) || this.maxFiles < 1 || !Number.isSafeInteger(this.maxTotalBytes) || this.maxTotalBytes < 1) {
+    if (!Number.isSafeInteger(this.maxTotalBytes) || this.maxTotalBytes < 1) {
       throw new Error("Workspace Version download limit is invalid");
     }
   }
@@ -96,7 +92,6 @@ export class WorkspaceVersionClient {
     if (expectedVersionId !== undefined && record.version.workspaceVersionId !== expectedVersionId) {
       throw new Error("Workspace Version response identity does not match request");
     }
-    if (snapshot.files.length > this.maxFiles) throw new Error("Workspace Version file count exceeds download limit");
     const totalBytes = snapshot.files.reduce((total, file) => total + file.size, 0);
     if (!Number.isSafeInteger(totalBytes) || totalBytes > this.maxTotalBytes) throw new Error("Workspace Version size exceeds download limit");
     const existing = await this.options.artifacts.load(snapshot.snapshotId);

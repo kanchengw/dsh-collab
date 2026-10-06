@@ -22,14 +22,14 @@ function createDshBrowserCollabClient(options: DshBrowserCollabOptions) {
 }
 
 describe("browser Gateway client", () => {
-  it("accepts a Workspace Snapshot up to the shared 512 MiB total limit", async () => {
+  it("accepts a Workspace Snapshot up to the shared 1 GiB total limit", async () => {
     const fetch: BrowserFetch = async (url) => {
       if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
       if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
       if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
       if (url.endsWith("/workspace-snapshots")) return response({ snapshot: {
         snapshotId: "a".repeat(64), roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 0,
-        manifestHash: "b".repeat(64), files: [{ path: "large.bin", contentHash: "c".repeat(64), size: 256 * 1024 * 1024 + 1, source: "tracked" }], createdAt: 1,
+        manifestHash: "b".repeat(64), files: [{ path: "large.bin", contentHash: "c".repeat(64), size: 768 * 1024 * 1024, source: "tracked" }], createdAt: 1,
       } });
       throw new Error("unexpected request: " + url);
     };
@@ -40,7 +40,7 @@ describe("browser Gateway client", () => {
     };
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
-    await expect(client.requestWorkspaceSnapshot("room-1")).resolves.toMatchObject({ roomId: "room-1", files: [{ size: 256 * 1024 * 1024 + 1 }] });
+    await expect(client.requestWorkspaceSnapshot("room-1")).resolves.toMatchObject({ roomId: "room-1", files: [{ size: 768 * 1024 * 1024 }] });
     client.dispose();
   });
 
@@ -476,14 +476,16 @@ describe("browser Gateway client", () => {
     snapshot = {
       ...snapshot,
       createdAt: 20,
-      files: Array.from({ length: 50_001 }, (_, index) => ({ path: `src/${String(index)}.ts`, contentHash: "c".repeat(64), size: 0, source: "tracked" })),
+      files: Array.from({ length: 10_001 }, (_, index) => ({ path: `src/${String(index)}.ts`, contentHash: "c".repeat(64), size: 0, source: "tracked" })),
     };
-    await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
+    const manyFiles = await client.requestWorkspaceSnapshot("room-1");
+    expect(manyFiles.files).toHaveLength(10_001);
+    expect(manyFiles.files.at(-1)).toMatchObject({ path: "src/10000.ts" });
     snapshot = {
       ...snapshot,
       files: [
-        { path: "src/a.ts", contentHash: "c".repeat(64), size: 256 * 1024 * 1024 + 1, source: "tracked" },
-        { path: "src/b.ts", contentHash: "d".repeat(64), size: 256 * 1024 * 1024, source: "tracked" },
+        { path: "src/a.ts", contentHash: "c".repeat(64), size: 512 * 1024 * 1024 + 1, source: "tracked" },
+        { path: "src/b.ts", contentHash: "d".repeat(64), size: 512 * 1024 * 1024, source: "tracked" },
       ],
     };
     await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");

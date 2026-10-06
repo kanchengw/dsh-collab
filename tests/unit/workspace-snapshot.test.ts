@@ -36,8 +36,8 @@ function commandPort(outputs: Record<string, { exitCode: number; stdout?: string
 }
 
 describe("WorkspaceSnapshotCapture", () => {
-  it("uses a 512 MiB default total snapshot limit", () => {
-    expect(DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES).toBe(512 * 1024 * 1024);
+  it("uses a 1 GiB default total snapshot limit", () => {
+    expect(DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES).toBe(1024 * 1024 * 1024);
   });
 
   it("captures tracked and non-ignored untracked files as an immutable persisted package", async () => {
@@ -209,7 +209,6 @@ describe("WorkspaceSnapshotCapture", () => {
       commands: commands.port,
       files: { inspect: async () => "file", read },
       store: new WorkspaceSnapshotStore(root),
-      maxFileBytes: 4,
       maxTotalBytes: 4,
     });
 

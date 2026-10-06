@@ -10,9 +10,7 @@ export interface WorkspaceFilePort {
   read(path: string, signal?: AbortSignal, maxBytes?: number): Promise<Uint8Array>;
 }
 
-export const DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES = 50_000;
-export const DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILE_BYTES = 64 * 1024 * 1024;
-export const DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+export const DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 
 export type WorkspaceSnapshotErrorCode = "WORKSPACE_NOT_GIT" | "WORKSPACE_PATH_UNSAFE" | "WORKSPACE_CAPTURE_FAILED" | "WORKSPACE_LIMIT";
 
@@ -53,8 +51,6 @@ function isGitMetadata(path: string): boolean {
 export class WorkspaceSnapshotCapture {
   private readonly now: () => number;
   private readonly snapshotIdFactory: () => string;
-  private readonly maxFiles: number;
-  private readonly maxFileBytes: number;
   private readonly maxTotalBytes: number;
 
   constructor(private readonly options: {
@@ -63,16 +59,12 @@ export class WorkspaceSnapshotCapture {
     store: WorkspaceSnapshotStore;
     now?: () => number;
     snapshotIdFactory?: () => string;
-    maxFiles?: number;
-    maxFileBytes?: number;
     maxTotalBytes?: number;
   }) {
     this.now = options.now ?? (() => Date.now());
     this.snapshotIdFactory = options.snapshotIdFactory ?? randomUUID;
-    this.maxFiles = options.maxFiles ?? DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES;
-    this.maxFileBytes = options.maxFileBytes ?? DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILE_BYTES;
     this.maxTotalBytes = options.maxTotalBytes ?? DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES;
-    for (const [name, value] of [["maxFiles", this.maxFiles], ["maxFileBytes", this.maxFileBytes], ["maxTotalBytes", this.maxTotalBytes]] as const) {
+    for (const [name, value] of [["maxTotalBytes", this.maxTotalBytes]] as const) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
     }
   }
@@ -104,18 +96,17 @@ export class WorkspaceSnapshotCapture {
       const inspection = await this.options.files.inspect(path, input.signal);
       if (inspection === "missing" || inspection === "symlink" || inspection === "other") continue;
       if (inspection === "outside") throw new WorkspaceSnapshotError("WORKSPACE_PATH_UNSAFE", `Workspace path escapes repository root: ${path}`);
-      if (files.length >= this.maxFiles) throw new WorkspaceSnapshotError("WORKSPACE_LIMIT", `Workspace Snapshot exceeds the file count limit (maximum ${String(this.maxFiles)} files)`);
-      const readLimit = Math.min(this.maxFileBytes, this.maxTotalBytes - totalBytes);
+      const readLimit = this.maxTotalBytes - totalBytes;
       let content: Uint8Array;
       try {
         content = await this.options.files.read(path, input.signal, readLimit);
       } catch (error) {
         if ((error as { code?: unknown }).code === "FS_TOO_LARGE") {
-          throw new WorkspaceSnapshotError("WORKSPACE_LIMIT", `Workspace Snapshot exceeds the byte limit (maximum ${String(this.maxFileBytes)} bytes per file and ${String(this.maxTotalBytes)} bytes total)`, { cause: error });
+          throw new WorkspaceSnapshotError("WORKSPACE_LIMIT", `Workspace Snapshot exceeds the byte limit (maximum ${String(this.maxTotalBytes)} bytes total)`, { cause: error });
         }
         throw error;
       }
-      if (content.byteLength > readLimit) throw new WorkspaceSnapshotError("WORKSPACE_LIMIT", `Workspace Snapshot exceeds the byte limit (maximum ${String(this.maxFileBytes)} bytes per file and ${String(this.maxTotalBytes)} bytes total)`);
+      if (content.byteLength > readLimit) throw new WorkspaceSnapshotError("WORKSPACE_LIMIT", `Workspace Snapshot exceeds the byte limit (maximum ${String(this.maxTotalBytes)} bytes total)`);
       totalBytes += content.byteLength;
       contents.set(path, content);
       files.push({ path, contentHash: hash(content), size: content.byteLength, source });

@@ -5,11 +5,10 @@ import type { StagedChangeSet } from "./change-set-staging.js";
 import type { ParticipantGatewayTransport } from "./participant.js";
 import { SnapshotWorkspaceMaterializer, type MaterializedSnapshotWorkspace } from "./snapshot-workspace.js";
 import { validateWorkspaceSnapshotPackage } from "./workspace-snapshot-store.js";
-import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES, DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
+import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
 
 const DEFAULT_CHUNK_BYTES = 64 * 1024;
 const MAX_CHUNK_BYTES = 256 * 1024;
-const DEFAULT_MAX_FILES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES;
 const DEFAULT_MAX_TOTAL_BYTES = DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES;
 const DEFAULT_CHANGE_SET_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_MAX_CHANGE_SET_PATCH_BYTES = 16 * 1024 * 1024;
@@ -38,7 +37,6 @@ function decodeChunk(value: WorkspaceSnapshotChunk, expected: { snapshotId: stri
 
 export class CollaborationWorkspaceClient {
   private readonly chunkBytes: number;
-  private readonly maxFiles: number;
   private readonly maxTotalBytes: number;
   private readonly clientRequestIdFactory: () => string;
 
@@ -46,16 +44,14 @@ export class CollaborationWorkspaceClient {
     transport: ParticipantGatewayTransport;
     materializer: SnapshotWorkspaceMaterializer;
     chunkBytes?: number;
-    maxFiles?: number;
     maxTotalBytes?: number;
     clientRequestIdFactory?: () => string;
   }) {
     this.chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
-    this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
     this.maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
     this.clientRequestIdFactory = options.clientRequestIdFactory ?? randomUUID;
     if (!Number.isSafeInteger(this.chunkBytes) || this.chunkBytes < 1 || this.chunkBytes > MAX_CHUNK_BYTES) throw new Error("Workspace Snapshot chunk limit is invalid");
-    if (!Number.isSafeInteger(this.maxFiles) || this.maxFiles < 1 || !Number.isSafeInteger(this.maxTotalBytes) || this.maxTotalBytes < 1) throw new Error("Workspace Snapshot download limit is invalid");
+    if (!Number.isSafeInteger(this.maxTotalBytes) || this.maxTotalBytes < 1) throw new Error("Workspace Snapshot download limit is invalid");
   }
 
   async downloadLatest(input: { roomId: string; token: string; clientRequestId?: string }): Promise<MaterializedSnapshotWorkspace> {
@@ -85,7 +81,6 @@ export class CollaborationWorkspaceClient {
   private async downloadPackage(input: { roomId: string; token: string }, raw: WorkspaceSnapshotPackage): Promise<MaterializedSnapshotWorkspace> {
     const snapshot = validateWorkspaceSnapshotPackage(raw);
     if (snapshot.roomId !== input.roomId) throw new Error("Workspace Snapshot does not belong to requested room");
-    if (snapshot.files.length > this.maxFiles) throw new Error("Workspace Snapshot file count exceeds download limit");
     const totalBytes = snapshot.files.reduce((total, file) => total + file.size, 0);
     if (!Number.isSafeInteger(totalBytes) || totalBytes > this.maxTotalBytes) throw new Error("Workspace Snapshot size exceeds download limit");
 
