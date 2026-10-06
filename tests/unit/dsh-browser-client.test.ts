@@ -22,6 +22,28 @@ function createDshBrowserCollabClient(options: DshBrowserCollabOptions) {
 }
 
 describe("browser Gateway client", () => {
+  it("accepts a Workspace Snapshot up to the shared 512 MiB total limit", async () => {
+    const fetch: BrowserFetch = async (url) => {
+      if (url.endsWith("/bootstrap")) return response({ room: { roomId: "room-1", title: "Release" }, member: { memberId: "member-host", role: "host" }, roomToken: "host-token" });
+      if (url.endsWith("/snapshot") && !url.includes("workspace-snapshots")) return response({ room: { roomId: "room-1", title: "Release" }, members: [], lastEventSeq: 0 });
+      if (url.includes("/events?")) return response({ events: [], nextSeq: 0 });
+      if (url.endsWith("/workspace-snapshots")) return response({ snapshot: {
+        snapshotId: "a".repeat(64), roomId: "room-1", hostSessionId: "session-1", roomEventSeq: 0,
+        manifestHash: "b".repeat(64), files: [{ path: "large.bin", contentHash: "c".repeat(64), size: 256 * 1024 * 1024 + 1, source: "tracked" }], createdAt: 1,
+      } });
+      throw new Error("unexpected request: " + url);
+    };
+    const WebSocket = class implements BrowserSocket {
+      readyState = 1; onopen?: () => void; onmessage?: (event: { data: string }) => void; onclose?: () => void; onerror?: () => void;
+      constructor() { queueMicrotask(() => this.onopen?.()); }
+      send(): void {} close(): void { this.readyState = 3; }
+    };
+    const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
+    await client.bootstrap();
+    await expect(client.requestWorkspaceSnapshot("room-1")).resolves.toMatchObject({ roomId: "room-1", files: [{ size: 256 * 1024 * 1024 + 1 }] });
+    client.dispose();
+  });
+
   it("establishes EasyTier before joining and reconnects a saved room only after an explicit action", async () => {
     const network = {
       mode: "easytier" as const,
@@ -454,14 +476,14 @@ describe("browser Gateway client", () => {
     snapshot = {
       ...snapshot,
       createdAt: 20,
-      files: Array.from({ length: 10_001 }, (_, index) => ({ path: `src/${String(index)}.ts`, contentHash: "c".repeat(64), size: 0, source: "tracked" })),
+      files: Array.from({ length: 50_001 }, (_, index) => ({ path: `src/${String(index)}.ts`, contentHash: "c".repeat(64), size: 0, source: "tracked" })),
     };
     await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");
     snapshot = {
       ...snapshot,
       files: [
-        { path: "src/a.ts", contentHash: "c".repeat(64), size: 128 * 1024 * 1024 + 1, source: "tracked" },
-        { path: "src/b.ts", contentHash: "d".repeat(64), size: 128 * 1024 * 1024, source: "tracked" },
+        { path: "src/a.ts", contentHash: "c".repeat(64), size: 256 * 1024 * 1024 + 1, source: "tracked" },
+        { path: "src/b.ts", contentHash: "d".repeat(64), size: 256 * 1024 * 1024, source: "tracked" },
       ],
     };
     await expect(client.requestWorkspaceSnapshot("room-1")).rejects.toThrow("invalid");

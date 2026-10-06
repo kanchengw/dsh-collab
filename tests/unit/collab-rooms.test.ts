@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { closeDshCollabRoom, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, joinDshCollabRoom, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
+import { closeDshCollabRoom, collabRoomNoticeScope, createDshCollabInvitation, DshCollabRoomsLauncher, DshCollabRoomsPanel, getDshCollabRoomSelection, joinDshCollabRoom, openDshCollabOwnedRoom, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom } from "../../src/collab-rooms.js";
 import type { DshCollabGatewayRuntimeSnapshot, DshCollabSettingsPort } from "../../src/dsh-client.js";
 import type { CollabPanelHost } from "../../src/collab-panel-host.js";
 import { encodeCollabInvitation } from "../../src/invitation.js";
@@ -35,6 +35,12 @@ function port(): DshCollabSettingsPort {
 }
 
 describe("Collab Rooms navigation", () => {
+  it("routes workspace creation errors to the workspace creator area", () => {
+    expect(collabRoomNoticeScope("pick-directory")).toBe("workspace");
+    expect(collabRoomNoticeScope("create-owned")).toBe("workspace");
+    expect(collabRoomNoticeScope("join")).toBe("global");
+  });
+
   it("matches the DSH sidebar footer action in wide and rail layouts", () => {
     expect(renderToStaticMarkup(createElement(DshCollabRoomsLauncher, { wide: true }))).toContain("Collab Rooms");
     const rail = renderToStaticMarkup(createElement(DshCollabRoomsLauncher, { wide: false }));

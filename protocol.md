@@ -449,8 +449,8 @@ HTTP route.
 Each chunk response includes `snapshotId`, `fileIndex`, `offset`, `byteLength`,
 `chunkHash`, base64 `data` and `eof`. Clients validate every chunk and the final
 file hash before atomically publishing a local read-only workspace. Capture is
-bounded to 10,000 files, 64 MiB per file and 256 MiB total; Participant download
-is independently bounded to 10,000 files and 256 MiB total. Disabling Workspace
+bounded to 50,000 files, 64 MiB per file and 512 MiB total; Participant download
+is independently bounded to 50,000 files and 512 MiB total. Disabling Workspace
 Sharing rejects every new manifest or chunk request, but already materialized
 local content remains readable without the Host.
 

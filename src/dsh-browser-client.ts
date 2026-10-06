@@ -8,6 +8,7 @@ import type { AgentOutputFrame, AgentQueueItem, RoomEvent } from "./types.js";
 import type { DshCollabClientPort, DshCollabClientSnapshot, DshCollabSettingsPort } from "./dsh-client.js";
 import type { LocalSnapshotAccess } from "./local-sidecar.js";
 import type { AcceptedReviewPublication, ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewFindingPage, ReviewLifecycle, ReviewPoint, ReviewPointCreateInput, ReviewPointDiff, ReviewPointFile, ReviewPointPage, ReviewPointProjection, ReviewPublication, ReviewPublicationCreateInput, ReviewPublicationPage, WorkspaceSharingState, WorkspaceSnapshotPackage } from "./collaboration-types.js";
+import { DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES, DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES } from "./workspace-snapshot.js";
 
 export interface BrowserRequestInit {
   method?: string;
@@ -240,7 +241,7 @@ function workspaceSnapshot(value: unknown, roomId: string): WorkspaceSnapshotPac
   if (!snapshot || snapshot.roomId !== roomId || typeof snapshot.snapshotId !== "string" || !/^[a-f0-9]{64}$/.test(snapshot.snapshotId)
     || typeof snapshot.hostSessionId !== "string" || !Number.isSafeInteger(snapshot.roomEventSeq) || (snapshot.roomEventSeq as number) < 0
     || typeof snapshot.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(snapshot.manifestHash)
-    || !Array.isArray(snapshot.files) || snapshot.files.length > 10_000
+    || !Array.isArray(snapshot.files) || snapshot.files.length > DEFAULT_WORKSPACE_SNAPSHOT_MAX_FILES
     || !Number.isSafeInteger(snapshot.createdAt) || (snapshot.createdAt as number) < 0) {
     throw new Error("Gateway Workspace Snapshot response is invalid");
   }
@@ -252,7 +253,7 @@ function workspaceSnapshot(value: unknown, roomId: string): WorkspaceSnapshotPac
       throw new Error("Gateway Workspace Snapshot file is invalid");
     }
     totalBytes += file.size as number;
-    if (totalBytes > 256 * 1024 * 1024) throw new Error("Gateway Workspace Snapshot response is invalid");
+    if (totalBytes > DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES) throw new Error("Gateway Workspace Snapshot response is invalid");
     return { path: file.path, contentHash: file.contentHash, size: file.size as number, source: file.source as "tracked" | "untracked" };
   });
   return {

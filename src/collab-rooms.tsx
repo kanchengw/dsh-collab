@@ -173,6 +173,12 @@ function Action(props: { children: ReactNode; disabled?: boolean; onClick: () =>
   return <button type="button" className={props.primary ? css.primaryAction : css.action} disabled={props.disabled} onClick={props.onClick}>{props.children}</button>;
 }
 
+export type CollabRoomNoticeScope = "workspace" | "global";
+
+export function collabRoomNoticeScope(key: string): CollabRoomNoticeScope {
+  return key === "pick-directory" || key === "create-owned" ? "workspace" : "global";
+}
+
 /** Additive action rendered in DSH's official sidebar footer slot. */
 export function DshCollabRoomsLauncher({ wide, t = defaultCollabTranslate }: { wide: boolean; t?: CollabTranslate }): ReactNode {
   const open = usePanelOpen();
@@ -208,6 +214,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const [hostInvitation, setHostInvitation] = useState<{ roomId: string; value: string }>();
   const [busy, setBusy] = useState<string>();
   const [notice, setNotice] = useState<{ tone: "error" | "success"; message: string }>();
+  const [workspaceNotice, setWorkspaceNotice] = useState<{ tone: "error" | "success"; message: string }>();
   const participantConnected = activeRoom?.role === "participant" && activeRoom.connection !== "offline";
   const activeRoomConnected = activeRoom?.connection !== undefined && activeRoom.connection !== "offline";
   const activeOwnedRoom = ownedRooms.find((room) => room.sharing);
@@ -224,13 +231,19 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   if (!open) return null;
 
   const perform = async (key: string, action: () => void | boolean | Promise<void | boolean>, success?: string): Promise<void> => {
+    const scope = collabRoomNoticeScope(key);
+    const updateNotice = (value: { tone: "error" | "success"; message: string } | undefined): void => {
+      if (scope === "workspace") setWorkspaceNotice(value);
+      else setNotice(value);
+    };
     setBusy(key);
     setNotice(undefined);
+    setWorkspaceNotice(undefined);
     try {
       const completed = await action();
-      if (success && completed !== false) setNotice({ tone: "success", message: success });
+      if (success && completed !== false) updateNotice({ tone: "success", message: success });
     } catch (cause) {
-      setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.actionError") });
+      updateNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.actionError") });
     } finally {
       setBusy(undefined);
     }
@@ -305,6 +318,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
               <input name="ownedRoomTitle" value={ownedRoomTitle} aria-label={t("owned.createTitle")} placeholder={t("owned.createTitle")} onChange={(event) => { setOwnedRoomTitle(event.target.value); }} disabled={!ownedWorkspacePath || busy !== undefined} />
               <button type="submit" className={css.primaryAction} disabled={busy !== undefined || !ownedWorkspacePath || ownedRoomTitle.trim() === ""}>{t(busy === "create-owned" ? "owned.creating" : "owned.createAction")}</button>
             </form>
+            {workspaceNotice ? <p className={workspaceNotice.tone === "error" ? css.error : css.success} data-collab-workspace-create-notice="true" role={workspaceNotice.tone === "error" ? "alert" : "status"}>{workspaceNotice.message}</p> : null}
           </section> : null}
           <section className={css.roomSection} aria-labelledby="owned-rooms-title">
             <div className={css.sectionHeading}><div><h3 id="owned-rooms-title">{t("owned.title")}</h3><p>{t("owned.description")}</p></div><span className={css.count}>{ownedRooms.length}</span></div>

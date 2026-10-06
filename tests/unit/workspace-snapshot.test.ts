@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RepositoryCommandPort } from "../../src/repository-inspector.js";
 import {
+  DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES,
   WorkspaceSnapshotCapture,
   createDshWorkspaceFilePort,
   type WorkspaceFilePort,
@@ -35,6 +36,10 @@ function commandPort(outputs: Record<string, { exitCode: number; stdout?: string
 }
 
 describe("WorkspaceSnapshotCapture", () => {
+  it("uses a 512 MiB default total snapshot limit", () => {
+    expect(DEFAULT_WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES).toBe(512 * 1024 * 1024);
+  });
+
   it("captures tracked and non-ignored untracked files as an immutable persisted package", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-snapshots-"));
     temporaryDirectories.push(root);
