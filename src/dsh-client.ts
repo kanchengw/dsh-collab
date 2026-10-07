@@ -144,6 +144,13 @@ interface DshJoinedRoomOpenerSettings {
   getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
   setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string, summary?: { fileCount: number; totalBytes: number }): Promise<void>;
+  setJoinedRoomWorkspaceSummary?(ref: JoinedRoomRef, summary: { fileCount: number; totalBytes: number }): Promise<void>;
+}
+
+interface DshJoinedRoomWorkspaceSummary {
+  roomId: string;
+  fileCount: number;
+  totalBytes: number;
 }
 
 interface DshJoinedRoomProjectRecord {
@@ -181,11 +188,25 @@ function joinedRoomProjectValue(value: unknown): DshJoinedRoomProjectRecord {
   };
 }
 
+function joinedRoomWorkspaceSummaryValue(value: unknown): DshJoinedRoomWorkspaceSummary {
+  const envelope = value as { ok?: unknown; value?: unknown; error?: { message?: unknown } };
+  if (!envelope || envelope.ok !== true || !envelope.value || typeof envelope.value !== "object" || Array.isArray(envelope.value)) {
+    throw new Error(typeof envelope?.error?.message === "string" ? envelope.error.message : "Participant Room Project summary failed");
+  }
+  const summary = envelope.value as Record<string, unknown>;
+  if (typeof summary.roomId !== "string" || summary.roomId.trim() === ""
+    || !Number.isSafeInteger(summary.fileCount) || (summary.fileCount as number) < 0
+    || !Number.isSafeInteger(summary.totalBytes) || (summary.totalBytes as number) < 0) {
+    throw new Error("Participant Room Project workspace summary is invalid");
+  }
+  return { roomId: summary.roomId as string, fileCount: summary.fileCount as number, totalBytes: summary.totalBytes as number };
+}
+
 export function createDshJoinedRoomOpener(input: {
   settings: DshJoinedRoomOpenerSettings;
   rpc: DshClientConnectionRpc;
   openWorkspace: (input: OpenParticipantRoomWorkspaceInput) => Promise<void>;
-}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void }) => Promise<void> {
+}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void; onWorkspaceSummary?: (summary: { fileCount: number; totalBytes: number }) => void }) => Promise<void> {
   return async (room) => {
     let connected = false;
     try {
@@ -201,6 +222,17 @@ export function createDshJoinedRoomOpener(input: {
       connected = true;
       const access = input.settings.getLocalSnapshotAccess(room.roomId);
       room.onProgress?.("downloading");
+      const summary = joinedRoomWorkspaceSummaryValue(await input.rpc.call("/dsh-collab", "participant/room-project/summary", {
+        roomId: room.roomId,
+        gatewayEndpoint: active.gatewayEndpoint,
+        roomToken: access.roomToken,
+      }));
+      if (summary.roomId !== room.roomId) throw new Error("Participant Room Project summary does not match the selected room");
+      await input.settings.setJoinedRoomWorkspaceSummary?.(
+        { gatewayEndpoint: active.gatewayEndpoint, roomId: room.roomId },
+        { fileCount: summary.fileCount, totalBytes: summary.totalBytes },
+      );
+      room.onWorkspaceSummary?.({ fileCount: summary.fileCount, totalBytes: summary.totalBytes });
       const project = joinedRoomProjectValue(await input.rpc.call("/dsh-collab", "participant/room-project/join", {
         roomId: room.roomId,
         memberId: active.memberId,
@@ -296,6 +328,7 @@ export interface DshCollabSettingsPort {
   join?(input: DshBrowserJoinInput, roomId?: string): Promise<void>;
   createInvite?(input: { inviteId?: string; expiresAt: number; gatewayEndpoint: string; network?: CollabInvitationNetwork }, roomId?: string): Promise<{ invitation: string }>;
   listJoinedRooms?(): readonly ParticipantResumeState[];
+  setJoinedRoomWorkspaceSummary?(ref: JoinedRoomRef, summary: { fileCount: number; totalBytes: number }): Promise<void>;
   subscribeJoinedRooms?(listener: () => void): () => void;
   connectJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
   setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string, summary?: { fileCount: number; totalBytes: number }): Promise<void>;
@@ -1074,10 +1107,12 @@ export function createDshSettingsPort(scope: DshSettingsScope<PersistedCollabSet
     subscribeJoinedRooms: actions.subscribeJoinedRooms?.bind(actions),
     connectJoinedRoom: actions.connectJoinedRoom?.bind(actions),
     setJoinedRoomWorkspacePath: actions.setJoinedRoomWorkspacePath?.bind(actions),
+    setJoinedRoomWorkspaceSummary: actions.setJoinedRoomWorkspaceSummary?.bind(actions),
     disconnectJoinedRoom: actions.disconnectJoinedRoom?.bind(actions),
     forgetJoinedRoom: actions.forgetJoinedRoom?.bind(actions),
     configureGateway: actions.configureGateway?.bind(actions),
     getRoomSnapshot: actions.getRoomSnapshot?.bind(actions),
+    getLocalSnapshotAccess: actions.getLocalSnapshotAccess?.bind(actions),
     subscribeRoom: actions.subscribeRoom?.bind(actions),
     getGatewaySnapshot: actions.getGatewaySnapshot?.bind(actions),
     subscribeGateway: actions.subscribeGateway?.bind(actions),
@@ -1371,31 +1406,49 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   if (settings) context.provide?.("collabSettings", settings);
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
-  const workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
-  const workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
-  const sessions = optionalService<DshClientSessions>(context, "sessions");
+  let workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
+  let workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
+  let sessions = optionalService<DshClientSessions>(context, "sessions");
   const layout = optionalService<DshLayoutPanelPort>(context, "layout");
   const sidebarRight = optionalService<DshSidebarRightPort>(context, "sidebarRight");
   const sidebarRightTabs = optionalService<DshSidebarRightTabsPort>(context, "sidebarRightTabs");
   const panelHost = sidebarRight
     ? createOfficialCollabPanelHost(
         sidebarRight,
-        workspaceNavigation ? (sessionId) => { workspaceNavigation.openSession(sessionId); } : undefined,
-        layout ? (id) => { layout.selectPanel(id); } : undefined,
+        workspaceNavigation ? (sessionId) => { workspaceNavigation?.openSession(sessionId); } : undefined,
+        layout ? (id) => { layout?.selectPanel(id); } : undefined,
       )
     : undefined;
   if (panelHost) context.provide?.("collabPanelHost", panelHost);
-  const createOwnedRoom = connection && workspaces && workspaceNavigation && sessions
-    ? createDshOwnedRoomCreator({
-        rpc: connection.rpc,
-        ...(settings?.startGateway ? { startGateway: () => settings.startGateway!() } : {}),
-        workspaces,
-        workspaceNavigation,
-        sessions,
-        panelHost: () => panelHost,
-        ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
-        ...(settings?.shareHostRoom ? { activateHostRoom: (input: { roomId: string; hostSessionId: string; title: string }) => shareDshCollabOwnedRoom(settings, input) } : {}),
-      })
+  const resolveWorkspaceServices = (): void => {
+    workspaces ??= optionalService<DshClientWorkspaces>(context, "workspaces");
+    workspaceNavigation ??= optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
+    sessions ??= optionalService<DshClientSessions>(context, "sessions");
+  };
+  resolveWorkspaceServices();
+  const createOwnedRoom = connection
+    ? async (roomTitle: string, sourcePath: string): Promise<boolean> => {
+        resolveWorkspaceServices();
+        if (!workspaces || !workspaceNavigation || !sessions) throw new Error("DSH Workspace services are not ready; reload the DSH page and try again");
+        return createDshOwnedRoomCreator({
+          rpc: connection.rpc,
+          ...(settings?.startGateway ? { startGateway: () => settings.startGateway!() } : {}),
+          workspaces,
+          workspaceNavigation,
+          sessions,
+          panelHost: () => panelHost,
+          ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
+          ...(settings?.shareHostRoom ? { activateHostRoom: (input: { roomId: string; hostSessionId: string; title: string }) => shareDshCollabOwnedRoom(settings, input) } : {}),
+        })(roomTitle, sourcePath);
+      }
+    : undefined;
+  const openJoinedRoom = settings && connection
+    ? async (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void }): Promise<void> => {
+        resolveWorkspaceServices();
+        if (!workspaces || !workspaceNavigation || !sessions) throw new Error("DSH Workspace services are not ready; reload the DSH page and try again");
+        const openWorkspace = createDshParticipantWorkspaceOpener({ workspaces, workspaceNavigation, sessions, panelHost: () => panelHost });
+        return createDshJoinedRoomOpener({ settings: settings as DshJoinedRoomOpenerSettings, rpc: connection.rpc, openWorkspace })(room);
+      }
     : undefined;
   const openWorkspace = workspaces && workspaceNavigation && sessions ? createDshParticipantWorkspaceOpener({
     workspaces,
@@ -1403,14 +1456,6 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     sessions,
     panelHost: () => panelHost,
   }) : undefined;
-  const openJoinedRoom = settings && connection && openWorkspace
-    && settings.connectJoinedRoom && settings.getRoomSnapshot && settings.getLocalSnapshotAccess
-    ? createDshJoinedRoomOpener({
-        settings: settings as DshJoinedRoomOpenerSettings,
-        rpc: connection.rpc,
-        openWorkspace,
-      })
-    : undefined;
   const workspacePorts = browserClient && connection ? new DshCollabWorkspacePorts({
     rpc: connection.rpc,
     source: browserClient,

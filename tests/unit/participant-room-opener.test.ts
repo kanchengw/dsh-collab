@@ -16,19 +16,23 @@ describe("createDshJoinedRoomOpener", () => {
     }));
     const openWorkspace = vi.fn(async () => {});
     const setJoinedRoomWorkspacePath = vi.fn(async (_ref: { gatewayEndpoint: string; roomId: string }, _path: string, _summary?: { fileCount: number; totalBytes: number }) => {});
+    const setJoinedRoomWorkspaceSummary = vi.fn(async (_ref: { gatewayEndpoint: string; roomId: string }, _summary: { fileCount: number; totalBytes: number }) => {});
+    const onWorkspaceSummary = vi.fn();
     const rpc = {
-      call: vi.fn(async () => ({
-        ok: true,
-        value: {
-          roomId: "room-1",
-          memberId: "member-1",
-          roomTitle: "Release",
-          workspacePath: "C:\\rooms\\room-1\\workspace",
-          nativeWorkspaceId: "native-room-1",
-          fileCount: 3,
-          totalBytes: 4096,
-        },
-      })),
+      call: vi.fn(async (_channel: string, endpoint: string) => endpoint.endsWith("/summary")
+        ? { ok: true, value: { roomId: "room-1", fileCount: 3, totalBytes: 4096 } }
+        : {
+            ok: true,
+            value: {
+              roomId: "room-1",
+              memberId: "member-1",
+              roomTitle: "Release",
+              workspacePath: "C:\\rooms\\room-1\\workspace",
+              nativeWorkspaceId: "native-room-1",
+              fileCount: 3,
+              totalBytes: 4096,
+            },
+          }),
     };
 
     const opener = createDshJoinedRoomOpener({
@@ -39,6 +43,7 @@ describe("createDshJoinedRoomOpener", () => {
         }),
         getRoomSnapshot,
         setJoinedRoomWorkspacePath,
+        setJoinedRoomWorkspaceSummary,
         getLocalSnapshotAccess: (_roomId: string) => ({
           gatewayEndpoint: "ws://127.0.0.1:4310/collab",
           roomToken: "room-token",
@@ -53,12 +58,27 @@ describe("createDshJoinedRoomOpener", () => {
       gatewayEndpoint: "ws://127.0.0.1:4310/collab",
       roomTitle: "Release",
       hostDisplayName: "Host",
+      onWorkspaceSummary,
     });
 
     expect(connectJoinedRoom).toHaveBeenCalledWith({
       gatewayEndpoint: "ws://127.0.0.1:4310/collab",
       roomId: "room-1",
     });
+    expect(rpc.call).toHaveBeenCalledWith(
+      "/dsh-collab",
+      "participant/room-project/summary",
+      {
+        roomId: "room-1",
+        gatewayEndpoint: "ws://127.0.0.1:4310/collab",
+        roomToken: "room-token",
+      },
+    );
+    expect(setJoinedRoomWorkspaceSummary).toHaveBeenCalledWith(
+      { gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomId: "room-1" },
+      { fileCount: 3, totalBytes: 4096 },
+    );
+    expect(onWorkspaceSummary).toHaveBeenCalledWith({ fileCount: 3, totalBytes: 4096 });
     expect(rpc.call).toHaveBeenCalledWith(
       "/dsh-collab",
       "participant/room-project/join",

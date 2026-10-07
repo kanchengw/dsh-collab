@@ -617,6 +617,11 @@ describe("real DSH client slot adapter", () => {
     let roomsPanel: ((props: Record<string, unknown>) => unknown) | undefined;
     const rpc = { call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
       expect(_channel).toBe("/dsh-collab");
+      if (endpoint === "participant/room-project/summary") {
+        order.push("summary-room-project");
+        expect(payload).toEqual({ roomId: "room-joined", gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomToken: "room-token" });
+        return { ok: true, value: { roomId: "room-joined", fileCount: 2, totalBytes: 2048 } };
+      }
       if (endpoint !== "participant/room-project/join") throw new Error("Unexpected RPC: " + endpoint);
       order.push("join-room-project");
       expect(payload).toEqual({
@@ -710,6 +715,7 @@ describe("real DSH client slot adapter", () => {
 
     expect(order).toEqual([
       "connect-joined-room",
+      "summary-room-project",
       "join-room-project",
       "connect-workspace:workspace-room-joined",
       "open-session:session-room-joined",
@@ -993,6 +999,24 @@ describe("real DSH client slot adapter", () => {
       if (socketDescriptor) Object.defineProperty(globalThis, "WebSocket", socketDescriptor);
       else Reflect.deleteProperty(globalThis, "WebSocket");
     }
+  });
+
+  it("preserves Participant snapshot access through scoped settings", () => {
+    const scope = {
+      getSnapshot: () => ({ status: "ready" as const, value: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" } }, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async () => {}),
+      unset: vi.fn(async () => {}),
+    };
+    const access = { gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomToken: "room-token" };
+    const actions = {
+      getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }),
+      save: vi.fn(async () => {}),
+      getLocalSnapshotAccess: vi.fn(() => access),
+    };
+    const port = createDshSettingsPort(scope, actions);
+    expect(port.getLocalSnapshotAccess?.("room-1")).toEqual(access);
+    expect(actions.getLocalSnapshotAccess).toHaveBeenCalledWith("room-1");
   });
 
   it("reads and persists namespaced settings through the DSH settings scope", async () => {

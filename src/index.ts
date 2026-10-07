@@ -563,6 +563,22 @@ function registerGatewayControl(
           : await service.complete(payload as { roomId: string; sourceSessionId: string; hostPrimarySessionId: string });
         return { ok: true, value };
       }
+      if (endpoint === "participant/room-project/summary") {
+        if (!participantRoomProjectAvailable) throw new Error("Participant Room Project is unavailable");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Participant Room Project request is invalid");
+        const input = payload as { roomId?: unknown; gatewayEndpoint?: unknown; roomToken?: unknown };
+        if ([input.roomId, input.gatewayEndpoint, input.roomToken].some((value) => typeof value !== "string" || value.trim() === "")) {
+          throw new Error("Participant Room Project request is invalid");
+        }
+        const gatewayEndpoint = normalizeGatewayEndpoint(input.gatewayEndpoint as string);
+        const versions = new WorkspaceVersionClient({ transport: participantGatewayTransport(gatewayEndpoint), artifacts: roomWorkspaceArtifacts });
+        const summary = await versions.getLatestSummary({ roomId: (input.roomId as string).trim(), token: input.roomToken as string });
+        return { ok: true, value: {
+          roomId: (input.roomId as string).trim(),
+          fileCount: summary.fileCount,
+          totalBytes: summary.totalBytes,
+        } };
+      }
       if (endpoint === "participant/room-project/join") {
         if (!participantRoomProjectAvailable) throw new Error("Participant Room Project is unavailable");
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Participant Room Project request is invalid");

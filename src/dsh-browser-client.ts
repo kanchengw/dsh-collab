@@ -734,6 +734,17 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     });
   }
 
+  async setJoinedRoomWorkspaceSummary(ref: JoinedRoomRef, summary: { fileCount: number; totalBytes: number }): Promise<void> {
+    await this.options.participantPersistence?.prepare?.();
+    const saved = this.options.participantPersistence?.load(ref);
+    if (!saved) throw new Error("Joined room is not saved");
+    await this.options.participantPersistence?.save({
+      ...saved,
+      workspaceFileCount: summary.fileCount,
+      workspaceTotalBytes: summary.totalBytes,
+    });
+  }
+
   subscribeJoinedRooms(listener: () => void): () => void {
     return this.options.participantPersistence?.subscribe?.(listener) ?? (() => {});
   }
@@ -1307,6 +1318,7 @@ class DshBrowserCollabSettings implements DshBrowserSettingsPort {
   connectJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.connectJoinedRoom(ref); }
   disconnectJoinedRoom(): Promise<void> { return this.client.disconnectJoinedRoom(); }
   forgetJoinedRoom(ref: JoinedRoomRef): Promise<void> { return this.client.forgetJoinedRoom(ref); }
+  setJoinedRoomWorkspaceSummary(ref: JoinedRoomRef, summary: { fileCount: number; totalBytes: number }): Promise<void> { return this.client.setJoinedRoomWorkspaceSummary(ref, summary); }
   configureGateway(input: { gatewayHost: string; gatewayPort: number }): void { this.client.configureGateway(input); }
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess { return this.client.getLocalSnapshotAccess(roomId); }
   getWorkspaceSharing(roomId: string): Promise<WorkspaceSharingState> { return this.client.getWorkspaceSharing(roomId); }

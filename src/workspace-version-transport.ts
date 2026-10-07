@@ -14,6 +14,12 @@ export interface DownloadedWorkspaceVersion {
   stored: boolean;
 }
 
+export interface WorkspaceVersionSummary {
+  workspaceVersionId: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
 function hash(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -69,6 +75,25 @@ export class WorkspaceVersionClient {
 
   async downloadLatest(input: { roomId: string; token: string; signal?: AbortSignal }): Promise<DownloadedWorkspaceVersion> {
     return await this.downloadResponse(input, `/v1/rooms/${encodeURIComponent(input.roomId)}/workspace-versions/latest`);
+  }
+
+  async getLatestSummary(input: { roomId: string; token: string; signal?: AbortSignal }): Promise<WorkspaceVersionSummary> {
+    const response = await this.options.transport.request({
+      method: "GET",
+      path: `/v1/rooms/${encodeURIComponent(input.roomId)}/workspace-versions/latest`,
+      token: input.token,
+      capabilities: [WORKSPACE_VERSION_CAPABILITY],
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const value = responseBody<{ record: unknown; snapshot: unknown }>(response);
+    const { record, snapshot } = validateBinding(input.roomId, value.record, value.snapshot);
+    const totalBytes = snapshot.files.reduce((total, file) => total + file.size, 0);
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > this.maxTotalBytes) throw new Error("Workspace Version size exceeds download limit");
+    return {
+      workspaceVersionId: record.version.workspaceVersionId,
+      fileCount: snapshot.files.length,
+      totalBytes,
+    };
   }
 
   async download(input: { roomId: string; token: string; workspaceVersionId: string; signal?: AbortSignal }): Promise<DownloadedWorkspaceVersion> {

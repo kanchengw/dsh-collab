@@ -157,6 +157,7 @@ describe("WorkspaceVersion publish/download transport", () => {
     const artifacts = new WorkspaceSnapshotStore(localRoot);
     const client = new WorkspaceVersionClient({ transport: transport(state.gateway), artifacts, chunkBytes: 7 });
 
+    await expect(client.getLatestSummary({ roomId: "room-1", token: state.participantToken })).resolves.toMatchObject({ fileCount: 1, totalBytes: 24 });
     const first = await client.download({ roomId: "room-1", token: state.participantToken, workspaceVersionId });
     expect(first.stored).toBe(true);
     expect(first.record.version.workspaceVersionId).toBe(workspaceVersionId);

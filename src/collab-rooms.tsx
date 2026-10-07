@@ -23,6 +23,7 @@ export interface DshCollabJoinedRoomOpenInput {
   roomTitle: string;
   hostDisplayName?: string;
   onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void;
+  onWorkspaceSummary?: (summary: { fileCount: number; totalBytes: number }) => void;
 }
 
 export type DshCollabJoinedRoomOpener = (room: DshCollabJoinedRoomOpenInput) => void | Promise<void>;
@@ -265,6 +266,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const [hostInvitation, setHostInvitation] = useState<{ roomId: string; value: string }>();
   const [busy, setBusy] = useState<string>();
   const [joinPhase, setJoinPhase] = useState<"connecting" | "downloading" | "binding" | "opening">();
+  const [joinSummary, setJoinSummary] = useState<{ fileCount: number; totalBytes: number }>();
   const [roomPhases, setRoomPhases] = useState<Record<string, "connecting" | "downloading" | "binding" | "opening">>({});
   const [notice, setNotice] = useState<{ tone: "error" | "success"; message: string }>();
   const [workspaceNotice, setWorkspaceNotice] = useState<{ tone: "error" | "success"; message: string }>();
@@ -333,8 +335,9 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   const join = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (!port?.join || participantConnected) return;
+    setJoinSummary(undefined);
     await perform("join", async () => {
-      const opened = await joinDshCollabRoom(port, { invitation: joinInvitation, displayName: displayName.trim() }, openJoinedRoom, setJoinPhase);
+      const opened = await joinDshCollabRoom(port, { invitation: joinInvitation, displayName: displayName.trim() }, openJoinedRoom ? (room) => openJoinedRoom({ ...room, onWorkspaceSummary: (summary) => { setJoinSummary(summary); room.onWorkspaceSummary?.(summary); } }) : undefined, setJoinPhase);
       setJoinInvitation("");
       return opened;
     }, t("join.openedNotice"));
@@ -429,6 +432,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
               <label className={css.field}>{t("join.invitation")}<textarea name="participantInvitation" value={joinInvitation} rows={4} spellCheck={false} onChange={(event) => { setJoinInvitation(event.target.value); }} disabled={!port?.join || hasActiveRoom || busy !== undefined} /></label>
               {hasActiveRoom ? <p className={css.joinHint}>{t("join.disconnectFirst")}</p> : null}
               <button type="submit" className={css.joinButton} disabled={!port?.join || hasActiveRoom || busy !== undefined || displayName.trim() === "" || joinInvitation.trim() === ""}>{t(joinPhase === "connecting" ? "join.connecting" : joinPhase === "downloading" ? "join.downloading" : joinPhase === "binding" ? "join.binding" : joinPhase === "opening" ? "join.opening" : "join.action")}</button>
+              {joinSummary ? <p className={css.joinHint}>{t("join.workspaceSummary", { count: joinSummary.fileCount, size: formatBytes(joinSummary.totalBytes) })}</p> : null}
             </form>
           </details>
           {notice ? <p className={notice.tone === "error" ? css.error : css.success} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</p> : null}
