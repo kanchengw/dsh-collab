@@ -56,6 +56,6 @@ const context = { agents: {}, settings: {} } as never;
   });
   it("ships a complete safe gateway value for the Host SettingsForms row", () => {
     const patch = readFileSync(new URL("../../cordis.patch.yml", import.meta.url), "utf8");
-    expect(patch).toMatch(/gateway:\s*\r?\n\s+gatewayHost:\s+127\.0\.0\.1\s*\r?\n\s+gatewayPort:\s+4310\s*\r?\n\s+exposeMode:\s+loopback/);
+    expect(patch).toMatch(/gateway:\s*\r?\n\s+gatewayHost:\s+0\.0\.0\.0\s*\r?\n\s+gatewayPort:\s+4310\s*\r?\n\s+exposeMode:\s+network/);
   });
 });

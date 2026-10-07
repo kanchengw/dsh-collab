@@ -22,7 +22,7 @@ describe("dsh package manifest", () => {
     expect(manifest.dsh.bundle.patch).toBe("./cordis.patch.yml");
     const patch = readFileSync(resolve(process.cwd(), "cordis.patch.yml"), "utf8").replace(/\r\n/g, "\n");
     expect(patch).toContain("- id: connection\n  inject: [webRuntime, webServer]");
-    expect(patch).toContain("gateway:\n          gatewayHost: 127.0.0.1");
+    expect(patch).toContain("gateway:\n          gatewayHost: 0.0.0.0");
     expect(patch).toContain("inject: [agentDefaultModel, agents, agentPresets, llm, settings, connection, webServer, sessions, sessionQuery, credentials, fs, subprocess, workspaceRegistry, approval]");
     expect(() => validateDshCollabManifest(manifest)).not.toThrow();
   });

@@ -12,12 +12,12 @@
         roomId: dsh-room
         hostId: local-host
         allowLoopbackPrincipal: true
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 4310
         gateway:
-          gatewayHost: 127.0.0.1
+          gatewayHost: 0.0.0.0
           gatewayPort: 4310
-          exposeMode: loopback
+          exposeMode: network
           advertisedEndpoint: ""
         title: DSH Collaboration
         hostDisplayName: Local Host
