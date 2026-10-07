@@ -589,6 +589,8 @@ function registerGatewayControl(
           roomTitle: result.project.roomTitle,
           workspacePath: result.workspace.workspacePath,
           nativeWorkspaceId: result.project.nativeWorkspaceId,
+          fileCount: result.workspace.record.version.files.length,
+          totalBytes: result.workspace.record.artifact.totalBytes,
         } };
       }
       if (endpoint === "sidecar/start") {

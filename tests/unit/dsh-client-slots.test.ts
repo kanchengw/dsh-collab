@@ -632,6 +632,8 @@ describe("real DSH client slot adapter", () => {
         roomTitle: "Release",
         workspacePath: "C:\\rooms\\room-joined\\workspace",
         nativeWorkspaceId: "workspace-room-joined",
+        fileCount: 2,
+        totalBytes: 2048,
       } };
     }) };
     const collabSettings = {

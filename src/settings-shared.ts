@@ -100,6 +100,8 @@ export interface DshCollabJoinedRoom {
   roomTitle?: string;
   hostDisplayName?: string;
   workspacePath?: string;
+  workspaceFileCount?: number;
+  workspaceTotalBytes?: number;
 }
 
 export interface DshCollabParticipantSettings {

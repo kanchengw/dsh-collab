@@ -68,7 +68,7 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("C:\\rooms\\design\\workspace");
     expect(html).toContain("Hosted by Alice");
     expect(html).toContain("Disconnected");
-    expect(html).toContain("Connect");
+    expect(html).not.toContain(">Connect</button>");
     expect(html).toContain("Forget");
     expect(html).toContain('name="participantInvitation"');
     expect(html).toMatch(/name="displayName"[^>]*value="Participant"/);
@@ -417,7 +417,7 @@ describe("Collab Rooms navigation", () => {
     expect(html).toContain("Disconnect");
     expect((html.match(/Connected/g) ?? []).length).toBe(1);
     expect((html.match(/Disconnected/g) ?? []).length).toBe(2);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect<\/button>/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Open room<\/button>/);
   });
 
   it("opens the exact room that was just joined", async () => {
@@ -453,4 +453,45 @@ describe("Collab Rooms navigation", () => {
       hostDisplayName: "Alice",
     });
   });
+
+  it("requires a workspace opener before saving a Participant join", async () => {
+    const actions = port();
+    const invitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://192.168.1.20/collab",
+      roomId: "room-joined",
+      inviteId: "invite-1",
+      token: "token-1",
+      expiresAt: Date.now() + 60_000,
+      network: { mode: "lan", version: 1, endpoint: "ws://192.168.1.20/collab" },
+    });
+    actions.join = vi.fn(async () => {});
+    await expect(joinDshCollabRoom(actions, { invitation, displayName: "Bob" })).rejects.toThrow("workspace binding");
+    expect(actions.join).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a joined credential when workspace opening fails", async () => {
+    const actions = port();
+    const invitation = encodeCollabInvitation({
+      protocol: "dsh-collab.invitation.v2",
+      type: "invite",
+      gatewayEndpoint: "ws://192.168.1.20/collab",
+      roomId: "room-joined",
+      inviteId: "invite-1",
+      token: "token-1",
+      expiresAt: Date.now() + 60_000,
+      network: { mode: "lan", version: 1, endpoint: "ws://192.168.1.20/collab" },
+    });
+    let saved = false;
+    actions.join = vi.fn(async () => { saved = true; });
+    actions.listJoinedRooms = () => saved ? [{ gatewayEndpoint: "ws://192.168.1.20/collab", roomId: "room-joined", memberId: "member-bob", credential: "resume-secret" }] : [];
+    actions.disconnectJoinedRoom = vi.fn(async () => {});
+    actions.forgetJoinedRoom = vi.fn(async () => {});
+    const openJoinedRoom = vi.fn(async () => { throw new Error("workspace open failed"); });
+    await expect(joinDshCollabRoom(actions, { invitation, displayName: "Bob" }, openJoinedRoom)).rejects.toThrow("workspace open failed");
+    expect(actions.disconnectJoinedRoom).toHaveBeenCalledOnce();
+    expect(actions.forgetJoinedRoom).toHaveBeenCalledWith({ gatewayEndpoint: "ws://192.168.1.20/collab", roomId: "room-joined" });
+  });
+
 });

@@ -140,9 +140,10 @@ export function createDshOwnedRoomCreator(input: {
 
 interface DshJoinedRoomOpenerSettings {
   connectJoinedRoom(ref: JoinedRoomRef): Promise<void>;
+  disconnectJoinedRoom?(): Promise<void>;
   getRoomSnapshot(): Pick<DshCollabClientSnapshot, "roomId" | "gatewayEndpoint" | "memberId" | "roomTitle" | "hostDisplayName" | "role" | "connection">;
   getLocalSnapshotAccess(roomId: string): LocalSnapshotAccess;
-  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string): Promise<void>;
+  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string, summary?: { fileCount: number; totalBytes: number }): Promise<void>;
 }
 
 interface DshJoinedRoomProjectRecord {
@@ -151,6 +152,8 @@ interface DshJoinedRoomProjectRecord {
   roomTitle: string;
   workspacePath: string;
   nativeWorkspaceId: string;
+  fileCount: number;
+  totalBytes: number;
 }
 
 function joinedRoomProjectValue(value: unknown): DshJoinedRoomProjectRecord {
@@ -163,12 +166,18 @@ function joinedRoomProjectValue(value: unknown): DshJoinedRoomProjectRecord {
     .some((field) => typeof field !== "string" || field.trim() === "")) {
     throw new Error("Participant Room Project response is invalid");
   }
+  if (!Number.isSafeInteger(project.fileCount) || (project.fileCount as number) < 0
+    || !Number.isSafeInteger(project.totalBytes) || (project.totalBytes as number) < 0) {
+    throw new Error("Participant Room Project workspace summary is invalid");
+  }
   return {
     roomId: project.roomId as string,
     memberId: project.memberId as string,
     roomTitle: project.roomTitle as string,
     workspacePath: project.workspacePath as string,
     nativeWorkspaceId: project.nativeWorkspaceId as string,
+    fileCount: project.fileCount as number,
+    totalBytes: project.totalBytes as number,
   };
 }
 
@@ -176,40 +185,51 @@ export function createDshJoinedRoomOpener(input: {
   settings: DshJoinedRoomOpenerSettings;
   rpc: DshClientConnectionRpc;
   openWorkspace: (input: OpenParticipantRoomWorkspaceInput) => Promise<void>;
-}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string }) => Promise<void> {
+}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void }) => Promise<void> {
   return async (room) => {
-    const current = input.settings.getRoomSnapshot();
-    if (current.roomId !== room.roomId || current.role !== "participant" || current.connection !== "online") {
-      await input.settings.connectJoinedRoom({ gatewayEndpoint: room.gatewayEndpoint, roomId: room.roomId });
+    let connected = false;
+    try {
+      const current = input.settings.getRoomSnapshot();
+      if (current.roomId !== room.roomId || current.role !== "participant" || current.connection !== "online") {
+        room.onProgress?.("connecting");
+        await input.settings.connectJoinedRoom({ gatewayEndpoint: room.gatewayEndpoint, roomId: room.roomId });
+      }
+      const active = input.settings.getRoomSnapshot();
+      if (active.roomId !== room.roomId || active.role !== "participant" || active.connection !== "online" || !active.memberId || !active.gatewayEndpoint) {
+        throw new Error("The selected Joined room is not connected");
+      }
+      connected = true;
+      const access = input.settings.getLocalSnapshotAccess(room.roomId);
+      room.onProgress?.("downloading");
+      const project = joinedRoomProjectValue(await input.rpc.call("/dsh-collab", "participant/room-project/join", {
+        roomId: room.roomId,
+        memberId: active.memberId,
+        roomTitle: active.roomTitle,
+        gatewayEndpoint: active.gatewayEndpoint,
+        roomToken: access.roomToken,
+      }));
+      if (project.roomId !== room.roomId || project.memberId !== active.memberId) throw new Error("Participant Room Project response does not match the selected room");
+      room.onProgress?.("binding");
+      await input.openWorkspace({
+        roomId: project.roomId,
+        path: project.workspacePath,
+        nativeWorkspaceId: project.nativeWorkspaceId,
+        gatewayEndpoint: active.gatewayEndpoint,
+        roomTitle: project.roomTitle,
+        hostDisplayName: active.hostDisplayName,
+      });
+      room.onProgress?.("opening");
+      await input.settings.setJoinedRoomWorkspacePath?.(
+        { gatewayEndpoint: active.gatewayEndpoint, roomId: room.roomId },
+        project.workspacePath,
+        { fileCount: project.fileCount, totalBytes: project.totalBytes },
+      );
+    } catch (error) {
+      if (connected) await input.settings.disconnectJoinedRoom?.().catch(() => undefined);
+      throw error;
     }
-    const connected = input.settings.getRoomSnapshot();
-    if (connected.roomId !== room.roomId || connected.role !== "participant" || connected.connection !== "online" || !connected.memberId || !connected.gatewayEndpoint) {
-      throw new Error("The selected Joined room is not connected");
-    }
-    const access = input.settings.getLocalSnapshotAccess(room.roomId);
-    const project = joinedRoomProjectValue(await input.rpc.call("/dsh-collab", "participant/room-project/join", {
-      roomId: room.roomId,
-      memberId: connected.memberId,
-      roomTitle: connected.roomTitle,
-      gatewayEndpoint: connected.gatewayEndpoint,
-      roomToken: access.roomToken,
-    }));
-    if (project.roomId !== room.roomId || project.memberId !== connected.memberId) throw new Error("Participant Room Project response does not match the selected room");
-    await input.openWorkspace({
-      roomId: project.roomId,
-      path: project.workspacePath,
-      nativeWorkspaceId: project.nativeWorkspaceId,
-      gatewayEndpoint: connected.gatewayEndpoint,
-      roomTitle: project.roomTitle,
-      hostDisplayName: connected.hostDisplayName,
-    });
-    await input.settings.setJoinedRoomWorkspacePath?.(
-      { gatewayEndpoint: connected.gatewayEndpoint, roomId: room.roomId },
-      project.workspacePath,
-    );
   };
 }
-
 export interface DshCollabClientSnapshot {
   roomId: string;
   gatewayEndpoint?: string;
@@ -278,7 +298,7 @@ export interface DshCollabSettingsPort {
   listJoinedRooms?(): readonly ParticipantResumeState[];
   subscribeJoinedRooms?(listener: () => void): () => void;
   connectJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
-  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string): Promise<void>;
+  setJoinedRoomWorkspacePath?(ref: JoinedRoomRef, workspacePath: string, summary?: { fileCount: number; totalBytes: number }): Promise<void>;
   disconnectJoinedRoom?(): Promise<void>;
   forgetJoinedRoom?(ref: JoinedRoomRef): Promise<void>;
   configureGateway?(input: { gatewayHost: string; gatewayPort: number }): void;
@@ -421,6 +441,8 @@ export function decodeParticipantResumeState(value: unknown): ParticipantResumeS
     ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
     ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
     ...(typeof candidate.workspacePath === "string" && candidate.workspacePath.trim() !== "" ? { workspacePath: candidate.workspacePath } : {}),
+    ...(Number.isSafeInteger(candidate.workspaceFileCount) && (candidate.workspaceFileCount as number) >= 0 ? { workspaceFileCount: candidate.workspaceFileCount as number } : {}),
+    ...(Number.isSafeInteger(candidate.workspaceTotalBytes) && (candidate.workspaceTotalBytes as number) >= 0 ? { workspaceTotalBytes: candidate.workspaceTotalBytes as number } : {}),
     ...(easyTier ? { easyTier } : {}),
   };
 }
@@ -476,6 +498,8 @@ function participantMetadata(state: ParticipantResumeState, credentialKey: strin
     ...(state.roomTitle ? { roomTitle: state.roomTitle } : {}),
     ...(state.hostDisplayName ? { hostDisplayName: state.hostDisplayName } : {}),
     ...(state.workspacePath ? { workspacePath: state.workspacePath } : {}),
+    ...(state.workspaceFileCount !== undefined ? { workspaceFileCount: state.workspaceFileCount } : {}),
+    ...(state.workspaceTotalBytes !== undefined ? { workspaceTotalBytes: state.workspaceTotalBytes } : {}),
   };
 }
 
@@ -792,6 +816,8 @@ function decodeParticipantSetting(value: unknown): DshCollabJoinedRoom | undefin
     ...(typeof candidate.roomTitle === "string" && candidate.roomTitle.trim() !== "" ? { roomTitle: candidate.roomTitle } : {}),
     ...(typeof candidate.hostDisplayName === "string" && candidate.hostDisplayName.trim() !== "" ? { hostDisplayName: candidate.hostDisplayName } : {}),
     ...(typeof candidate.workspacePath === "string" && candidate.workspacePath.trim() !== "" ? { workspacePath: candidate.workspacePath } : {}),
+    ...(Number.isSafeInteger(candidate.workspaceFileCount) && (candidate.workspaceFileCount as number) >= 0 ? { workspaceFileCount: candidate.workspaceFileCount as number } : {}),
+    ...(Number.isSafeInteger(candidate.workspaceTotalBytes) && (candidate.workspaceTotalBytes as number) >= 0 ? { workspaceTotalBytes: candidate.workspaceTotalBytes as number } : {}),
   };
 }
 
