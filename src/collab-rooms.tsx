@@ -15,13 +15,14 @@ const roomSelectionListeners = new Set<() => void>();
 
 export type DshCollabRoomSelection =
   | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string }
-  | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; localSessionId?: string };
+  | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; workspacePath?: string; localSessionId?: string };
 
 export interface DshCollabJoinedRoomOpenInput {
   roomId: string;
   gatewayEndpoint: string;
   roomTitle: string;
   hostDisplayName?: string;
+  workspacePath?: string;
   onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void;
   onWorkspaceSummary?: (summary: { fileCount: number; totalBytes: number }) => void;
 }
@@ -122,6 +123,7 @@ export async function joinDshCollabRoom(port: DshCollabSettingsPort, input: DshB
       gatewayEndpoint: saved.gatewayEndpoint,
       roomTitle: saved.roomTitle ?? saved.roomId,
       ...(saved.hostDisplayName ? { hostDisplayName: saved.hostDisplayName } : {}),
+      ...(saved.workspacePath ? { workspacePath: saved.workspacePath } : {}),
       ...(onProgress ? { onProgress } : {}),
     });
     return true;
@@ -338,6 +340,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
     setJoinSummary(undefined);
     await perform("join", async () => {
       const opened = await joinDshCollabRoom(port, { invitation: joinInvitation, displayName: displayName.trim() }, openJoinedRoom ? (room) => openJoinedRoom({ ...room, onWorkspaceSummary: (summary) => { setJoinSummary(summary); room.onWorkspaceSummary?.(summary); } }) : undefined, setJoinPhase);
+      if (opened) setJoinSummary(undefined);
       setJoinInvitation("");
       return opened;
     }, t("join.openedNotice"));
@@ -415,8 +418,11 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
                 <div className={css.roomHead}><div><strong>{room.roomTitle ?? room.roomId}</strong><span>{room.hostDisplayName ? t("joined.hostedBy", { name: room.hostDisplayName }) : room.gatewayEndpoint}</span>{pathDetail(t("joined.localWorkspacePath"), room.workspacePath)}{room.workspaceFileCount !== undefined ? <span className={css.pathDetail}><span>{t("joined.workspaceFiles")}</span><code>{t("joined.workspaceFilesValue", { count: room.workspaceFileCount })}</code></span> : null}{room.workspaceTotalBytes !== undefined ? <span className={css.pathDetail}><span>{t("joined.workspaceSize")}</span><code>{formatBytes(room.workspaceTotalBytes)}</code></span> : null}</div><Status tone={activeRoom?.connection === "connecting" && active ? "pending" : active ? "active" : "neutral"}>{active ? t(activeRoom?.connection === "connecting" ? "joined.connecting" : "joined.connected") : t("joined.disconnected")}</Status></div>
                 <div className={css.actions}>
                   {openJoinedRoom ? <Action primary disabled={busy !== undefined || hasActiveRoom && !active} onClick={() => { void perform(`open:${room.roomId}`, async () => {
-                    await openJoinedRoom({ roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}), onProgress: (phase) => { setRoomPhases((current) => ({ ...current, [room.roomId]: phase })); } });
-                    setRoomPhases((current) => { const next = { ...current }; delete next[room.roomId]; return next; });
+                    try {
+                      await openJoinedRoom({ roomId: room.roomId, gatewayEndpoint: room.gatewayEndpoint, roomTitle: room.roomTitle ?? room.roomId, ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}), ...(room.workspacePath ? { workspacePath: room.workspacePath } : {}), onProgress: (phase) => { setRoomPhases((current) => ({ ...current, [room.roomId]: phase })); } });
+                    } finally {
+                      setRoomPhases((current) => { const next = { ...current }; delete next[room.roomId]; return next; });
+                    }
                   }); }}>{t(roomPhases[room.roomId] === "connecting" ? "joined.connecting" : roomPhases[room.roomId] === "downloading" ? "joined.downloading" : roomPhases[room.roomId] === "binding" ? "joined.binding" : roomPhases[room.roomId] === "opening" ? "joined.opening" : room.workspacePath ? "joined.openRoom" : "joined.downloadOpenRoom")}</Action> : null}
                   {active ? <Action disabled={!port?.disconnectJoinedRoom || busy !== undefined} onClick={() => { void perform(`disconnect:${room.roomId}`, async () => { await port?.disconnectJoinedRoom?.(); }); }}>{t("joined.disconnect")}</Action> : null}
                   <Action disabled={!forgetJoinedRoom || busy !== undefined} onClick={() => { void perform(`forget:${room.roomId}`, async () => { await forgetJoinedRoom?.(ref); }, t("joined.forgottenNotice")); }}>{t("joined.forget")}</Action>

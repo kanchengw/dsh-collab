@@ -3,7 +3,7 @@ import { MarkdownText, projectUserText, type MarkdownLabels } from "@deepseek-ai
 import { type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
-import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, shareDshCollabOwnedRoom, useDshCollabRoomSelection, type DshCollabRoomSelection } from "./collab-rooms.js";
+import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection, type DshCollabRoomSelection } from "./collab-rooms.js";
 import { normalizeAdvertisedGatewayEndpoint, normalizeGatewayEndpoint } from "./endpoint-policy.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, type CollabConnectionMethod, type DshCollabJoinedRoom, type DshCollabParticipantSettings, type DshCollabSecuritySettings } from "./settings-shared.js";
 import { COLLAB_LOCALE_NAMESPACE, defaultCollabTranslate, en, zh, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
@@ -88,6 +88,7 @@ export function createDshParticipantWorkspaceOpener(input: {
       gatewayEndpoint: room.gatewayEndpoint,
       roomTitle: room.roomTitle,
       ...(room.hostDisplayName ? { hostDisplayName: room.hostDisplayName } : {}),
+      workspacePath: room.path,
     }, panelHost, { sessionId, cwd: room.path });
   };
 }
@@ -206,7 +207,7 @@ export function createDshJoinedRoomOpener(input: {
   settings: DshJoinedRoomOpenerSettings;
   rpc: DshClientConnectionRpc;
   openWorkspace: (input: OpenParticipantRoomWorkspaceInput) => Promise<void>;
-}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void; onWorkspaceSummary?: (summary: { fileCount: number; totalBytes: number }) => void }) => Promise<void> {
+}): (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; workspacePath?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void; onWorkspaceSummary?: (summary: { fileCount: number; totalBytes: number }) => void }) => Promise<void> {
   return async (room) => {
     let connected = false;
     try {
@@ -220,6 +221,18 @@ export function createDshJoinedRoomOpener(input: {
         throw new Error("The selected Joined room is not connected");
       }
       connected = true;
+      const localWorkspacePath = room.workspacePath?.trim();
+      if (localWorkspacePath) {
+        room.onProgress?.("opening");
+        await input.openWorkspace({
+          roomId: room.roomId,
+          path: localWorkspacePath,
+          gatewayEndpoint: active.gatewayEndpoint,
+          roomTitle: active.roomTitle,
+          hostDisplayName: active.hostDisplayName,
+        });
+        return;
+      }
       const access = input.settings.getLocalSnapshotAccess(room.roomId);
       room.onProgress?.("downloading");
       const summary = joinedRoomWorkspaceSummaryValue(await input.rpc.call("/dsh-collab", "participant/room-project/summary", {
@@ -368,19 +381,20 @@ export interface DshCollabSettingsPort {
   getLocalSnapshotAccess?(roomId: string): LocalSnapshotAccess;
 }
 
-export function resolveDshCollabRoomSelection(sessionId: string, settings: DshCollabSettingsPort | undefined, snapshot: DshCollabClientSnapshot): DshCollabRoomSelection | undefined {
+export function resolveDshCollabRoomSelection(sessionId: string, settings: DshCollabSettingsPort | undefined, snapshot: DshCollabClientSnapshot, cwd?: string): DshCollabRoomSelection | undefined {
   const owned = settings?.getOwnedRooms?.().find((room) => room.roomId === snapshot.roomId && room.hostSessionId === sessionId);
   if (owned) return { kind: "owned", roomId: owned.roomId, hostSessionId: owned.hostSessionId, roomTitle: owned.title };
   if (snapshot.role !== "participant" || snapshot.roomId === "dsh-room") return undefined;
   const joined = settings?.listJoinedRooms?.().find((room) => room.roomId === snapshot.roomId);
   const gatewayEndpoint = joined?.gatewayEndpoint ?? snapshot.gatewayEndpoint;
-  if (!gatewayEndpoint) return undefined;
+  if (!gatewayEndpoint || !joined?.workspacePath || cwd === undefined || comparableWorkspacePath(joined.workspacePath) !== comparableWorkspacePath(cwd)) return undefined;
   return {
     kind: "joined",
     roomId: snapshot.roomId,
     gatewayEndpoint,
     roomTitle: joined?.roomTitle ?? snapshot.roomTitle,
     ...(joined?.hostDisplayName ?? snapshot.hostDisplayName ? { hostDisplayName: joined?.hostDisplayName ?? snapshot.hostDisplayName } : {}),
+    workspacePath: joined.workspacePath,
     localSessionId: sessionId,
   };
 }
@@ -1304,47 +1318,16 @@ function DshCollabBarPanel(props: {
   reviewsPort?: CollabReviewsPort;
   settings?: DshCollabSettingsPort;
   panelHost?: CollabPanelHost;
-  openJoinedRoom?: (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string }) => void | Promise<void>;
   openRooms?: () => void;
   t: CollabTranslate;
 }): ReactNode {
   const rememberedSelection = useDshCollabRoomSelection(props.scope.sessionId);
   const snapshot = usePortSnapshot(props.port, fallbackSnapshot);
-  const selection = rememberedSelection ?? resolveDshCollabRoomSelection(props.scope.sessionId, props.settings, snapshot);
-  const autoOpenKey = useRef<string>();
+  const selection = rememberedSelection ?? resolveDshCollabRoomSelection(props.scope.sessionId, props.settings, snapshot, props.scope.cwd);
   useEffect(() => {
     if (!props.workspacePorts || !selection || selection.roomId !== snapshot.roomId || snapshot.connection !== "online") return;
     void props.workspacePorts.activateSession(props.scope.sessionId, selection.roomId).catch(() => undefined);
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
-  useEffect(() => {
-    if (!selection) return;
-    const selectedRole = selection.kind === "owned" ? "host" : "participant";
-    const activeRoom = snapshot.roomId === selection.roomId && snapshot.role === selectedRole;
-    if (activeRoom && snapshot.connection !== "offline") return;
-    const key = `${props.scope.sessionId}:${selection.kind}:${selection.roomId}`;
-    if (autoOpenKey.current === key) return;
-    autoOpenKey.current = key;
-    let cancelled = false;
-    void (async () => {
-      try {
-        if (selection.kind === "owned" && props.settings) {
-          const room = props.settings.getOwnedRooms?.().find((candidate) => candidate.roomId === selection.roomId);
-          if (!room) return;
-          if (room.sharing) {
-            if (!props.settings.bootstrap) throw new Error("Owned room connection is unavailable");
-            await props.settings.bootstrap(room.roomId);
-          } else {
-            await shareDshCollabOwnedRoom(props.settings, { roomId: room.roomId, hostSessionId: room.hostSessionId, title: room.title });
-          }
-        } else if (selection.kind === "joined" && props.openJoinedRoom) {
-          await props.openJoinedRoom(selection);
-        }
-      } catch {
-        if (!cancelled) autoOpenKey.current = undefined;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [props.openJoinedRoom, props.scope.sessionId, props.settings, selection, snapshot.connection, snapshot.roomId]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   return createElement(CollabBarView, {
@@ -1438,12 +1421,11 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
           sessions,
           panelHost: () => panelHost,
           ...(settings?.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
-          ...(settings?.shareHostRoom ? { activateHostRoom: (input: { roomId: string; hostSessionId: string; title: string }) => shareDshCollabOwnedRoom(settings, input) } : {}),
         })(roomTitle, sourcePath);
       }
     : undefined;
   const openJoinedRoom = settings && connection
-    ? async (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void }): Promise<void> => {
+    ? async (room: { roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; workspacePath?: string; onProgress?: (phase: "connecting" | "downloading" | "binding" | "opening") => void }): Promise<void> => {
         resolveWorkspaceServices();
         if (!workspaces || !workspaceNavigation || !sessions) throw new Error("DSH Workspace services are not ready; reload the DSH page and try again");
         const openWorkspace = createDshParticipantWorkspaceOpener({ workspaces, workspaceNavigation, sessions, panelHost: () => panelHost });

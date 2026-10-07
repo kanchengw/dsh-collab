@@ -104,4 +104,45 @@ describe("createDshJoinedRoomOpener", () => {
       { fileCount: 3, totalBytes: 4096 },
     );
   });
+
+  it("reopens an existing local workspace without downloading or rematerializing it", async () => {
+    const connectJoinedRoom = vi.fn(async () => {});
+    const openWorkspace = vi.fn(async () => {});
+    const rpc = { call: vi.fn(async () => { throw new Error("RPC should not be called for an existing local workspace"); }) };
+    const opener = createDshJoinedRoomOpener({
+      settings: {
+        connectJoinedRoom,
+        getRoomSnapshot: () => ({
+          roomId: "room-1",
+          gatewayEndpoint: "ws://127.0.0.1:4310/collab",
+          memberId: "member-1",
+          roomTitle: "Release",
+          hostDisplayName: "Host",
+          role: "participant" as const,
+          connection: "online" as const,
+        }),
+        getLocalSnapshotAccess: () => ({ gatewayEndpoint: "ws://127.0.0.1:4310/collab", roomToken: "room-token" }),
+      },
+      rpc,
+      openWorkspace,
+    });
+
+    await opener({
+      roomId: "room-1",
+      gatewayEndpoint: "ws://127.0.0.1:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+      workspacePath: "C:\\rooms\\room-1\\workspace",
+    });
+
+    expect(connectJoinedRoom).not.toHaveBeenCalled();
+    expect(rpc.call).not.toHaveBeenCalled();
+    expect(openWorkspace).toHaveBeenCalledWith({
+      roomId: "room-1",
+      path: "C:\\rooms\\room-1\\workspace",
+      gatewayEndpoint: "ws://127.0.0.1:4310/collab",
+      roomTitle: "Release",
+      hostDisplayName: "Host",
+    });
+  });
 });

@@ -42,9 +42,9 @@ describe("real DSH client slot adapter", () => {
     })).toEqual({ kind: "owned", roomId: "room-owner", hostSessionId: "session-owner", roomTitle: "Release" });
   });
 
-  it("restores a Joined room selection for an offline participant Session", () => {
+  it("restores a Joined room selection only for the Session bound to its local workspace", () => {
     expect(resolveDshCollabRoomSelection("session-participant", {
-      listJoinedRooms: () => [{ gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-joined", memberId: "member-1", credential: "secret", roomTitle: "Design" }],
+      listJoinedRooms: () => [{ gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-joined", memberId: "member-1", credential: "secret", roomTitle: "Design", workspacePath: "C:\\rooms\\design\\workspace" }],
     } as never, {
       roomId: "room-joined",
       gatewayEndpoint: "ws://192.168.1.3:4310/collab",
@@ -54,7 +54,19 @@ describe("real DSH client slot adapter", () => {
       connection: "offline",
       onlineCount: 0,
       canSteer: false,
-    })).toEqual({ kind: "joined", roomId: "room-joined", gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomTitle: "Design", hostDisplayName: "Owner", localSessionId: "session-participant" });
+    }, "C:\\rooms\\design\\workspace")).toEqual({ kind: "joined", roomId: "room-joined", gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomTitle: "Design", hostDisplayName: "Owner", workspacePath: "C:\\rooms\\design\\workspace", localSessionId: "session-participant" });
+    expect(resolveDshCollabRoomSelection("session-other", {
+      listJoinedRooms: () => [{ gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-joined", memberId: "member-1", credential: "secret", roomTitle: "Design", workspacePath: "C:\\rooms\\design\\workspace" }],
+    } as never, {
+      roomId: "room-joined",
+      gatewayEndpoint: "ws://192.168.1.3:4310/collab",
+      roomTitle: "Design",
+      hostDisplayName: "Owner",
+      role: "participant",
+      connection: "online",
+      onlineCount: 1,
+      canSteer: false,
+    }, "C:\\rooms\\other\\workspace")).toBeUndefined();
   });
 
   it("reuses the registered native Room Workspace when the project already has an id", async () => {
