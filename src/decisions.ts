@@ -86,7 +86,11 @@ export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDe
     if (event.type === "decision.proposed") {
       const proposed = payload as { decisionId?: string; scope?: string; conclusion?: string; sourceMessageIds?: string[]; proposedBy?: string };
       const decisionId = requiredText(proposed.decisionId ?? "", "payload.decisionId");
-      if (decisions.has(decisionId)) continue;
+      const existingDecision = decisions.get(decisionId);
+      if (existingDecision) {
+        if (existingDecision.roomId !== event.roomId) throw invalidInput("decision event room does not match its durable Decision", { eventId: event.eventId });
+        continue;
+      }
       const decisionScope = normalizeScope(proposed.scope ?? "");
       const conclusion = requiredText(proposed.conclusion ?? "", "payload.conclusion");
       const sourceMessageIds = normalizeMessages(proposed.sourceMessageIds ?? []);
@@ -109,6 +113,7 @@ export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDe
     const eventDecisionId = requiredText((payload as { decisionId?: string }).decisionId ?? "", "payload.decisionId");
     const current = decisions.get(eventDecisionId);
     if (!current) continue;
+    if (event.roomId !== current.roomId) throw invalidInput("decision event room does not match its durable Decision", { eventId: event.eventId });
     if (event.type === "decision.accepted") {
       if (current.status !== "proposed") continue;
       const acceptedPayload = payload as { acceptedBy?: string };

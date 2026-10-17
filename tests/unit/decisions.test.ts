@@ -104,6 +104,20 @@ describe("DecisionStore", () => {
     ])).toThrow(/replacement/i);
   });
 
+  it("rejects decision events from another room", () => {
+    const store = new DecisionStore();
+    const first = store.propose(proposal());
+    const second = store.propose(proposal({ decisionId: "decision-2", eventId: "event-proposed-2", now: 110 }));
+    const events = store.events("room-1");
+    expect(() => reduceDecisionEvents([events[0]!, { ...events[0]!, eventId: "event-cross-room-proposed", roomId: "room-2", seq: 2, createdAt: 102 }])).toThrow(/room/i);
+    expect(() => reduceDecisionEvents([events[0]!, { ...events[0]!, eventId: "event-cross-room-accepted", roomId: "room-2", seq: 2, createdAt: 102, type: "decision.accepted", payload: { decisionId: first.decisionId, acceptedBy: alice.memberId } }])).toThrow(/room/i);
+    expect(() => reduceDecisionEvents([
+      events[0]!,
+      events[1]!,
+      { ...events[1]!, eventId: "event-cross-room-superseded", roomId: "room-2", seq: 3, type: "decision.superseded", payload: { decisionId: first.decisionId, supersededBy: second.decisionId } },
+    ])).toThrow(/room/i);
+  });
+
   it("accepts protocol-shaped decision events while keeping event types distinct", () => {
     const event: DecisionEvent = {
       eventId: "event-proposed",
