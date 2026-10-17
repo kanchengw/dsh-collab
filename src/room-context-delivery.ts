@@ -236,6 +236,13 @@ export class RoomContextDeliveryService {
     return results;
   }
 
+  unbind(sessionId: string): void {
+    const coordinator = this.coordinators.get(sessionId);
+    if (!coordinator) return;
+    coordinator.dispose();
+    this.coordinators.delete(sessionId);
+  }
+
   dispose(): void {
     for (const coordinator of this.coordinators.values()) coordinator.dispose();
     this.coordinators.clear();

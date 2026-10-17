@@ -265,6 +265,26 @@ describe("RoomContextDeliveryCoordinator", () => {
     expect(() => delivery.deliver(snapshot())).toThrow("disposed");
   });
 
+  it("drops a disposed Session coordinator so a later binding can deliver again", () => {
+    const links = new RoomSessionLinkStore();
+    const workspacePath = resolve("room-workspace");
+    links.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath, sessionCwd: workspacePath });
+    const firstBinding = new FakeContextBinding("session-1");
+    const secondBinding = new FakeContextBinding("session-1");
+    let current = firstBinding;
+    const service = new RoomContextDeliveryService({ links, bind: () => current });
+
+    expect(service.deliver({ roomId: "room-1", toSeq: 1, createSnapshot: ({ roomId, fromSeq, toSeq }) => ({
+      roomId, fromSeq, toSeq, entries: [], omittedCount: 0,
+    } as unknown as RoomContextForAgent) })).toHaveLength(1);
+    service.unbind("session-1");
+    current = secondBinding;
+    expect(service.deliver({ roomId: "room-1", toSeq: 2, createSnapshot: ({ roomId, fromSeq, toSeq }) => ({
+      roomId, fromSeq, toSeq, entries: [], omittedCount: 0,
+    } as unknown as RoomContextForAgent) })).toHaveLength(1);
+    expect(secondBinding.injections).toHaveLength(1);
+  });
+
   it("fans out one revision using independent per-Session cursors", () => {
     const links = new RoomSessionLinkStore();
     const workspacePath = resolve("room-workspace");

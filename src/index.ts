@@ -410,6 +410,7 @@ function registerGatewayControl(
     },
     onDisassociation: (sessionId) => {
       nativeRoomContextBindings.delete(sessionId);
+      roomContextDelivery.unbind(sessionId);
       roomSessionLinks.unbind(sessionId);
       persistRoomSessionLinks();
     },
