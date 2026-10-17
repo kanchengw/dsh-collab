@@ -9,14 +9,33 @@ export type RoomContextEntry =
   | { kind: "changeset"; changeSetId: string; author: string; status: string; summary: string }
   | { kind: "review"; changeSetId: string; author: string; decision: string };
 
-export interface RoomContextSnapshot {
+export type RoomContextAgentEntry = Exclude<RoomContextEntry, { kind: "message" }>;
+
+declare const roomContextAgentProjectionBrand: unique symbol;
+declare const roomContextSummaryProjectionBrand: unique symbol;
+
+export interface RoomContextForAgent {
+  roomId: string;
+  fromSeq: number;
+  toSeq: number;
+  workspaceVersionId?: string;
+  entries: RoomContextAgentEntry[];
+  omittedCount: number;
+  readonly [roomContextAgentProjectionBrand]: "agent";
+}
+
+export interface RoomContextForSummary {
   roomId: string;
   fromSeq: number;
   toSeq: number;
   workspaceVersionId?: string;
   entries: RoomContextEntry[];
   omittedCount: number;
+  readonly [roomContextSummaryProjectionBrand]: "summary";
 }
+
+/** Backwards-compatible name for the structured agent delivery packet. */
+export type RoomContextSnapshot = RoomContextForAgent;
 
 export interface ProjectRoomContextInput {
   roomId: string;
@@ -268,7 +287,7 @@ function projectCollaborationRoomEvent(event: RoomEvent, roomId: string): RoomCo
   return undefined;
 }
 
-export function projectRoomContext(input: ProjectRoomContextInput): RoomContextSnapshot | undefined {
+function projectRoomContextInternal(input: ProjectRoomContextInput, includeHumanMessages: boolean): RoomContextForSummary | RoomContextForAgent | undefined {
   const roomId = requiredText(input.roomId, "roomId");
   if (!Number.isSafeInteger(input.afterSeq) || input.afterSeq < 0) {
     throw invalidInput("afterSeq must be a non-negative integer", { afterSeq: input.afterSeq });
@@ -293,8 +312,10 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
       });
     }
     expectedSeq += 1;
-    if (event.type === "human.message") entries.push(projectHumanMessage(event, roomId));
-    else if (event.type === "work-update.published") entries.push(projectWorkUpdate(event, roomId));
+    if (event.type === "human.message") {
+      const message = projectHumanMessage(event, roomId);
+      if (includeHumanMessages) entries.push(message);
+    } else if (event.type === "work-update.published") entries.push(projectWorkUpdate(event, roomId));
     else if (event.type === "workspace-version.published") workspaceVersionId = projectWorkspaceVersion(event, roomId);
     else {
       const collaboration = projectCollaborationRoomEvent(event, roomId);
@@ -310,7 +331,22 @@ export function projectRoomContext(input: ProjectRoomContextInput): RoomContextS
     ...(workspaceVersionId ? { workspaceVersionId } : {}),
     entries: entries.slice(-input.maxEntries),
     omittedCount,
-  };
+  } as RoomContextForSummary | RoomContextForAgent;
+}
+
+/** Projects structured room state for an agent; human discussion is validated but excluded. */
+export function projectRoomContextForAgent(input: ProjectRoomContextInput): RoomContextForAgent | undefined {
+  return projectRoomContextInternal(input, false) as RoomContextForAgent | undefined;
+}
+
+/** Projects room state for an on-demand human-readable summary, including room messages. */
+export function projectRoomContextForSummary(input: ProjectRoomContextInput): RoomContextForSummary | undefined {
+  return projectRoomContextInternal(input, true) as RoomContextForSummary | undefined;
+}
+
+/** Compatibility alias for the summary projection used by existing callers. */
+export function projectRoomContext(input: ProjectRoomContextInput): RoomContextForSummary | undefined {
+  return projectRoomContextForSummary(input);
 }
 
 function stateRecord(value: unknown, field: string): Record<string, unknown> {

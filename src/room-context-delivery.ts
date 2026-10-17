@@ -3,7 +3,7 @@ import type {
   DshNativeAgentContextBinding,
   DshNativeAgentContextObservation,
 } from "./dsh-native-agent-context.js";
-import type { RoomContextSnapshot } from "./room-context.js";
+import type { RoomContextForAgent } from "./room-context.js";
 import { RoomSessionLinkStore } from "./room-session-links.js";
 import type { RoomSessionLink } from "./room-session-links.js";
 
@@ -25,7 +25,7 @@ interface PendingDelivery {
   toSeq: number;
 }
 
-function validateRange(snapshot: RoomContextSnapshot): void {
+function validateRange(snapshot: RoomContextForAgent): void {
   if (!Number.isSafeInteger(snapshot.fromSeq) || snapshot.fromSeq < 1
     || !Number.isSafeInteger(snapshot.toSeq) || snapshot.toSeq < snapshot.fromSeq) {
     throw invalidInput("Room Context range is invalid", {
@@ -35,7 +35,7 @@ function validateRange(snapshot: RoomContextSnapshot): void {
   }
 }
 
-function deliveryId(snapshot: RoomContextSnapshot): string {
+function deliveryId(snapshot: RoomContextForAgent): string {
   return `room-context:${snapshot.roomId}:${snapshot.fromSeq}:${snapshot.toSeq}`;
 }
 
@@ -51,7 +51,7 @@ function deliveryResult(
   };
 }
 
-export function formatRoomContextSnapshot(snapshot: RoomContextSnapshot): string {
+export function formatRoomContextForAgent(snapshot: RoomContextForAgent): string {
   const text = JSON.stringify({ kind: "dsh-collab.room-context", ...snapshot });
   if (new TextEncoder().encode(text).byteLength > MAX_ROOM_CONTEXT_PACKET_BYTES) {
     throw invalidInput("Room Context packet is not structurally bounded", {
@@ -84,7 +84,7 @@ export class RoomContextDeliveryCoordinator {
     });
   }
 
-  deliver(snapshot: RoomContextSnapshot): RoomContextDeliveryResult {
+  deliver(snapshot: RoomContextForAgent): RoomContextDeliveryResult {
     if (this.disposed) throw new Error("Room Context delivery coordinator is disposed");
     validateRange(snapshot);
     let link = this.activeLink();
@@ -141,7 +141,7 @@ export class RoomContextDeliveryCoordinator {
       }
       result = this.input.binding.deliver({
         deliveryId: nextDelivery.deliveryId,
-        text: formatRoomContextSnapshot(snapshot),
+        text: formatRoomContextForAgent(snapshot),
       });
     } catch (error) {
       if (this.pending?.deliveryId === nextDelivery.deliveryId) this.pending = undefined;
@@ -209,7 +209,7 @@ export interface RoomContextDeliveryServiceInput {
 export interface RoomContextDeliveryBatchInput {
   roomId: string;
   toSeq: number;
-  createSnapshot(input: { roomId: string; fromSeq: number; toSeq: number }): RoomContextSnapshot;
+  createSnapshot(input: { roomId: string; fromSeq: number; toSeq: number }): RoomContextForAgent;
 }
 
 /** Fans one bounded Room Context revision out to each linked native Session. */

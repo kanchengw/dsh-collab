@@ -1,16 +1,16 @@
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
   DshNativeAgentContextAcknowledgement,
   DshNativeAgentContextBinding,
   DshNativeAgentContextState,
 } from "../../src/dsh-native-agent-context.js";
 import {
-  formatRoomContextSnapshot,
+  formatRoomContextForAgent,
   RoomContextDeliveryCoordinator,
   RoomContextDeliveryService,
 } from "../../src/room-context-delivery.js";
-import type { RoomContextSnapshot } from "../../src/room-context.js";
+import type { RoomContextForAgent, RoomContextForSummary } from "../../src/room-context.js";
 import { RoomSessionLinkStore } from "../../src/room-session-links.js";
 
 class FakeContextBinding implements DshNativeAgentContextBinding {
@@ -72,14 +72,14 @@ class FakeContextBinding implements DshNativeAgentContextBinding {
   }
 }
 
-function snapshot(fromSeq = 1, toSeq = 2): RoomContextSnapshot {
+function snapshot(fromSeq = 1, toSeq = 2): RoomContextForAgent {
   return {
     roomId: "room-1",
     fromSeq,
     toSeq,
-    entries: [{ kind: "message", author: "member-2", text: `events ${fromSeq}-${toSeq}` }],
+    entries: [{ kind: "work-update", author: "member-2", summary: `events ${fromSeq}-${toSeq}`, refs: [] }],
     omittedCount: 0,
-  };
+  } as unknown as RoomContextForAgent;
 }
 
 function harness(input: { active?: boolean; bindingSessionId?: string } = {}) {
@@ -106,6 +106,17 @@ function harness(input: { active?: boolean; bindingSessionId?: string } = {}) {
   return { binding, delivery, links };
 }
 
+
+describe("Room Context delivery projection boundary", () => {
+  it("accepts only the agent projection at the formatter boundary", () => {
+    expectTypeOf<typeof formatRoomContextForAgent>().parameter(0).toMatchTypeOf<RoomContextForAgent>();
+    if (false) {
+      // @ts-expect-error Summary projection cannot be delivered to an agent.
+      formatRoomContextForAgent({} as RoomContextForSummary);
+    }
+  });
+});
+
 describe("RoomContextDeliveryCoordinator", () => {
   it("injects a stable plugin context range without advancing the cursor", () => {
     const { binding, delivery, links } = harness();
@@ -123,7 +134,7 @@ describe("RoomContextDeliveryCoordinator", () => {
       roomId: "room-1",
       fromSeq: 1,
       toSeq: 2,
-      entries: [{ kind: "message", author: "member-2", text: "events 1-2" }],
+      entries: [{ kind: "work-update", author: "member-2", summary: "events 1-2", refs: [] }],
       omittedCount: 0,
     });
     expect(links.getBySession("session-1")?.lastInjectedRoomSeq).toBe(0);
@@ -198,7 +209,7 @@ describe("RoomContextDeliveryCoordinator", () => {
 
   it("keeps the injected packet structurally bounded", () => {
     const huge = snapshot();
-    huge.entries = [{ kind: "message", author: "member-2", text: "x".repeat(40_000) }];
+    huge.entries = [{ kind: "work-update", author: "member-2", summary: "x".repeat(40_000), refs: [] }];
 
     expect(() => deliverySnapshot(huge)).toThrow("bounded");
   });
@@ -276,9 +287,9 @@ describe("RoomContextDeliveryCoordinator", () => {
         roomId,
         fromSeq,
         toSeq,
-        entries: [{ kind: "message", author: "member-1", text: `${fromSeq}-${toSeq}` }],
+        entries: [{ kind: "work-update", author: "member-1", summary: `${fromSeq}-${toSeq}`, refs: [] }],
         omittedCount: 0,
-      }),
+      } as unknown as RoomContextForAgent),
     });
 
     expect(results.map(({ deliveryId }) => deliveryId)).toEqual([
@@ -292,7 +303,7 @@ describe("RoomContextDeliveryCoordinator", () => {
   });
 });
 
-function deliverySnapshot(value: RoomContextSnapshot): string {
+function deliverySnapshot(value: RoomContextForAgent): string {
   // This indirection makes the RED expectation compile before the U10 export exists.
-  return (formatRoomContextSnapshot as (snapshot: RoomContextSnapshot) => string)(value);
+  return (formatRoomContextForAgent as (snapshot: RoomContextForAgent) => string)(value);
 }

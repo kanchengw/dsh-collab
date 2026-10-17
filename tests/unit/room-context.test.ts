@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { CollabError } from "../../src/errors.js";
 import {
+  projectRoomContextForAgent,
+  projectRoomContextForSummary,
   projectRoomContext,
   reduceRoomContext,
   restoreRoomContextState,
+  type RoomContextForAgent,
+  type RoomContextForSummary,
   type RoomContextState,
 } from "../../src/room-context.js";
 import type { RoomEvent, RoomEventType } from "../../src/types.js";
@@ -334,6 +338,52 @@ describe("projectRoomContext", () => {
       maxEntries: 0,
       events: [],
     }));
+  });
+});
+
+
+describe("Room Context projections", () => {
+  it("keeps human messages in the summary projection and excludes them from the agent projection", () => {
+    const input = {
+      roomId: "room-1",
+      afterSeq: 0,
+      maxEntries: 10,
+      events: [
+        message(1, "human context"),
+        event(2, "member.joined", { memberId: "member-bob" }),
+      ],
+    };
+
+    expect(projectRoomContextForSummary(input)).toEqual({
+      roomId: "room-1",
+      fromSeq: 1,
+      toSeq: 2,
+      entries: [{ kind: "message", author: "member-alice", text: "human context" }],
+      omittedCount: 0,
+    });
+    expect(projectRoomContextForAgent(input)).toEqual({
+      roomId: "room-1",
+      fromSeq: 1,
+      toSeq: 2,
+      entries: [],
+      omittedCount: 0,
+    });
+  });
+
+  it("keeps the two projection types incompatible", () => {
+    const input = { roomId: "room-1", afterSeq: 0, maxEntries: 10, events: [message(1, "human context")] };
+    const agent = projectRoomContextForAgent(input)!;
+    const summary = projectRoomContextForSummary(input)!;
+
+    if (false) {
+      // @ts-expect-error Summary projection cannot be used as an agent projection.
+      const agentFromSummary: RoomContextForAgent = {} as RoomContextForSummary;
+      void agentFromSummary;
+      // @ts-expect-error Agent and summary projections are intentionally branded separately.
+      const summaryFromAgent: RoomContextForSummary = {} as RoomContextForAgent;
+      void summaryFromAgent;
+    }
+    expect(agent).not.toEqual(summary);
   });
 });
 
