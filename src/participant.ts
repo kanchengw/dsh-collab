@@ -14,6 +14,7 @@ export interface ParticipantMessageInput {
   target?: MessageTarget;
   sourceMessageId?: string;
   contextRefs?: string[];
+  mentions?: string[];
 }
 
 function expectBody<T>(response: GatewayResponse): T {

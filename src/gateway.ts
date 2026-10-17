@@ -750,6 +750,7 @@ export class CollabGateway {
       target: body.target as MessageTarget | undefined,
       sourceMessageId: body.sourceMessageId as string | undefined,
       contextRefs: body.contextRefs as string[] | undefined,
+      mentions: body.mentions as string[] | undefined,
     });
     if (this.maxMessageBytes !== undefined && Buffer.byteLength(message.text, "utf8") > this.maxMessageBytes) {
       throw invalidInput("message exceeds the configured byte limit", { maxMessageBytes: this.maxMessageBytes });

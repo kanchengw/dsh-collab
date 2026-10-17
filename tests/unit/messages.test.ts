@@ -21,6 +21,13 @@ describe("classifyMessage", () => {
     }));
   });
 
+  it("preserves human member mentions for relatedness notifications", () => {
+    expect(classifyMessage({ ...base, text: "@Alice please review", mentions: ["member-alice", "member-alice"] })).toEqual(expect.objectContaining({
+      kind: "human",
+      mentions: ["member-alice"],
+    }));
+  });
+
   it("creates a followup only for an explicit DSH target", () => {
     const message = classifyMessage({
       ...base,

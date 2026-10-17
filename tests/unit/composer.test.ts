@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composerKeyAction, composerTargetForGesture, composerTargetForText, createComposerSubmission, insertAgentMention, shouldSuggestAgentMention } from "../../src/ui.js";
+import { composerKeyAction, composerMentionMenuKeyAction, composerMentionSuggestions, composerTargetForGesture, composerTargetForText, createComposerSubmission, extractComposerMentionIds, insertAgentMention, insertMemberMention, projectCollabUnread, shouldSuggestAgentMention, shouldSuggestMemberMention } from "../../src/ui.js";
 
 describe("collab composer mentions", () => {
   it("routes only the canonical lowercase @agent mention to the Host Agent", () => {
@@ -16,6 +16,27 @@ describe("collab composer mentions", () => {
     expect(shouldSuggestAgentMention("请问@")).toBe(true);
     expect(shouldSuggestAgentMention("owner@")).toBe(false);
     expect(insertAgentMention("Please ask @")).toBe("Please ask @agent ");
+  });
+
+  it("suggests human members at a real @ token, supports keyboard selection, and ignores email-like text", () => {
+    const members = [{ memberId: "member-alice", displayName: "Alice" }, { memberId: "member-bob", displayName: "Bob" }];
+    expect(shouldSuggestMemberMention("Please ask @")).toBe(true);
+    expect(shouldSuggestMemberMention("owner@")).toBe(false);
+    expect(composerMentionSuggestions("Please ask @a", members)).toEqual([members[0]]);
+    expect(composerMentionMenuKeyAction({ key: "ArrowDown", selectedIndex: 0, optionCount: 2 })).toEqual({ kind: "move", selectedIndex: 1 });
+    expect(composerMentionMenuKeyAction({ key: "Enter", selectedIndex: 1, optionCount: 2 })).toEqual({ kind: "select", selectedIndex: 1 });
+    expect(insertMemberMention("Please ask @a", members[0]!)).toBe("Please ask @Alice ");
+    expect(extractComposerMentionIds("Please ask @Alice and owner@Alice.example", members)).toEqual(["member-alice"]);
+  });
+
+  it("keeps member mentions on room submissions and counts related versus room unread", () => {
+    expect(createComposerSubmission({ messageId: "m-mention", roomId: "room-1", authorMemberId: "member-owner", text: "@Alice review", target: "room", mentions: ["member-alice"] })).toMatchObject({ mentions: ["member-alice"], target: "room" });
+    expect(createComposerSubmission({ messageId: "m-agent", roomId: "room-1", authorMemberId: "member-owner", text: "@agent review", target: "dsh", mentions: ["member-alice"] })).not.toHaveProperty("mentions");
+    expect(projectCollabUnread([
+      { eventId: "e1", roomId: "room-1", seq: 1, type: "human.message", createdAt: 1, actor: { memberId: "member-alice", principalId: "alice" }, payload: { mentions: ["member-owner"] } },
+      { eventId: "e2", roomId: "room-1", seq: 2, type: "human.message", createdAt: 2, actor: { memberId: "member-bob", principalId: "bob" }, payload: { mentions: [] } },
+      { eventId: "e3", roomId: "room-1", seq: 3, type: "human.message", createdAt: 3, actor: { memberId: "member-owner", principalId: "owner" }, payload: { mentions: ["member-alice"] } },
+    ], "member-owner")).toEqual({ personal: 1, total: 2 });
   });
 
   it("keeps resolved room and Agent submissions distinct on the wire", () => {

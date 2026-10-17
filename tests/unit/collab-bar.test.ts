@@ -117,13 +117,14 @@ describe("Collab Bar", () => {
     const html = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },
       selection: { kind: "owned", roomId: "room-1", hostSessionId: "session-owner", roomTitle: "Release planning" },
-      roomSnapshot: snapshot(),
+      roomSnapshot: { ...snapshot(), personalUnreadCount: 1, totalUnreadCount: 2 },
       discussion: createElement(DshCollabDock, { port: roomPort(snapshot()), showHeader: false }),
     }));
 
     expect(html).toContain('data-collab-bar="true"');
     expect(html).toContain('data-connection="online"');
     expect(html).toContain("Online · 2 members");
+    expect(html).toContain('data-collab-unread="true"');
     expect(html).toContain('role="tablist"');
     expect(html).toContain(">Tasks<");
     expect(html).toContain(">Activity<");

@@ -2,6 +2,16 @@ import type { AgentOutputFrame, AgentQueueItem, MessageInput, MessageTarget, Roo
 
 export type ComposerTarget = MessageTarget;
 
+export interface ComposerMentionMember {
+  memberId: string;
+  displayName: string;
+}
+
+export interface CollabUnreadCounts {
+  personal: number;
+  total: number;
+}
+
 export type TimelineAgentStatus = "accepted" | "queued" | "running" | "completed" | "failed" | "cancelled" | "withdrawn";
 
 export interface TimelineItem {
@@ -32,6 +42,51 @@ export function insertAgentMention(draft: string): string {
   return shouldSuggestAgentMention(draft) ? `${draft.slice(0, -1)}${AGENT_MENTION} ` : draft;
 }
 
+function mentionQuery(draft: string, cursorPosition = draft.length): string | undefined {
+  const beforeCursor = draft.slice(0, cursorPosition);
+  const match = beforeCursor.match(/(?:^|[^A-Za-z0-9_@])@([^\s@]*)$/);
+  return match?.[1];
+}
+
+export function shouldSuggestMemberMention(draft: string, cursorPosition = draft.length): boolean {
+  return mentionQuery(draft, cursorPosition) !== undefined;
+}
+
+export function composerMentionSuggestions(draft: string, members: readonly ComposerMentionMember[], cursorPosition = draft.length): ComposerMentionMember[] {
+  const query = mentionQuery(draft, cursorPosition)?.toLocaleLowerCase();
+  if (query === undefined) return [];
+  return members.filter((member) => member.displayName.toLocaleLowerCase().startsWith(query));
+}
+
+export function composerMentionMenuKeyAction(input: { key: string; selectedIndex: number; optionCount: number }):
+  { kind: "move"; selectedIndex: number } | { kind: "select"; selectedIndex: number } | { kind: "close" } | { kind: "native" } {
+  if (input.optionCount === 0) return { kind: "native" };
+  if (input.key === "ArrowDown") return { kind: "move", selectedIndex: (input.selectedIndex + 1) % input.optionCount };
+  if (input.key === "ArrowUp") return { kind: "move", selectedIndex: (input.selectedIndex - 1 + input.optionCount) % input.optionCount };
+  if (input.key === "Enter") return { kind: "select", selectedIndex: Math.max(0, Math.min(input.selectedIndex, input.optionCount - 1)) };
+  if (input.key === "Escape") return { kind: "close" };
+  return { kind: "native" };
+}
+
+export function insertMemberMention(draft: string, member: ComposerMentionMember, cursorPosition = draft.length): string {
+  const query = mentionQuery(draft, cursorPosition);
+  if (query === undefined) return draft;
+  const start = cursorPosition - query.length - 1;
+  return `${draft.slice(0, start)}@${member.displayName} ${draft.slice(cursorPosition)}`;
+}
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function extractComposerMentionIds(text: string, members: readonly ComposerMentionMember[]): string[] {
+  return members
+    .map((member) => ({ member, match: new RegExp(`(?:^|[^A-Za-z0-9_@])@${escapedRegExp(member.displayName)}(?![A-Za-z0-9_])`, "iu").exec(text) }))
+    .filter((entry): entry is { member: ComposerMentionMember; match: RegExpExecArray } => entry.match !== null)
+    .sort((left, right) => left.match.index - right.match.index)
+    .map((entry) => entry.member.memberId);
+}
+
 export function composerKeyAction(input: {
   key: string;
   shiftKey?: boolean;
@@ -52,6 +107,7 @@ export function createComposerSubmission(input: {
   canSteer?: boolean;
   sourceMessageId?: string;
   contextRefs?: string[];
+  mentions?: string[];
 }): MessageInput {
   if (input.target === "dsh-steer" && input.canSteer !== true) {
     throw new Error("steer target requires capability");
@@ -65,12 +121,25 @@ export function createComposerSubmission(input: {
     target: input.target,
     ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
     ...(agentTarget && input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
+    ...(!agentTarget && input.mentions && input.mentions.length > 0 ? { mentions: [...input.mentions] } : {}),
   };
 }
 
 export function composerTargetForGesture(text: string, agentBusy: boolean, shiftKey: boolean): ComposerTarget {
   if (shiftKey && agentBusy && composerTargetForText(text) === "dsh") return "dsh-steer";
   return composerTargetForText(text);
+}
+
+export function projectCollabUnread(events: readonly RoomEvent[], currentMemberId?: string): CollabUnreadCounts {
+  let personal = 0;
+  let total = 0;
+  for (const event of events) {
+    if (currentMemberId !== undefined && event.actor.memberId === currentMemberId) continue;
+    total += 1;
+    const payload = objectPayload(event.payload);
+    if (currentMemberId !== undefined && Array.isArray(payload.mentions) && payload.mentions.includes(currentMemberId)) personal += 1;
+  }
+  return { personal, total };
 }
 
 function objectPayload(value: unknown): Record<string, unknown> {

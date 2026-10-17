@@ -167,6 +167,7 @@ export interface MessageInput {
   target?: MessageTarget;
   sourceMessageId?: string;
   contextRefs?: string[];
+  mentions?: string[];
 }
 
 export interface HumanMessage {
@@ -176,6 +177,7 @@ export interface HumanMessage {
   authorMemberId: string;
   text: string;
   visibility: "room";
+  mentions?: string[];
 }
 
 export interface WorkUpdate {

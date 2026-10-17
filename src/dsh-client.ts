@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState, type ReactNode } from "react";
 import { MarkdownText, projectUserText, type MarkdownLabels } from "@deepseek-ai/dsh-client-ui-primitives";
-import { type ComposerTarget, type TimelineItem } from "./ui.js";
+import { projectCollabUnread, type ComposerTarget, type TimelineItem } from "./ui.js";
 import { createDshBrowserCollabClient, EasyTierConnectionError, type DshBrowserCollabClient, type DshBrowserEasyTierTransport, type DshBrowserJoinInput, type JoinedRoomRef, type ParticipantPersistence, type ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshCollabSettingsCard } from "./collab-settings-card.js";
 import { DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen, useDshCollabRoomSelection, type DshCollabRoomSelection } from "./collab-rooms.js";
@@ -319,7 +319,7 @@ export interface DshCollabClientSnapshot {
 export interface DshCollabClientPort {
   getSnapshot(): DshCollabClientSnapshot;
   subscribe(listener: () => void): () => void;
-  send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void>;
+  send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[] }): Promise<void>;
   editAgentRequest?(requestId: string, text: string): Promise<void>;
   withdrawAgentRequest?(requestId: string): Promise<void>;
 }
@@ -1413,7 +1413,7 @@ function DshCollabBarPanel(props: {
     key: roomKey,
     scope: props.scope,
     selection,
-    roomSnapshot: snapshot,
+    roomSnapshot: { ...snapshot, ...(() => { const unread = projectCollabUnread(snapshot.roomEvents ?? [], snapshot.memberId); return { personalUnreadCount: unread.personal, totalUnreadCount: unread.total }; })() },
     discussion,
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),

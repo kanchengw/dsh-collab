@@ -17,6 +17,8 @@ export interface CollabBarRoomSnapshot {
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
   members?: readonly { memberId: string; displayName: string }[];
+  personalUnreadCount?: number;
+  totalUnreadCount?: number;
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
 }
 
@@ -130,6 +132,15 @@ export function CollabBarView(props: {
         <span><span className={css.statusDot} />{t("connection.summary", { connection: t("connection.online"), count: snapshot.onlineCount })}</span>
       </div>
       <span className={css.role}>{t(selectedRole === "host" ? "role.owner" : "role.participant")}</span>
+      {(snapshot.personalUnreadCount ?? 0) > 0 || (snapshot.totalUnreadCount ?? 0) > 0 ? (
+        <span
+          className={css.unreadBadge}
+          data-collab-unread="true"
+          aria-label={t("bar.unreadSummary", { personal: snapshot.personalUnreadCount ?? 0, total: snapshot.totalUnreadCount ?? 0 })}
+        >
+          {t("bar.unreadSummary", { personal: snapshot.personalUnreadCount ?? 0, total: snapshot.totalUnreadCount ?? 0 })}
+        </span>
+      ) : null}
     </header>
     <ProjectOverview changesPort={props.changesPort} t={t} />
     <nav className={css.tabs} role="tablist" aria-label={t("bar.navigation")}>

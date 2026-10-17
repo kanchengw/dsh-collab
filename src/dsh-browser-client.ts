@@ -798,9 +798,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return { invitation: encodeCollabInvitation({ protocol: "dsh-collab.invitation.v2", ...common, network }) };
   }
 
-  async send(input: { text: string; target: ComposerTarget; contextRefs?: string[] }): Promise<void> {
+  async send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[] }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
-    const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target, contextRefs: input.contextRefs });
+    const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target, contextRefs: input.contextRefs, mentions: input.mentions });
     const clientMessageId = this.pendingMessageIds.get(pendingKey) ?? randomId("message");
     this.pendingMessageIds.set(pendingKey, clientMessageId);
     try {
@@ -809,6 +809,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         text: input.text,
         target: input.target,
         ...(input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
+        ...(input.mentions && input.mentions.length > 0 && input.target === "room" ? { mentions: [...input.mentions] } : {}),
       }, true);
       this.pendingMessageIds.delete(pendingKey);
     } catch (error) {

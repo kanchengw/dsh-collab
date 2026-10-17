@@ -27,6 +27,10 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
 
   const target = input.target ?? "room";
   if (target === "room") {
+    if (input.mentions !== undefined && !Array.isArray(input.mentions)) {
+      throw invalidInput("mentions must be an array", { field: "mentions" });
+    }
+    const mentions = input.mentions?.map((mention) => requiredText(mention, "mention"));
     const message: HumanMessage = {
       kind: "human",
       messageId,
@@ -34,6 +38,7 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
       authorMemberId,
       text,
       visibility: "room",
+      ...(mentions && mentions.length > 0 ? { mentions: [...new Set(mentions)] } : {}),
     };
     return message;
   }

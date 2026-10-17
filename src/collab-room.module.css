@@ -316,3 +316,7 @@
 @media (prefers-reduced-motion: reduce) {
   .message { animation: none; }
 }
+
+.mentionMenu { margin: 0; padding: 4px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); list-style: none; }
+.mentionMenu button { display: block; width: 100%; padding: 4px 7px; border: 0; background: transparent; color: var(--dsw-alias-label-primary); text-align: left; cursor: pointer; }
+.mentionMenu button[aria-selected="true"] { background: var(--dsw-alias-interactive-bg-hover); }
