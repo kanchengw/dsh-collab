@@ -9,6 +9,7 @@ export type RoomContextEntry =
   | { kind: "changeset"; changeSetId: string; author: string; status: string; summary: string }
   | { kind: "review"; changeSetId: string; author: string; decision: string }
   | { kind: "task"; taskId: string; title?: string; status?: string; blocked?: boolean; assigneeId?: string; participantIds: string[] }
+  | { kind: "task-milestone"; taskId: string; milestone: string; author: string; summary?: string; changeSetId?: string }
   | { kind: "decision"; decisionId: string; scope: string; status: string; conclusion?: string; sourceMessageIds: string[] };
 
 export type RoomContextAgentEntry = Exclude<RoomContextEntry, { kind: "message" }>;
@@ -328,6 +329,32 @@ interface ProjectedDecisionContext {
   sourceMessageIds: string[];
 }
 
+function projectTaskMilestoneEvent(
+  event: RoomEvent,
+  roomId: string,
+  memberId: string | undefined,
+  tasks: Map<string, ProjectedTaskContext>,
+): RoomContextEntry | undefined {
+  const payload = structuredPayload(event, roomId);
+  const taskId = requiredText(payload.taskId, "payload.taskId");
+  const author = requiredText(payload.memberId, "payload.memberId");
+  if (author !== event.actor.memberId || !tasks.has(taskId)) {
+    throw invalidInput("task.milestone authority does not match its durable event", { eventId: event.eventId });
+  }
+  if (memberId !== undefined && !tasks.get(taskId)!.participantIds.includes(memberId)) return undefined;
+  const milestone = requiredText(payload.milestone, "payload.milestone");
+  const summary = payload.summary === undefined ? undefined : requiredText(payload.summary, "payload.summary");
+  const changeSetId = payload.changeSetId === undefined ? undefined : requiredText(payload.changeSetId, "payload.changeSetId");
+  return {
+    kind: "task-milestone",
+    taskId,
+    milestone,
+    author,
+    ...(summary === undefined ? {} : { summary }),
+    ...(changeSetId === undefined ? {} : { changeSetId }),
+  };
+}
+
 function structuredPayload(event: RoomEvent, roomId: string): Record<string, unknown> {
   if (!isRecord(event.payload)) throw invalidInput(`${event.type} payload is invalid`, { eventId: event.eventId });
   if (event.payload.roomId !== undefined && requiredText(event.payload.roomId, "payload.roomId") !== roomId) {
@@ -466,6 +493,9 @@ function projectRoomContextInternal(input: ProjectRoomContextInput, includeHuman
     else if (event.type === "task.created" || event.type === "task.updated" || event.type === "task.assigned" || event.type === "task.status-changed" || event.type === "task.completed") {
       const task = structuredTaskEvent(event, roomId, input.memberId, tasks);
       if (task) entries.push(task);
+    } else if (event.type === "task.milestone") {
+      const milestone = projectTaskMilestoneEvent(event, roomId, input.memberId, tasks);
+      if (milestone) entries.push(milestone);
     } else if (event.type === "decision.proposed" || event.type === "decision.accepted" || event.type === "decision.superseded") {
       const decision = structuredDecisionEvent(event, roomId, input.memberId, tasks, decisions);
       if (decision) entries.push(decision);

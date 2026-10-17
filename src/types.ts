@@ -301,6 +301,7 @@ export type RoomEventType =
   | "task.assigned"
   | "task.status-changed"
   | "task.completed"
+  | "task.milestone"
   | "decision.proposed"
   | "decision.accepted"
   | "decision.superseded";
