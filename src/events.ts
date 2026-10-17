@@ -146,6 +146,28 @@ export class EventLedger {
     return copy((this.rooms.get(normalizedRoomId) ?? []).slice(afterSeq, Math.min(afterSeq + boundedLimit, committed)));
   }
 
+  readCommittedPrefix(roomId: string, throughSeq: number): RoomEvent[] {
+    const normalizedRoomId = requiredText(roomId, "roomId");
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) {
+      throw invalidInput("throughSeq must be a non-negative integer", { throughSeq });
+    }
+    const committed = this.committedSeq.get(normalizedRoomId) ?? 0;
+    if (throughSeq > committed) {
+      throw invalidInput("throughSeq exceeds the committed room sequence", { throughSeq, committed });
+    }
+    const events: RoomEvent[] = [];
+    let afterSeq = 0;
+    while (afterSeq < throughSeq) {
+      const batch = this.readCommittedAfter(normalizedRoomId, afterSeq, Math.min(MAX_READ_LIMIT, throughSeq - afterSeq));
+      if (batch.length === 0 || batch[0]!.seq !== afterSeq + 1) {
+        throw invalidInput("committed room prefix is not contiguous", { roomId: normalizedRoomId, afterSeq, throughSeq });
+      }
+      events.push(...batch);
+      afterSeq = batch[batch.length - 1]!.seq;
+    }
+    return copy(events);
+  }
+
   latestSeq(roomId: string): number {
     const normalizedRoomId = requiredText(roomId, "roomId");
     return this.rooms.get(normalizedRoomId)?.length ?? 0;

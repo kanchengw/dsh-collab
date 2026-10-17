@@ -422,12 +422,31 @@ function projectRoomContextInternal(input: ProjectRoomContextInput, includeHuman
   const tasks = new Map<string, ProjectedTaskContext>();
   const decisions = new Map<string, ProjectedDecisionContext>();
   let workspaceVersionId: string | undefined;
-  let expectedSeq = input.afterSeq + 1;
-  for (const priorEvent of input.priorEvents ?? []) {
-    if (priorEvent.seq > input.afterSeq) throw invalidInput("room context prior event is ahead of afterSeq", { eventId: priorEvent.eventId });
-    if (priorEvent.type === "task.created" || priorEvent.type === "task.updated" || priorEvent.type === "task.assigned" || priorEvent.type === "task.status-changed" || priorEvent.type === "task.completed") structuredTaskEvent(priorEvent, roomId, undefined, tasks);
-    else if (priorEvent.type === "decision.proposed" || priorEvent.type === "decision.accepted" || priorEvent.type === "decision.superseded") structuredDecisionEvent(priorEvent, roomId, undefined, tasks, decisions);
+  const priorEvents = input.priorEvents ?? [];
+  if (input.priorEvents !== undefined) {
+    let expectedPriorSeq = 1;
+    for (const priorEvent of priorEvents) {
+      if (!priorEvent || priorEvent.roomId !== roomId) {
+        throw invalidInput("room context prior event is outside the requested room", { expectedRoomId: roomId });
+      }
+      if (priorEvent.seq !== expectedPriorSeq || priorEvent.seq > input.afterSeq) {
+        throw invalidInput("room context prior event sequence is not a contiguous prefix", {
+          expectedSeq: expectedPriorSeq,
+          actualSeq: priorEvent.seq,
+        });
+      }
+      expectedPriorSeq += 1;
+      if (priorEvent.type === "task.created" || priorEvent.type === "task.updated" || priorEvent.type === "task.assigned" || priorEvent.type === "task.status-changed" || priorEvent.type === "task.completed") structuredTaskEvent(priorEvent, roomId, undefined, tasks);
+      else if (priorEvent.type === "decision.proposed" || priorEvent.type === "decision.accepted" || priorEvent.type === "decision.superseded") structuredDecisionEvent(priorEvent, roomId, undefined, tasks, decisions);
+    }
+    if (expectedPriorSeq !== input.afterSeq + 1) {
+      throw invalidInput("room context prior events do not cover the requested prefix", {
+        expectedThroughSeq: input.afterSeq,
+        actualThroughSeq: expectedPriorSeq - 1,
+      });
+    }
   }
+  let expectedSeq = input.afterSeq + 1;
   for (const event of input.events) {
     if (!event || event.roomId !== roomId) {
       throw invalidInput("room context event is outside the requested room", { expectedRoomId: roomId });

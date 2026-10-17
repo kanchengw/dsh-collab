@@ -133,6 +133,27 @@ describe("EventLedger", () => {
     expect(committed).toEqual(["event-1", "event-2"]);
   });
 
+  it("reads a complete committed prefix in bounded batches", async () => {
+    const ledger = new EventLedger();
+    for (let seq = 1; seq <= 601; seq += 1) {
+      ledger.append({
+        eventId: `event-${seq}`,
+        roomId: "room-1",
+        type: "human.message",
+        actor,
+        payload: { text: `message-${seq}` },
+      });
+    }
+    await ledger.commit();
+
+    const prefix = ledger.readCommittedPrefix("room-1", 601);
+
+    expect(prefix).toHaveLength(601);
+    expect(prefix[0]?.seq).toBe(1);
+    expect(prefix[500]?.seq).toBe(501);
+    expect(prefix[600]?.seq).toBe(601);
+  });
+
   it("keeps failed persistence events hidden until a later barrier succeeds", async () => {
     const ledger = new EventLedger();
     const committed: string[] = [];

@@ -474,7 +474,7 @@ function registerGatewayControl(
                   memberId,
                   afterSeq: fromSeq - 1,
                   priorEvents: fromSeq > 1
-                    ? ledger.readCommittedAfter(roomId, 0, fromSeq - 1)
+                    ? ledger.readCommittedPrefix(roomId, fromSeq - 1)
                     : [],
                   events: ledger.readCommittedAfter(roomId, fromSeq - 1, toSeq - fromSeq + 1),
                   maxEntries: 128,

@@ -485,6 +485,55 @@ describe("Room Context projections", () => {
     })?.entries).toEqual([]);
   });
 
+  it("restores a Decision before projecting a later supersede event", () => {
+    const snapshot = projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 2,
+      maxEntries: 10,
+      priorEvents: [
+        event(1, "decision.proposed", {
+          decisionId: "decision-1",
+          scope: "room",
+          conclusion: "Use the event ledger.",
+          sourceMessageIds: ["message-1"],
+          proposedBy: "member-alice",
+        }),
+        event(2, "decision.proposed", {
+          decisionId: "decision-2",
+          scope: "room",
+          conclusion: "Use the reducer.",
+          sourceMessageIds: ["message-2"],
+          proposedBy: "member-alice",
+        }),
+      ],
+      events: [event(3, "decision.superseded", {
+        decisionId: "decision-1",
+        supersededBy: "decision-2",
+      })],
+    });
+
+    expect(snapshot?.entries).toEqual([
+      { kind: "decision", decisionId: "decision-1", scope: "room", status: "superseded", conclusion: "Use the event ledger.", sourceMessageIds: ["message-1"] },
+    ]);
+  });
+
+  it("rejects an invalid prior room-context prefix", () => {
+    expectInvalid(() => projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 2,
+      maxEntries: 10,
+      priorEvents: [event(1, "member.joined", { memberId: "member-bob" }), event(3, "member.joined", { memberId: "member-bob" })],
+      events: [event(3, "member.joined", { memberId: "member-bob" })],
+    }));
+    expectInvalid(() => projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 1,
+      maxEntries: 10,
+      priorEvents: [event(1, "member.joined", { memberId: "member-bob" }, { roomId: "room-2" })],
+      events: [event(2, "member.joined", { memberId: "member-bob" })],
+    }));
+  });
+
   it("keeps the two projection types incompatible", () => {
     const input = { roomId: "room-1", afterSeq: 0, maxEntries: 10, events: [message(1, "human context")] };
     const agent = projectRoomContextForAgent(input)!;
@@ -635,3 +684,4 @@ describe("reduceRoomContext", () => {
     expectInvalid(() => restoreRoomContextState({ ...state, appliedThroughSeq: 1.5 }, "room-1"));
   });
 });
+
