@@ -251,5 +251,10 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "agent.request.completed"
     || value === "agent.state.changed"
     || value === "approval.requested"
-    || value === "approval.decided";
+    || value === "approval.decided"
+    || value === "task.created"
+    || value === "task.updated"
+    || value === "task.assigned"
+    || value === "task.status-changed"
+    || value === "task.completed";
 }

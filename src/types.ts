@@ -293,7 +293,12 @@ export type RoomEventType =
   | "agent.request.completed"
   | "agent.state.changed"
   | "approval.requested"
-  | "approval.decided";
+  | "approval.decided"
+  | "task.created"
+  | "task.updated"
+  | "task.assigned"
+  | "task.status-changed"
+  | "task.completed";
 
 export interface RoomActor {
   memberId: string;

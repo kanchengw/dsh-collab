@@ -65,6 +65,11 @@ const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "agent.state.changed",
   "approval.requested",
   "approval.decided",
+  "task.created",
+  "task.updated",
+  "task.assigned",
+  "task.status-changed",
+  "task.completed",
 ]);
 
 function record(value: unknown, field: string): Record<string, unknown> {

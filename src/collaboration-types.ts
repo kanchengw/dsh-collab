@@ -154,6 +154,56 @@ export interface AcceptedReviewPublication {
   findings: ReviewFinding[];
 }
 
+export type TaskStatus = "open" | "doing" | "in-review" | "done" | "cancelled";
+
+export interface TaskMember {
+  memberId: string;
+  principalId: string;
+}
+
+export interface CollaborationTask {
+  taskId: string;
+  roomId: string;
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  blocked: boolean;
+  assigneeId?: string;
+  participantIds: string[];
+  changeSetIds: string[];
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  completedBy?: string;
+  cancelledAt?: number;
+  cancelledBy?: string;
+}
+
+export type TaskEventType =
+  | "task.created"
+  | "task.updated"
+  | "task.assigned"
+  | "task.status-changed"
+  | "task.completed";
+
+export type TaskEventPayload =
+  | { taskId: string; title: string; description?: string; participantIds: string[]; createdBy: string }
+  | { taskId: string; title?: string; description?: string; blocked?: boolean; participantIds?: string[]; changeSetIds?: string[] }
+  | { taskId: string; assigneeId: string | undefined }
+  | { taskId: string; from: TaskStatus; to: TaskStatus; cancelledBy?: string }
+  | { taskId: string; completedBy: string };
+
+export interface TaskEvent {
+  eventId: string;
+  roomId: string;
+  seq: number;
+  type: TaskEventType;
+  actor: TaskMember;
+  createdAt: number;
+  payload: TaskEventPayload;
+}
+
 export type SideTaskType = "explain" | "review";
 export type SideTaskState =
   | { status: "queued" }
