@@ -150,6 +150,14 @@ export class RoomSessionLinkStore {
     return link ? copy(link) : undefined;
   }
 
+  deactivate(sessionId: string): RoomSessionLink | undefined {
+    const normalizedSessionId = requiredText(sessionId, "sessionId");
+    const link = this.links.get(normalizedSessionId);
+    if (!link) return undefined;
+    link.active = false;
+    return copy(link);
+  }
+
   getActive(roomId: string, memberId: string): RoomSessionLink | undefined {
     const normalizedRoomId = requiredText(roomId, "roomId");
     const normalizedMemberId = requiredText(memberId, "memberId");

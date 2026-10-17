@@ -75,6 +75,17 @@ describe("RoomSessionLinkStore", () => {
     })).toThrow("another room or member");
   });
 
+  it("deactivates a Session without losing its delivery cursor", async () => {
+    const workspacePath = await workspace("deactivate");
+    const store = new RoomSessionLinkStore();
+    const link = store.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath, sessionCwd: workspacePath });
+    store.advanceCursor("session-1", 7);
+
+    expect(store.deactivate("session-1")).toMatchObject({ active: false, lastInjectedRoomSeq: 7 });
+    expect(store.getBySession("session-1")).toMatchObject({ active: false, lastInjectedRoomSeq: 7, roomId: link.roomId });
+    expect(store.bind({ roomId: "room-1", memberId: "member-1", sessionId: "session-1", workspacePath, sessionCwd: workspacePath })).toMatchObject({ active: true, lastInjectedRoomSeq: 7 });
+  });
+
   it("replaces a stale member identity only for the same room Session and workspace", async () => {
     const workspacePath = await workspace("rejoin");
     const otherWorkspace = await workspace("other");

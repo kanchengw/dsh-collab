@@ -399,6 +399,12 @@ function registerGatewayControl(
     projects: roomProjects,
     onAssociation: (association, binding) => {
       nativeRoomContextBindings.set(association.sessionId, binding as DshNativeAgentContextBinding);
+      const existingLink = roomSessionLinks.getBySession(association.sessionId);
+      if (existingLink && (existingLink.roomId !== association.roomId
+        || existingLink.memberId !== association.memberId
+        || existingLink.workspacePath !== association.workspacePath)) {
+        roomSessionLinks.unbind(association.sessionId);
+      }
       roomSessionLinks.bind({
         roomId: association.roomId,
         memberId: association.memberId,
@@ -411,7 +417,7 @@ function registerGatewayControl(
     onDisassociation: (sessionId) => {
       nativeRoomContextBindings.delete(sessionId);
       roomContextDelivery.unbind(sessionId);
-      roomSessionLinks.unbind(sessionId);
+      roomSessionLinks.deactivate(sessionId);
       persistRoomSessionLinks();
     },
   });
