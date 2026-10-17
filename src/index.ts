@@ -388,6 +388,11 @@ function registerGatewayControl(
     });
   };
   const participantRoomProjectAvailable = roomProjectRegistrar !== undefined;
+  const workspaceControl = context.subprocess ? new DshWorkspaceControl({
+    subprocess: context.subprocess,
+    agents: context.agents,
+    roomProjects,
+  }) : undefined;
   const roomSessionLinkFile = new RoomSessionLinkFile(resolveDefaultRoomSessionLinkFile());
   const roomSessionLinks = RoomSessionLinkStore.fromSnapshot(roomSessionLinkFile.loadSync() ?? { version: 1, links: [] });
   const nativeRoomContextBindings = new Map<string, DshNativeAgentContextBinding>();
@@ -399,6 +404,7 @@ function registerGatewayControl(
     projects: roomProjects,
     onAssociation: (association, binding) => {
       nativeRoomContextBindings.set(association.sessionId, binding as DshNativeAgentContextBinding);
+      workspaceControl?.bindRoomProjectSession(association.sessionId);
       const existingLink = roomSessionLinks.getBySession(association.sessionId);
       if (existingLink && (existingLink.roomId !== association.roomId
         || existingLink.memberId !== association.memberId
@@ -416,6 +422,7 @@ function registerGatewayControl(
     },
     onDisassociation: (sessionId) => {
       nativeRoomContextBindings.delete(sessionId);
+      workspaceControl?.unbindRoomProjectSession(sessionId);
       roomContextDelivery.unbind(sessionId);
       roomSessionLinks.deactivate(sessionId);
       persistRoomSessionLinks();
@@ -427,11 +434,6 @@ function registerGatewayControl(
     onCursorAdvanced: persistRoomSessionLinks,
   });
   roomProjectObserver.start();
-  const workspaceControl = context.subprocess ? new DshWorkspaceControl({
-    subprocess: context.subprocess,
-    agents: context.agents,
-    roomProjects,
-  }) : undefined;
   const saveSideTasks = (): void => {
     if (sidecar && sideTaskPersistence) void sideTaskPersistence.save(sidecar.snapshot()).catch((error: unknown) => console.warn("dsh-collab local SideTask save failed", error));
   };

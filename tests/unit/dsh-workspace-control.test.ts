@@ -138,6 +138,30 @@ function participantSubmitFetch(fixture: Awaited<ReturnType<typeof participantDr
 }
 
 describe("DshWorkspaceControl", () => {
+  it("binds the publish tool when a Room Project Session participates, without a workspace panel request", async () => {
+    const definitions: unknown[] = [];
+    const unregisters: Array<() => void> = [];
+    const agent = {
+      ctx: {
+        tools: { register: (definition: unknown) => { definitions.push(definition); const unregister = () => {}; unregisters.push(unregister); return unregister; } },
+        on: () => () => {},
+      },
+    };
+    const control = workspaceControl({
+      subprocess: localDshSubprocess(),
+      agents: new Map([["session-owner", agent]]),
+    });
+
+    control.bindRoomProjectSession("session-owner");
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]).toMatchObject({ name: "collab_publish_update" });
+
+    control.unbindRoomProjectSession("session-owner");
+    expect(unregisters).toHaveLength(1);
+    await control.dispose();
+  });
+
+
   it("retires a local draft only after submission and the resulting projection are confirmed", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-collab-workspace-submit-confirmed-"));
     roots.push(root);

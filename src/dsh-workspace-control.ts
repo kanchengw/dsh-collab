@@ -184,6 +184,19 @@ export class DshWorkspaceControl {
     }
   }
 
+  bindRoomProjectSession(sessionId: string, remote?: { gatewayEndpoint: string; roomToken: string }): void {
+    const project = this.requireProjectForSession(sessionId);
+    if (remote) this.roomAccess.set(project.roomId, remote);
+    this.bindUpdateTool(sessionId, project);
+  }
+
+  unbindRoomProjectSession(sessionId: string): void {
+    const binding = this.updateTools.get(sessionId);
+    if (!binding) return;
+    binding.dispose();
+    this.updateTools.delete(sessionId);
+  }
+
   async dispose(): Promise<void> {
     for (const binding of this.updateTools.values()) binding.dispose();
     this.updateTools.clear();
@@ -400,13 +413,18 @@ export class DshWorkspaceControl {
   }
 
   private requireProject(request: DshWorkspaceControlRequest): RoomProject {
-    const cwd = this.options.agents.get(request.sessionId)?.session?.header?.cwd;
-    const project = roomProjectForCwd(this.options.roomProjects, cwd);
-    if (!project) throw new Error("Session is not in a registered Collab Room Project");
+    const project = this.requireProjectForSession(request.sessionId);
     if (project.roomId !== request.room.roomId || project.memberId !== request.room.memberId) {
       throw new Error("Session Room Project does not match the requested Collab room");
     }
-    this.bindUpdateTool(request.sessionId, project);
+    this.bindRoomProjectSession(request.sessionId, request.remote);
+    return project;
+  }
+
+  private requireProjectForSession(sessionId: string): RoomProject {
+    const cwd = this.options.agents.get(sessionId)?.session?.header?.cwd;
+    const project = roomProjectForCwd(this.options.roomProjects, cwd);
+    if (!project) throw new Error("Session is not in a registered Collab Room Project");
     return project;
   }
 
