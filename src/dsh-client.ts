@@ -382,8 +382,15 @@ export interface DshCollabSettingsPort {
 }
 
 export function resolveDshCollabRoomSelection(sessionId: string, settings: DshCollabSettingsPort | undefined, snapshot: DshCollabClientSnapshot, cwd?: string): DshCollabRoomSelection | undefined {
-  const owned = settings?.getOwnedRooms?.().find((room) => room.roomId === snapshot.roomId && room.hostSessionId === sessionId);
-  if (owned) return { kind: "owned", roomId: owned.roomId, hostSessionId: owned.hostSessionId, roomTitle: owned.title };
+  const owned = snapshot.role === "host" && settings?.getOwnedRooms?.().find((room) => room.roomId === snapshot.roomId
+    && (room.workspacePath === undefined || cwd === undefined || comparableWorkspacePath(room.workspacePath) === comparableWorkspacePath(cwd)));
+  if (owned) return {
+    kind: "owned",
+    roomId: owned.roomId,
+    hostSessionId: owned.hostSessionId,
+    roomTitle: owned.title,
+    ...(owned.workspacePath ? { workspacePath: owned.workspacePath } : {}),
+  };
   if (snapshot.role !== "participant" || snapshot.roomId === "dsh-room") return undefined;
   const joined = settings?.listJoinedRooms?.().find((room) => room.roomId === snapshot.roomId);
   const gatewayEndpoint = joined?.gatewayEndpoint ?? snapshot.gatewayEndpoint;

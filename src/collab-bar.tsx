@@ -29,10 +29,17 @@ export function nextCollabBarTab(current: CollabBarTab, key: string): CollabBarT
   return TABS[(index + direction + TABS.length) % TABS.length]!;
 }
 
+function comparableWorkspacePath(path: string): string {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  return /^[A-Za-z]:[\\/]/.test(trimmed) ? trimmed.replace(/\//g, "\\").toLowerCase() : trimmed;
+}
+
 export function collabRoomMatchesScope(selection: DshCollabRoomSelection, scope: CollabPanelRenderScope): boolean {
-  return selection.kind === "owned"
-    ? selection.hostSessionId === scope.sessionId
-    : selection.localSessionId === scope.sessionId;
+  if (selection.kind === "joined") return selection.localSessionId === scope.sessionId;
+  if (selection.workspacePath !== undefined && scope.cwd !== undefined) {
+    return comparableWorkspacePath(selection.workspacePath) === comparableWorkspacePath(scope.cwd);
+  }
+  return selection.hostSessionId === scope.sessionId;
 }
 
 function EmptyState(props: { children: ReactNode; connection?: CollabBarRoomSnapshot["connection"]; action?: { label: string; onClick: () => void } }): ReactNode {

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   CollabBarView,
+  collabRoomMatchesScope,
   nextCollabBarTab,
   type CollabBarTab,
 } from "../../src/collab-bar.js";
@@ -61,6 +62,32 @@ function changesPort(workspace: CollabChangesPort["getSnapshot"] extends () => i
 }
 
 describe("Collab Bar", () => {
+  it("matches an Owned room by Room Workspace instead of Host Session", () => {
+    const selection = {
+      kind: "owned" as const,
+      roomId: "room-1",
+      hostSessionId: "session-primary",
+      roomTitle: "Release planning",
+      workspacePath: "C:\\rooms\\release\\workspace",
+    };
+
+    expect(collabRoomMatchesScope(selection as never, { sessionId: "session-secondary", cwd: "c:/rooms/release/workspace", visible: true })).toBe(true);
+    expect(collabRoomMatchesScope(selection as never, { sessionId: "session-secondary", cwd: "C:\\rooms\\other\\workspace", visible: true })).toBe(false);
+  });
+
+  it("keeps a Joined room matched only to its local Session", () => {
+    const selection = {
+      kind: "joined" as const,
+      roomId: "room-1",
+      gatewayEndpoint: "wss://owner.example/collab",
+      roomTitle: "Release planning",
+      localSessionId: "session-a",
+    };
+
+    expect(collabRoomMatchesScope(selection, { sessionId: "session-a", cwd: "C:\\rooms\\release\\workspace", visible: true })).toBe(true);
+    expect(collabRoomMatchesScope(selection, { sessionId: "session-b", cwd: "C:\\rooms\\release\\workspace", visible: true })).toBe(false);
+  });
+
   it("shows the Room Project version without duplicating the connection summary", () => {
     const html = renderToStaticMarkup(createElement(CollabBarView, {
       scope: { sessionId: "session-owner", cwd: "C:/work/release", visible: true },

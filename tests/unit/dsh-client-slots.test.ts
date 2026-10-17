@@ -42,6 +42,54 @@ describe("real DSH client slot adapter", () => {
     })).toEqual({ kind: "owned", roomId: "room-owner", hostSessionId: "session-owner", roomTitle: "Release" });
   });
 
+  it("restores an Owned room for another Host Session in the same Room Workspace", () => {
+    expect(resolveDshCollabRoomSelection("session-secondary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
+    } as never, {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host",
+      connection: "offline",
+      onlineCount: 0,
+      canSteer: true,
+    }, "c:/rooms/release/workspace")).toEqual({
+      kind: "owned",
+      roomId: "room-owner",
+      hostSessionId: "session-primary",
+      roomTitle: "Release",
+      workspacePath: "C:\\rooms\\release\\workspace",
+    });
+  });
+
+  it("keeps an Owned room isolated from a different Room Workspace", () => {
+    expect(resolveDshCollabRoomSelection("session-secondary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
+    } as never, {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host",
+      connection: "offline",
+      onlineCount: 0,
+      canSteer: true,
+    }, "C:\\rooms\\other\\workspace")).toBeUndefined();
+  });
+
+  it("does not expose an Owned room to a Participant in the same Room Workspace", () => {
+    expect(resolveDshCollabRoomSelection("session-participant", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
+    } as never, {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "participant",
+      connection: "online",
+      onlineCount: 2,
+      canSteer: false,
+    }, "C:\\rooms\\release\\workspace")).toBeUndefined();
+  });
+
   it("restores a Joined room selection only for the Session bound to its local workspace", () => {
     expect(resolveDshCollabRoomSelection("session-participant", {
       listJoinedRooms: () => [{ gatewayEndpoint: "ws://192.168.1.3:4310/collab", roomId: "room-joined", memberId: "member-1", credential: "secret", roomTitle: "Design", workspacePath: "C:\\rooms\\design\\workspace" }],

@@ -14,7 +14,7 @@ const roomSelectionsBySession = new Map<string, DshCollabRoomSelection>();
 const roomSelectionListeners = new Set<() => void>();
 
 export type DshCollabRoomSelection =
-  | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string }
+  | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string; workspacePath?: string }
   | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; workspacePath?: string; localSessionId?: string };
 
 export interface DshCollabJoinedRoomOpenInput {
