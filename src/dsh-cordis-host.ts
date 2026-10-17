@@ -12,7 +12,7 @@ import { supportsDshCanonicalWorkspace } from "./canonical-workspace.js";
 import type { RoomSummaryLlmPort } from "./room-summary.js";
 import type { DshCollabPersistedSettings } from "./settings.js";
 import { bindDshNativeAgentContext, type DshNativeAgentContextAgent, type DshNativeAgentContextRegistry } from "./dsh-native-agent-context.js";
-import { createDshRoomProjectSessionList, DshRoomProjectSessionObserver } from "./dsh-room-project-sessions.js";
+import { createDshRoomProjectSessionList, DshRoomProjectSessionObserver, type DshRoomProjectContextBinding, type RoomProjectSessionAssociation } from "./dsh-room-project-sessions.js";
 import type { RoomProjectStore } from "./room-projects.js";
 
 export interface DshCordisHostContext {
@@ -67,6 +67,8 @@ export async function resolveDshSessionWorkspacePath(input: {
 export function createDshRoomProjectSessionObserver(input: {
   context: DshCordisHostContext;
   projects: RoomProjectStore;
+  onAssociation?: (association: RoomProjectSessionAssociation, binding: DshRoomProjectContextBinding) => void;
+  onDisassociation?: (sessionId: string) => void;
 }): DshRoomProjectSessionObserver {
   const nativeAgents = new Map<string, { source: NonNullable<ReturnType<DshCordisHostContext["agents"]["get"]>>; agent: DshNativeAgentContextAgent }>();
   const registry: DshNativeAgentContextRegistry = {
@@ -103,6 +105,8 @@ export function createDshRoomProjectSessionObserver(input: {
   return new DshRoomProjectSessionObserver({
     projects: input.projects,
     sessions,
+    ...(input.onAssociation ? { onAssociation: input.onAssociation } : {}),
+    ...(input.onDisassociation ? { onDisassociation: input.onDisassociation } : {}),
     bind: (sessionId) => {
       if (!input.context.on) return undefined;
       const source = input.context.agents.get(sessionId);

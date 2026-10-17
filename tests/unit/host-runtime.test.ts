@@ -38,6 +38,36 @@ describe("host runtime factory", () => {
     await runtime.dispose();
   });
 
+  it("notifies the production Room Context delivery hook only after ledger commit", async () => {
+    const committed: Array<{ eventId: string; seq: number; committedSeq: number }> = [];
+    const runtime = createDshCollabHostRuntime({
+      roomId: "room-1",
+      hostId: "host",
+      hostSessionId: "session-1",
+      title: "Room",
+      hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+      roomContextDelivery: {
+        onCommitted: (event, ledger) => {
+          committed.push({ eventId: event.eventId, seq: event.seq, committedSeq: ledger.latestCommittedSeq(event.roomId) });
+        },
+      },
+    });
+
+    runtime.ledger.append({
+      eventId: "event-work-update",
+      roomId: "room-1",
+      type: "work-update.published",
+      actor: { memberId: "member-host", principalId: "host" },
+      createdAt: 1,
+      payload: { roomId: "room-1", updateId: "update-1", authorId: "member-host", summary: "ready", refs: [], createdAt: 1 },
+    });
+    expect(committed).toEqual([]);
+    await runtime.ledger.commit();
+    expect(committed).toEqual([{ eventId: "event-work-update", seq: 1, committedSeq: 1 }]);
+    await runtime.dispose();
+  });
+
   it("wires WorkspaceVersion publication and restores its Ledger index", async () => {
     const content = Buffer.from("app");
     const files = [{ path: "src/app.ts", contentHash: createHash("sha256").update(content).digest("hex"), size: content.byteLength, source: "tracked" as const }];

@@ -25,6 +25,7 @@ import { DshCanonicalWorkspace, type DshCanonicalFileSystem } from "./canonical-
 import { IntegrationJournalStore } from "./integration-journal.js";
 import { CollabError } from "./errors.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
+import type { RoomEvent } from "./types.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -58,6 +59,7 @@ export interface DshCollabHostRuntimeOptions {
   integrationJournalRoot?: string;
   commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
+  roomContextDelivery?: { onCommitted(event: RoomEvent, ledger: EventLedger): void };
 }
 
 export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
@@ -280,6 +282,9 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   const unsubscribeAgentOutput = options.sessions.onAgentOutput?.((frame) => {
     hub.publishAgentOutput(frame);
   });
+  const unsubscribeRoomContextDelivery = options.roomContextDelivery
+    ? ledger.subscribeCommitted((event) => { options.roomContextDelivery!.onCommitted(event, ledger); })
+    : undefined;
   const upgrade = new CollabStreamUpgrade({ hub, tickets: gateway.streamTickets, now: options.now });
   const http = createCollabHttpServer({
     gateway,
@@ -319,6 +324,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     },
     async dispose(): Promise<void> {
       unsubscribeAgentOutput?.();
+      unsubscribeRoomContextDelivery?.();
       await upgrade.close();
       http.server.off("upgrade", upgrade.handleUpgrade);
       await http.close();

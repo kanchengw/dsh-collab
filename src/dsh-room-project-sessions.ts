@@ -91,6 +91,8 @@ export class DshRoomProjectSessionObserver {
     projects: RoomProjectStore;
     sessions: DshRoomProjectSessionList;
     bind(sessionId: string): DshRoomProjectContextBinding | undefined;
+    onAssociation?: (association: RoomProjectSessionAssociation, binding: DshRoomProjectContextBinding) => void;
+    onDisassociation?: (sessionId: string) => void;
   }) {}
 
   start(): void {
@@ -125,6 +127,7 @@ export class DshRoomProjectSessionObserver {
       const binding = this.bindings.get(sessionId) ?? this.input.bind(sessionId);
       if (!binding) continue;
       this.bindings.set(sessionId, binding);
+      this.input.onAssociation?.(structuredClone(association), binding);
       if (binding.isSafeToInject && !binding.isSafeToInject()) continue;
       try {
         binding.deliver({
@@ -162,6 +165,7 @@ export class DshRoomProjectSessionObserver {
   }
 
   private remove(sessionId: string): void {
+    if (this.associations.has(sessionId)) this.input.onDisassociation?.(sessionId);
     this.associations.delete(sessionId);
     const binding = this.bindings.get(sessionId);
     this.bindings.delete(sessionId);

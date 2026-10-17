@@ -73,6 +73,10 @@ import { decodeEasyTierInvitationNetwork, type EasyTierInvitationNetwork } from 
 import { DshWorkspaceControl } from "./dsh-workspace-control.js";
 import { DshCollabCredentialStore, type DshCredentialProvider } from "./dsh-credentials.js";
 import { RoomProjectFile, RoomProjectStore, resolveDefaultRoomProjectFile } from "./room-projects.js";
+import { RoomContextDeliveryService } from "./room-context-delivery.js";
+import { projectRoomContextForAgent, type RoomContextForAgent } from "./room-context.js";
+import { RoomSessionLinkFile, RoomSessionLinkStore, resolveDefaultRoomSessionLinkFile } from "./room-session-links.js";
+import type { DshNativeAgentContextBinding } from "./dsh-native-agent-context.js";
 import type { ParticipantResumeState } from "./dsh-browser-client.js";
 import { DshRoomProjectRegistrar } from "./dsh-room-projects.js";
 import { ParticipantRoomWorkspaceJoiner } from "./participant-room-join.js";
@@ -384,7 +388,37 @@ function registerGatewayControl(
     });
   };
   const participantRoomProjectAvailable = roomProjectRegistrar !== undefined;
-  const roomProjectObserver = createDshRoomProjectSessionObserver({ context, projects: roomProjects });
+  const roomSessionLinkFile = new RoomSessionLinkFile(resolveDefaultRoomSessionLinkFile());
+  const roomSessionLinks = RoomSessionLinkStore.fromSnapshot(roomSessionLinkFile.loadSync() ?? { version: 1, links: [] });
+  const nativeRoomContextBindings = new Map<string, DshNativeAgentContextBinding>();
+  const persistRoomSessionLinks = (): void => {
+    void roomSessionLinkFile.save(roomSessionLinks.snapshot()).catch((error: unknown) => console.warn("dsh-collab Room Session Link save failed", error));
+  };
+  const roomProjectObserver = createDshRoomProjectSessionObserver({
+    context,
+    projects: roomProjects,
+    onAssociation: (association, binding) => {
+      nativeRoomContextBindings.set(association.sessionId, binding as DshNativeAgentContextBinding);
+      roomSessionLinks.bind({
+        roomId: association.roomId,
+        memberId: association.memberId,
+        sessionId: association.sessionId,
+        workspacePath: association.workspacePath,
+        sessionCwd: association.workspacePath,
+      });
+      persistRoomSessionLinks();
+    },
+    onDisassociation: (sessionId) => {
+      nativeRoomContextBindings.delete(sessionId);
+      roomSessionLinks.unbind(sessionId);
+      persistRoomSessionLinks();
+    },
+  });
+  const roomContextDelivery = new RoomContextDeliveryService({
+    links: roomSessionLinks,
+    bind: (sessionId) => nativeRoomContextBindings.get(sessionId),
+    onCursorAdvanced: persistRoomSessionLinks,
+  });
   roomProjectObserver.start();
   const workspaceControl = context.subprocess ? new DshWorkspaceControl({
     subprocess: context.subprocess,
@@ -401,6 +435,9 @@ function registerGatewayControl(
     await starting?.catch(() => undefined);
     const current = mounted;
     mounted = undefined;
+    roomContextDelivery.dispose();
+    await roomSessionLinkFile.save(roomSessionLinks.snapshot());
+    await roomSessionLinkFile.flush();
     await Promise.all([current?.dispose(), easyTier?.stop()]);
     runningAdvertisedEndpoint = undefined;
     return { status: "stopped" };
@@ -413,7 +450,27 @@ function registerGatewayControl(
     if (starting) return await starting;
     starting = (async () => {
       const settings = unwrapDshCollabSettings(scope.get());
-      const next = mountDshCollabCordisHost(context, applyPersistedSettings(config, settings) as DshCordisHostConfig);
+      const next = mountDshCollabCordisHost(context, {
+        ...(applyPersistedSettings(config, settings) as DshCordisHostConfig),
+        roomContextDelivery: {
+          onCommitted: (event, ledger) => {
+            roomContextDelivery.deliver({
+              roomId: event.roomId,
+              toSeq: event.seq,
+              createSnapshot: ({ roomId, fromSeq, toSeq }) => {
+                const snapshot = projectRoomContextForAgent({
+                  roomId,
+                  afterSeq: fromSeq - 1,
+                  events: ledger.readCommittedAfter(roomId, fromSeq - 1, toSeq - fromSeq + 1),
+                  maxEntries: 128,
+                });
+                if (!snapshot) throw new Error("Committed Room Context range is unavailable");
+                return snapshot as RoomContextForAgent;
+              },
+            });
+          },
+        },
+      });
       if (!next) throw new Error("Host Gateway is disabled");
       mounted = next;
       try {
@@ -445,7 +502,7 @@ function registerGatewayControl(
       starting = undefined;
     }
   };
-  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean; workspacePath?: string; sourcePath?: string }> => {
+  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean; workspacePath?: string; sourcePath?: string; nativeWorkspaceId?: string }> => {
     const rooms = mounted?.runtime.rooms.snapshot()
       ?? (config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile()).loadSync()?.rooms);
     return (rooms?.rooms ?? []).filter(({ room }) => {
@@ -460,6 +517,7 @@ function registerGatewayControl(
         sharing: mounted?.runtime.activeRooms.isActive(room.roomId) ?? false,
         ...(project?.workspacePath ? { workspacePath: project.workspacePath } : {}),
         ...(project?.sourcePath ? { sourcePath: project.sourcePath } : {}),
+        ...(project?.nativeWorkspaceId ? { nativeWorkspaceId: project.nativeWorkspaceId } : {}),
       };
     });
   };
