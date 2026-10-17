@@ -151,6 +151,22 @@ describe("TaskStore", () => {
     expect(restored.events("room-1").at(-1)?.seq).toBe(3);
   });
 
+  it("persists cancellation metadata and does not allow invalid completion", () => {
+    const store = new TaskStore();
+    store.create(createdInput());
+    expect(() => store.complete({ taskId: "task-1", actor: alice, eventId: "event-completed", now: 110 })).toThrow(/status|terminal/i);
+    const cancelled = store.cancel({ taskId: "task-1", actor: alice, eventId: "event-cancelled", now: 120 });
+    expect(cancelled).toMatchObject({ status: "cancelled", cancelledAt: 120, cancelledBy: alice.memberId });
+    expect(() => store.complete({ taskId: "task-1", actor: alice, eventId: "event-completed-after-cancel", now: 130 })).toThrow(/terminal/i);
+    expect(TaskStore.fromSnapshot(store.snapshot()).get("task-1")).toMatchObject({ status: "cancelled", cancelledAt: 120, cancelledBy: alice.memberId });
+  });
+
+  it("adds the ChangeSet submitter as a participant", () => {
+    const store = new TaskStore();
+    store.create(createdInput());
+    store.linkChangeSet({ taskId: "task-1", changeSetId: "change-1", actor: bob, eventId: "event-change", now: 110 });
+    expect(store.get("task-1")).toMatchObject({ participantIds: [alice.memberId, bob.memberId], changeSetIds: ["change-1"] });
+  });
   it("keeps old room events readable while accepting Task events", () => {
     const ledger = new EventLedger();
     ledger.append({

@@ -130,6 +130,10 @@ export function reduceTaskEvents(input: readonly TaskEvent[]): ReducedTasks {
       const changed = payload as { taskId: string; from: TaskStatus; to: TaskStatus; cancelledBy?: string };
       if (current.status !== changed.from || (!isValidTransition(changed.from, changed.to) && changed.to !== "cancelled")) continue;
       current.status = changed.to;
+      if (changed.to === "cancelled") {
+        current.cancelledAt = event.createdAt;
+        current.cancelledBy = changed.cancelledBy;
+      }
       current.updatedAt = event.createdAt;
     } else if (event.type === "task.completed") {
       const completed = payload as Extract<TaskEventPayload, { completedBy: string }>;
@@ -213,7 +217,8 @@ export class TaskStore {
 
   linkChangeSet(input: TaskMutationInput & { changeSetId: string }): CollaborationTask {
     const task = this.get(input.taskId);
-    this.append({ eventId: input.eventId, roomId: task.roomId, type: "task.updated", actor: normalizeMember(input.actor), createdAt: input.now, payload: { taskId: task.taskId, changeSetIds: addUnique(task.changeSetIds, requiredText(input.changeSetId, "changeSetId")) } });
+    const actor = normalizeMember(input.actor);
+    this.append({ eventId: input.eventId, roomId: task.roomId, type: "task.updated", actor, createdAt: input.now, payload: { taskId: task.taskId, participantIds: addUnique(task.participantIds, actor.memberId), changeSetIds: addUnique(task.changeSetIds, requiredText(input.changeSetId, "changeSetId")) } });
     return this.get(input.taskId);
   }
 
@@ -227,6 +232,7 @@ export class TaskStore {
   complete(input: TaskMutationInput): CollaborationTask {
     const task = this.get(input.taskId);
     if (task.status === "done" || task.status === "cancelled") throw invalidInput("Task is already terminal", { field: "taskId" });
+    if (task.status === "open") throw invalidInput("Task status must leave open before completion", { field: "status" });
     const actor = normalizeMember(input.actor);
     this.append({ eventId: input.eventId, roomId: task.roomId, type: "task.completed", actor, createdAt: input.now, payload: { taskId: task.taskId, completedBy: actor.memberId } });
     return this.get(input.taskId);
