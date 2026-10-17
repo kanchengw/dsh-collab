@@ -17,6 +17,7 @@ import { projectCollabActivity, type CollabActivityItem } from "./collab-activit
 import { type CollabPanelHost, type CollabPanelOpenTarget, type CollabPanelRenderScope } from "./collab-panel-host.js";
 import { collabPanelScopeFromTab, createOfficialCollabPanelHost, openOfficialCollabRooms, registerOfficialCollabSidebar, type DshLayoutPanelPort, type DshSidebarRightPort, type DshSidebarRightTabProps, type DshSidebarRightTabsPort } from "./dsh-sidebar-embedding.js";
 import type { CollabChangesPort } from "./collab-changes.js";
+import { CollabTasks, type CollabTasksPort } from "./collab-tasks.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
 import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
 import type { CollabInvitationNetwork } from "./invitation.js";
@@ -911,8 +912,15 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
   const createInvite = base.createInvite?.bind(base);
   const stopSharing = base.stopSharing?.bind(base);
   const shareHostRoom = base.shareHostRoom?.bind(base);
+  const readBaseSnapshot = base.getSnapshot.bind(base);
+  const syncGatewayEndpoint = (next: DshCollabGatewayRuntimeSnapshot): void => {
+    if (next.status !== "running" || !Number.isSafeInteger(next.port)) return;
+    readBaseSnapshot();
+    base.configureGateway?.({ gatewayHost: "127.0.0.1", gatewayPort: next.port });
+  };
   const publish = (next: DshCollabGatewayRuntimeSnapshot): DshCollabGatewayRuntimeSnapshot => {
     gateway = next;
+    syncGatewayEndpoint(next);
     for (const listener of listeners) listener();
     return next;
   };
@@ -949,6 +957,13 @@ export function createDshGatewayControlPort(base: DshCollabSettingsPort, rpc: Ds
     return { gatewayEndpoint: value.gatewayEndpoint, network: decodeEasyTierInvitationNetwork(value.network) };
   };
   return Object.assign(base, {
+    getSnapshot: () => {
+      const snapshot = readBaseSnapshot();
+      if (gateway.status === "running" && Number.isSafeInteger(gateway.port)) {
+        base.configureGateway?.({ gatewayHost: "127.0.0.1", gatewayPort: gateway.port });
+      }
+      return snapshot;
+    },
     getGatewaySnapshot: () => gateway,
     subscribeGateway: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     refreshGateway: () => call("gateway/status"),
@@ -1351,6 +1366,7 @@ function DshCollabBarPanel(props: {
   workspacePorts?: DshCollabWorkspacePorts;
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
+  tasksPort?: CollabTasksPort;
   settings?: DshCollabSettingsPort;
   panelHost?: CollabPanelHost;
   openRooms?: () => void;
@@ -1374,12 +1390,56 @@ function DshCollabBarPanel(props: {
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
+    ...(props.tasksPort ? { tasks: createElement(CollabTasks, { port: props.tasksPort }) } : {}),
     t: props.t,
   });
 }
 
 function browserConfig(): { gatewayUrl: string; roomId: string; role?: "host" | "participant"; token?: string; principalId?: string } {
   return { gatewayUrl: `http://127.0.0.1:${String(defaultCollabSettings.gatewayPort)}/collab`, roomId: "dsh-room" };
+}
+
+function participantRoomKey(room: Pick<ParticipantResumeState, "gatewayEndpoint" | "roomId">): string {
+  return `${room.gatewayEndpoint}\u0000${room.roomId}`;
+}
+
+function bridgeParticipantWorkspaceMetadata(port: DshCollabSettingsPort, persistence: ParticipantPersistence): void {
+  if (!port.listJoinedRooms) return;
+  const listBase = port.listJoinedRooms.bind(port);
+  const local = new Map<string, ParticipantResumeState>();
+  const list = (): readonly ParticipantResumeState[] => {
+    const merged = new Map<string, ParticipantResumeState>();
+    for (const room of listBase()) merged.set(participantRoomKey(room), room);
+    for (const room of persistence.list?.() ?? []) merged.set(participantRoomKey(room), { ...merged.get(participantRoomKey(room)), ...room });
+    for (const room of local.values()) merged.set(participantRoomKey(room), { ...merged.get(participantRoomKey(room)), ...room });
+    return [...merged.values()];
+  };
+  port.listJoinedRooms = list;
+  const baseSubscribe = port.subscribeJoinedRooms?.bind(port);
+  port.subscribeJoinedRooms = (listener) => {
+    const unsubscribeBase = baseSubscribe?.(listener) ?? (() => {});
+    const unsubscribePersistence = persistence.subscribe?.(listener) ?? (() => {});
+    return () => { unsubscribeBase(); unsubscribePersistence(); };
+  };
+  const save = async (ref: JoinedRoomRef, patch: Partial<Pick<ParticipantResumeState, "workspacePath" | "workspaceFileCount" | "workspaceTotalBytes">>): Promise<void> => {
+    const current = list().find((room) => participantRoomKey(room) === participantRoomKey(ref));
+    if (!current) throw new Error("Joined room is not saved");
+    const next = { ...current, ...patch };
+    local.set(participantRoomKey(ref), next);
+    await persistence.save(next);
+  };
+  if (!port.setJoinedRoomWorkspacePath) {
+    port.setJoinedRoomWorkspacePath = (ref, workspacePath, summary) => save(ref, {
+      workspacePath,
+      ...(summary ? { workspaceFileCount: summary.fileCount, workspaceTotalBytes: summary.totalBytes } : {}),
+    });
+  }
+  if (!port.setJoinedRoomWorkspaceSummary) {
+    port.setJoinedRoomWorkspaceSummary = (ref, summary) => save(ref, {
+      workspaceFileCount: summary.fileCount,
+      workspaceTotalBytes: summary.totalBytes,
+    });
+  }
 }
 
 /** Register additive conversation and settings contributions through real DSH slots. */
@@ -1421,9 +1481,13 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const scopedSettings = settingsScope && rawBrowserSettings ? createDshSettingsPort(settingsScope, rawBrowserSettings) : rawBrowserSettings;
   const settings = scopedSettings && connection ? createDshGatewayControlPort(scopedSettings, connection.rpc) : scopedSettings;
   if (browserClient) context.provide?.("collabClient", browserClient);
-  if (settings) context.provide?.("collabSettings", settings);
+  if (settings) {
+    if (participantPersistence) bridgeParticipantWorkspaceMetadata(settings, participantPersistence);
+    context.provide?.("collabSettings", settings);
+  }
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
+  const tasksPort = optionalService<CollabTasksPort>(context, "collabTasks");
   let workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
   let workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   let sessions = optionalService<DshClientSessions>(context, "sessions");
@@ -1530,6 +1594,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
           workspacePorts,
           changesPort: changesPort ?? scoped?.changes,
           reviewsPort: reviewsPort ?? scoped?.reviews,
+          tasksPort,
           t: fallbackT,
         });
       },
@@ -1551,7 +1616,9 @@ export { CollabActivity, projectCollabActivity } from "./collab-activity.js";
 export { CollabChanges, validateCollabChangesSnapshot } from "./collab-changes.js";
 export type { CollabChangesPort, CollabChangesSnapshot, CollabChangesWorkspaceSnapshot } from "./collab-changes.js";
 export { CollabReviews, validateCollabReviewsSnapshot } from "./collab-reviews.js";
+export { CollabTasks, createCollabTaskActionHandlers, validateCollabTasksSnapshot } from "./collab-tasks.js";
 export type { CollabReviewItem, CollabReviewMember, CollabReviewsPort, CollabReviewsSnapshot } from "./collab-reviews.js";
+export type { CollabTaskChangeSet, CollabTaskDecision, CollabTaskDiscussionMessage, CollabTaskItem, CollabTaskMember, CollabTasksPort, CollabTasksSnapshot } from "./collab-tasks.js";
 export { CollabBarView, collabRoomMatchesScope, nextCollabBarTab } from "./collab-bar.js";
 export type { CollabBarRoomSnapshot, CollabBarTab } from "./collab-bar.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";
