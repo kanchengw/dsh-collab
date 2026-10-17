@@ -94,18 +94,20 @@ function displayName(memberNames: ReadonlyMap<string, string> | undefined, autho
 }
 
 export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
-  const [liveSnapshot, setLiveSnapshot] = useState<CollabDiscussionSnapshot>();
-  useEffect(() => {
-    if (!props.snapshotPort) return undefined;
-    return subscribeCollabDiscussionSnapshot(props.snapshotPort, setLiveSnapshot);
-  }, [props.snapshotPort]);
-  const snapshot = liveSnapshot ?? {
+  const fallbackSnapshot: CollabDiscussionSnapshot = {
     roomId: "",
     connection: props.connection,
     messages: props.messages,
     scopes: props.scopes ?? [],
     ...(props.memberNames ? { memberNames: props.memberNames } : {}),
   };
+  const initialSnapshot = props.snapshotPort?.getSnapshot() ?? fallbackSnapshot;
+  const [liveSnapshot, setLiveSnapshot] = useState<CollabDiscussionSnapshot>(initialSnapshot);
+  useEffect(() => {
+    if (!props.snapshotPort) return undefined;
+    return subscribeCollabDiscussionSnapshot(props.snapshotPort, setLiveSnapshot);
+  }, [props.snapshotPort]);
+  const snapshot = liveSnapshot;
   const scopes = snapshot.scopes.length ? snapshot.scopes : [GENERAL_SCOPE];
   const [draft, setDraft] = useState("");
   const [scope, setScope] = useState<CollabDiscussionScope>(scopes[0]!.value);

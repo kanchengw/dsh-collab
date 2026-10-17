@@ -68,6 +68,30 @@ describe("Collab Discussion", () => {
     expect(html).not.toContain("<ol");
   });
 
+  it("renders the current snapshot supplied by a live discussion port", () => {
+    let current = { roomId: "room-1", connection: "online" as const, messages, scopes: [{ value: "general" as const, label: "General" }] };
+    const discussionPort = {
+      getSnapshot: () => current,
+      subscribe: () => () => {},
+      send: vi.fn(async () => undefined),
+    } satisfies CollabDiscussionViewPort;
+    const first = renderToStaticMarkup(createElement(CollabDiscussion, {
+      connection: "offline",
+      messages: [],
+      port: discussionPort,
+      snapshotPort: discussionPort,
+    }));
+    current = { ...current, messages: [{ ...messages[0]!, text: "Fresh general context" }] };
+    const second = renderToStaticMarkup(createElement(CollabDiscussion, {
+      connection: "offline",
+      messages: [],
+      port: discussionPort,
+      snapshotPort: discussionPort,
+    }));
+    expect(first).toContain("General context");
+    expect(second).toContain("Fresh general context");
+  });
+
   it("notifies listeners with the latest snapshot when the port changes", () => {
     let current = { roomId: "room-1", connection: "online" as const, messages, scopes: [{ value: "general" as const, label: "General" }] };
     let notify: (() => void) | undefined;
