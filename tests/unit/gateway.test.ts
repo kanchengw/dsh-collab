@@ -268,6 +268,49 @@ describe("CollabGateway route contract", () => {
     ] });
   });
 
+  it("accepts mentions only for active members of the current room while preserving @agent requests", async () => {
+    const { gateway, rooms } = setup();
+    rooms.addMember("room-2", { memberId: "member-foreign", principalId: "foreign", displayName: "Foreign", now: 2 });
+    const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((host.body as { roomToken: string }).roomToken);
+
+    await expect(request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers,
+      body: { messageId: "message-valid-mention", text: "hello Alice", mentions: ["member-alice"] },
+    })).resolves.toMatchObject({ status: 201, body: { message: { mentions: ["member-alice"] } } });
+
+    await expect(request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers,
+      body: { messageId: "message-unknown-mention", text: "hello", mentions: ["member-missing"] },
+    })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+
+    await expect(request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers,
+      body: { messageId: "message-foreign-mention", text: "hello", mentions: ["member-foreign"] },
+    })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+
+    rooms.setMemberStatus("room-1", "member-alice", "removed", 3);
+    await expect(request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers,
+      body: { messageId: "message-removed-mention", text: "hello", mentions: ["member-alice"] },
+    })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+
+    await expect(request(gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers,
+      body: { messageId: "message-agent-mention", text: "@agent run tests", target: "dsh", mentions: ["member-missing"] },
+    })).resolves.toMatchObject({ status: 202, body: { request: { message: { target: "dsh" } } } });
+  });
+
   it("does not stream a room event until its persistence barrier succeeds", async () => {
     let persistenceFails = true;
     const runtime = setup(undefined, false, async () => {

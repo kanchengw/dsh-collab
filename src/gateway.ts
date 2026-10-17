@@ -752,6 +752,11 @@ export class CollabGateway {
       contextRefs: body.contextRefs as string[] | undefined,
       mentions: body.mentions as string[] | undefined,
     });
+    if (message.kind === "human" && message.mentions) {
+      const activeMemberIds = new Set(this.options.rooms.listMembers(roomId).filter((member) => member.status === "active").map((member) => member.memberId));
+      const invalidMentions = message.mentions.filter((memberId) => !activeMemberIds.has(memberId));
+      if (invalidMentions.length > 0) throw invalidInput("mentions must reference active members of this room", { field: "mentions", memberIds: invalidMentions });
+    }
     if (this.maxMessageBytes !== undefined && Buffer.byteLength(message.text, "utf8") > this.maxMessageBytes) {
       throw invalidInput("message exceeds the configured byte limit", { maxMessageBytes: this.maxMessageBytes });
     }

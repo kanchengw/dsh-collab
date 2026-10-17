@@ -499,6 +499,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private socket: BrowserSocket | undefined;
   private token: string | undefined;
   private lastEventSeq = 0;
+  private lastReadSeq = 0;
   private readonly events = new Map<string, RoomEvent>();
   private readonly activeAgentOutputs = new Map<string, AgentOutputFrame>();
   private snapshot: DshCollabClientSnapshot;
@@ -537,6 +538,13 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   }
 
   getSnapshot(): DshCollabClientSnapshot { return { ...this.snapshot }; }
+
+  markRead(): void {
+    if (this.lastReadSeq === this.lastEventSeq) return;
+    this.lastReadSeq = this.lastEventSeq;
+    this.snapshot = { ...this.snapshot, lastReadSeq: this.lastReadSeq };
+    this.emit();
+  }
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -1027,6 +1035,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.participantRef = input.participantRef;
     this.token = input.data.roomToken;
     this.lastEventSeq = lastEventSeq;
+    this.lastReadSeq = lastEventSeq;
     this.events.clear();
     for (const [eventId, event] of events) this.events.set(eventId, event);
     this.activeAgentOutputs.clear();
@@ -1047,6 +1056,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       timeline: projectTimeline([...events.values()], []),
       agentQueue: projectAgentQueue([...events.values()]),
       roomEvents: [...events.values()],
+      lastReadSeq: this.lastReadSeq,
     };
     this.manuallyDisconnected = false;
     this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
@@ -1187,6 +1197,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         timeline: this.projectTimeline(),
         agentQueue: projectAgentQueue([...this.events.values()]),
         roomEvents: [...this.events.values()],
+        lastReadSeq: this.lastReadSeq,
         ...(workspaceSharing ? { workspaceSharing } : {}),
       };
       this.emit();

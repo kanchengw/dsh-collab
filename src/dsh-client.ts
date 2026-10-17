@@ -313,6 +313,7 @@ export interface DshCollabClientSnapshot {
   timeline?: readonly TimelineItem[];
   agentQueue?: readonly AgentQueueItem[];
   roomEvents?: readonly RoomEvent[];
+  lastReadSeq?: number;
   workspaceSharing?: WorkspaceSharingState;
 }
 
@@ -320,6 +321,7 @@ export interface DshCollabClientPort {
   getSnapshot(): DshCollabClientSnapshot;
   subscribe(listener: () => void): () => void;
   send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[] }): Promise<void>;
+  markRead?(): void;
   editAgentRequest?(requestId: string, text: string): Promise<void>;
   withdrawAgentRequest?(requestId: string): Promise<void>;
 }
@@ -1402,6 +1404,9 @@ function DshCollabBarPanel(props: {
     void props.workspacePorts.activateSession(props.scope.sessionId, selection.roomId).catch(() => undefined);
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
+  useEffect(() => {
+    if (snapshot.connection === "online") props.port?.markRead?.();
+  }, [props.port, roomKey, snapshot.connection]);
   const tasksPort = resolveCollabTasksPortForRoom(props.tasksPort, selection?.roomId);
   const discussionPort = resolveCollabDiscussionPortForRoom(props.discussionPort, selection?.roomId);
   const discussionSnapshot = discussionPort?.getSnapshot();
@@ -1413,7 +1418,7 @@ function DshCollabBarPanel(props: {
     key: roomKey,
     scope: props.scope,
     selection,
-    roomSnapshot: { ...snapshot, ...(() => { const unread = projectCollabUnread(snapshot.roomEvents ?? [], snapshot.memberId); return { personalUnreadCount: unread.personal, totalUnreadCount: unread.total }; })() },
+    roomSnapshot: { ...snapshot, ...(() => { const unread = projectCollabUnread(snapshot.roomEvents ?? [], snapshot.memberId, snapshot.lastReadSeq); return { personalUnreadCount: unread.personal, totalUnreadCount: unread.total }; })() },
     discussion,
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),

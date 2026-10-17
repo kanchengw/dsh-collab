@@ -29,6 +29,15 @@ describe("collab composer mentions", () => {
     expect(extractComposerMentionIds("Please ask @Alice and owner@Alice.example", members)).toEqual(["member-alice"]);
   });
 
+  it("uses the middle textarea selection and preserves the text after the inserted mention", () => {
+    const members = [{ memberId: "member-alice", displayName: "Alice" }];
+    const draft = "before @al—after";
+    const cursor = "before @al".length;
+
+    expect(composerMentionSuggestions(draft, members, cursor, cursor)).toEqual(members);
+    expect(insertMemberMention(draft, members[0]!, cursor, cursor)).toBe("before @Alice —after");
+  });
+
   it("keeps member mentions on room submissions and counts related versus room unread", () => {
     expect(createComposerSubmission({ messageId: "m-mention", roomId: "room-1", authorMemberId: "member-owner", text: "@Alice review", target: "room", mentions: ["member-alice"] })).toMatchObject({ mentions: ["member-alice"], target: "room" });
     expect(createComposerSubmission({ messageId: "m-agent", roomId: "room-1", authorMemberId: "member-owner", text: "@agent review", target: "dsh", mentions: ["member-alice"] })).not.toHaveProperty("mentions");
@@ -37,6 +46,12 @@ describe("collab composer mentions", () => {
       { eventId: "e2", roomId: "room-1", seq: 2, type: "human.message", createdAt: 2, actor: { memberId: "member-bob", principalId: "bob" }, payload: { mentions: [] } },
       { eventId: "e3", roomId: "room-1", seq: 3, type: "human.message", createdAt: 3, actor: { memberId: "member-owner", principalId: "owner" }, payload: { mentions: ["member-alice"] } },
     ], "member-owner")).toEqual({ personal: 1, total: 2 });
+    expect(projectCollabUnread([
+      { eventId: "e1", roomId: "room-1", seq: 1, type: "human.message", createdAt: 1, actor: { memberId: "member-alice", principalId: "alice" }, payload: { mentions: ["member-owner"] } },
+      { eventId: "e2", roomId: "room-1", seq: 2, type: "human.message", createdAt: 2, actor: { memberId: "member-bob", principalId: "bob" }, payload: { mentions: ["member-owner"] } },
+      { eventId: "e3", roomId: "room-1", seq: 3, type: "human.message", createdAt: 3, actor: { memberId: "member-owner", principalId: "owner" }, payload: { mentions: ["member-alice"] } },
+      { eventId: "e4", roomId: "room-1", seq: 4, type: "human.message", createdAt: 4, actor: { memberId: "member-alice", principalId: "alice" }, payload: { mentions: ["member-owner"] } },
+    ], "member-owner", 2)).toEqual({ personal: 1, total: 1 });
   });
 
   it("keeps resolved room and Agent submissions distinct on the wire", () => {

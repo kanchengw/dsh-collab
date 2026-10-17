@@ -42,18 +42,20 @@ export function insertAgentMention(draft: string): string {
   return shouldSuggestAgentMention(draft) ? `${draft.slice(0, -1)}${AGENT_MENTION} ` : draft;
 }
 
-function mentionQuery(draft: string, cursorPosition = draft.length): string | undefined {
-  const beforeCursor = draft.slice(0, cursorPosition);
+export function mentionQuery(draft: string, selectionStart = draft.length, selectionEnd = selectionStart): string | undefined {
+  const start = Math.max(0, Math.min(selectionStart, draft.length));
+  const end = Math.max(start, Math.min(selectionEnd, draft.length));
+  const beforeCursor = draft.slice(0, end);
   const match = beforeCursor.match(/(?:^|[^A-Za-z0-9_@])@([^\s@]*)$/);
   return match?.[1];
 }
 
-export function shouldSuggestMemberMention(draft: string, cursorPosition = draft.length): boolean {
-  return mentionQuery(draft, cursorPosition) !== undefined;
+export function shouldSuggestMemberMention(draft: string, selectionStart = draft.length, selectionEnd = selectionStart): boolean {
+  return mentionQuery(draft, selectionStart, selectionEnd) !== undefined;
 }
 
-export function composerMentionSuggestions(draft: string, members: readonly ComposerMentionMember[], cursorPosition = draft.length): ComposerMentionMember[] {
-  const query = mentionQuery(draft, cursorPosition)?.toLocaleLowerCase();
+export function composerMentionSuggestions(draft: string, members: readonly ComposerMentionMember[], selectionStart = draft.length, selectionEnd = selectionStart): ComposerMentionMember[] {
+  const query = mentionQuery(draft, selectionStart, selectionEnd)?.toLocaleLowerCase();
   if (query === undefined) return [];
   return members.filter((member) => member.displayName.toLocaleLowerCase().startsWith(query));
 }
@@ -68,11 +70,13 @@ export function composerMentionMenuKeyAction(input: { key: string; selectedIndex
   return { kind: "native" };
 }
 
-export function insertMemberMention(draft: string, member: ComposerMentionMember, cursorPosition = draft.length): string {
-  const query = mentionQuery(draft, cursorPosition);
+export function insertMemberMention(draft: string, member: ComposerMentionMember, selectionStart = draft.length, selectionEnd = selectionStart): string {
+  const start = Math.max(0, Math.min(selectionStart, draft.length));
+  const end = Math.max(start, Math.min(selectionEnd, draft.length));
+  const query = mentionQuery(draft, start, end);
   if (query === undefined) return draft;
-  const start = cursorPosition - query.length - 1;
-  return `${draft.slice(0, start)}@${member.displayName} ${draft.slice(cursorPosition)}`;
+  const mentionStart = end - query.length - 1;
+  return `${draft.slice(0, mentionStart)}@${member.displayName} ${draft.slice(end)}`;
 }
 
 function escapedRegExp(value: string): string {
@@ -130,10 +134,11 @@ export function composerTargetForGesture(text: string, agentBusy: boolean, shift
   return composerTargetForText(text);
 }
 
-export function projectCollabUnread(events: readonly RoomEvent[], currentMemberId?: string): CollabUnreadCounts {
+export function projectCollabUnread(events: readonly RoomEvent[], currentMemberId?: string, lastReadSeq = 0): CollabUnreadCounts {
   let personal = 0;
   let total = 0;
   for (const event of events) {
+    if (event.seq <= lastReadSeq) continue;
     if (currentMemberId !== undefined && event.actor.memberId === currentMemberId) continue;
     total += 1;
     const payload = objectPayload(event.payload);

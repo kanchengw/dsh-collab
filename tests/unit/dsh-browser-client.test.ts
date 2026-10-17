@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDshBrowserCollabClient as createBrowserClient, type BrowserFetch, type BrowserRequestInit, type BrowserSocket, type DshBrowserCollabOptions, type ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import { decodeCollabInvitation, encodeCollabInvitation } from "../../src/invitation.js";
 import { CHANGE_SET_CAPABILITY, COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
+import { projectCollabUnread } from "../../src/ui.js";
 
 function response(data: unknown, status = 200): { ok: boolean; status: number; json(): Promise<unknown> } {
   return { ok: status < 400, status, json: async () => ({ protocol: "dsh-collab.v1", requestId: "test", ok: true, data }) };
@@ -1169,7 +1170,7 @@ describe("browser Gateway client", () => {
         lastEventSeq: 2,
       });
       if (url.includes("/events?")) return response({ events: [
-        { eventId: "human-1", roomId: "room-1", seq: 1, type: "human.message", actor: { memberId: "member-host", principalId: "host" }, createdAt: 1, payload: { text: "hello" } },
+        { eventId: "human-1", roomId: "room-1", seq: 1, type: "human.message", actor: { memberId: "member-alice", principalId: "alice" }, createdAt: 1, payload: { text: "hello", mentions: ["member-host"] } },
         { eventId: "agent-1", roomId: "room-1", seq: 2, type: "agent.state.changed", actor: { memberId: "member-host", principalId: "host" }, createdAt: 2, payload: { requestId: "request-1", state: "output", text: "done" } },
       ] });
       throw new Error(`unexpected request ${url}`);
@@ -1193,6 +1194,8 @@ describe("browser Gateway client", () => {
       { kind: "agent", text: "done", state: "output" },
     ]);
     expect(client.getSnapshot().roomEvents?.map((event) => event.eventId)).toEqual(["human-1", "agent-1"]);
+    expect(client.getSnapshot().lastReadSeq).toBe(2);
+    expect(projectCollabUnread(client.getSnapshot().roomEvents ?? [], client.getSnapshot().memberId, client.getSnapshot().lastReadSeq)).toEqual({ personal: 0, total: 0 });
 
     socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
       eventId: "foreign", roomId: "room-2", seq: 999, type: "human.message",
@@ -1230,10 +1233,15 @@ describe("browser Gateway client", () => {
 
     socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
       eventId: "human-2", roomId: "room-1", seq: 4, type: "human.message",
-      actor: { memberId: "member-host", principalId: "host" }, createdAt: 4, payload: { text: "live" },
+      actor: { memberId: "member-alice", principalId: "alice" }, createdAt: 4, payload: { text: "live", mentions: ["member-host"] },
     } }) });
     expect(client.getSnapshot().timeline?.at(-1)).toMatchObject({ kind: "human", text: "live" });
     expect(client.getSnapshot().roomEvents?.at(-1)?.eventId).toBe("human-2");
+    expect(client.getSnapshot().lastReadSeq).toBe(2);
+    expect(projectCollabUnread(client.getSnapshot().roomEvents ?? [], client.getSnapshot().memberId, client.getSnapshot().lastReadSeq)).toEqual({ personal: 1, total: 1 });
+    client.markRead();
+    expect(client.getSnapshot().lastReadSeq).toBe(4);
+    expect(projectCollabUnread(client.getSnapshot().roomEvents ?? [], client.getSnapshot().memberId, client.getSnapshot().lastReadSeq)).toEqual({ personal: 0, total: 0 });
 
     socket?.onmessage?.({ data: JSON.stringify({ protocol: "dsh-collab.v1", type: "event", event: {
       eventId: "member-joined", roomId: "room-1", seq: 5, type: "member.joined",
