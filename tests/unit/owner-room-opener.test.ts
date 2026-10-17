@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDshOwnedRoomCreator } from "../../src/dsh-client.js";
+import { closeDshCollabRoom, getDshCollabRoomSelection } from "../../src/collab-rooms.js";
 
 describe("createDshOwnedRoomCreator", () => {
   it("creates and opens a Host Room Project through the two-phase Owner RPC", async () => {
@@ -46,6 +47,13 @@ describe("createDshOwnedRoomCreator", () => {
     });
 
     await expect(create("Atlas", "C:\\work\\atlas")).resolves.toBe(true);
+
+    expect(getDshCollabRoomSelection("host-primary")).toMatchObject({
+      kind: "owned",
+      roomId: "room-atlas",
+      workspacePath: "C:\\rooms\\atlas",
+    });
+    closeDshCollabRoom("host-primary");
 
     expect(order).toEqual([
       "owner/room-project/prepare",

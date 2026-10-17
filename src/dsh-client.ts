@@ -133,9 +133,30 @@ export function createDshOwnedRoomCreator(input: {
       roomId: prepared.roomId,
       hostSessionId: hostPrimarySessionId,
       roomTitle: title,
+      workspacePath: prepared.workspacePath,
     }, panelHost, { sessionId: hostPrimarySessionId, cwd: prepared.workspacePath });
     await input.refreshOwnedRooms?.();
     return true;
+  };
+}
+
+export function createDshOwnedRoomReopener(input: {
+  rpc: DshClientConnectionRpc;
+  workspaceNavigation: DshClientWorkspaceNavigation;
+  refreshOwnedRooms?(): Promise<unknown>;
+}): (room: DshCollabOwnedRoom) => Promise<{ hostSessionId: string }> {
+  return async (room) => {
+    if (!room.nativeWorkspaceId) throw new Error("Owned room Native Workspace is unavailable");
+    const hostSessionId = await input.workspaceNavigation.connectWorkspace(room.nativeWorkspaceId);
+    input.workspaceNavigation.openSession(hostSessionId);
+    const result = controlValue(await input.rpc.call("/dsh-collab", "owner/room-project/complete", {
+      roomId: room.roomId,
+      sourceSessionId: room.hostSessionId,
+      hostPrimarySessionId: hostSessionId,
+    }), "Owner Room Project rebinding failed");
+    if (typeof result.hostPrimarySessionId !== "string" || result.hostPrimarySessionId.trim() === "") throw new Error("Invalid Owner Room Project completion response");
+    await input.refreshOwnedRooms?.();
+    return { hostSessionId: result.hostPrimarySessionId };
   };
 }
 
@@ -320,6 +341,7 @@ export interface DshCollabOwnedRoom {
   sharing: boolean;
   workspacePath?: string;
   sourcePath?: string;
+  nativeWorkspaceId?: string;
 }
 
 export type DshCollabSettingsSnapshot = DshCollabGatewaySnapshot & Partial<DshCollabSecuritySettings> & {
@@ -356,6 +378,7 @@ export interface DshCollabSettingsPort {
   getOwnedRooms?(): readonly DshCollabOwnedRoom[];
   subscribeOwnedRooms?(listener: () => void): () => void;
   refreshOwnedRooms?(): Promise<readonly DshCollabOwnedRoom[]>;
+  reopenOwnedRoom?(room: DshCollabOwnedRoom): Promise<{ hostSessionId: string }>;
   getWorkspaceSharing?(roomId: string): Promise<WorkspaceSharingState>;
   setWorkspaceSharing?(roomId: string, enabled: boolean): Promise<WorkspaceSharingState>;
   requestWorkspaceSnapshot?(roomId: string): Promise<WorkspaceSnapshotPackage>;
@@ -714,6 +737,7 @@ function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
     if ([room.roomId, room.hostSessionId, room.title].some((field) => typeof field !== "string" || field.trim() === "") || typeof room.sharing !== "boolean") throw new Error("Invalid Owned room");
     if (room.workspacePath !== undefined && (typeof room.workspacePath !== "string" || room.workspacePath.trim() === "")) throw new Error("Invalid Owned room workspace path");
     if (room.sourcePath !== undefined && (typeof room.sourcePath !== "string" || room.sourcePath.trim() === "")) throw new Error("Invalid Owned room source path");
+    if (room.nativeWorkspaceId !== undefined && (typeof room.nativeWorkspaceId !== "string" || room.nativeWorkspaceId.trim() === "")) throw new Error("Invalid Owned room Native Workspace ID");
     return {
       roomId: room.roomId as string,
       hostSessionId: room.hostSessionId as string,
@@ -721,6 +745,7 @@ function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
       sharing: room.sharing,
       ...(typeof room.workspacePath === "string" ? { workspacePath: room.workspacePath } : {}),
       ...(typeof room.sourcePath === "string" ? { sourcePath: room.sourcePath } : {}),
+      ...(typeof room.nativeWorkspaceId === "string" ? { nativeWorkspaceId: room.nativeWorkspaceId } : {}),
     };
   });
 }
@@ -1419,6 +1444,17 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     sessions ??= optionalService<DshClientSessions>(context, "sessions");
   };
   resolveWorkspaceServices();
+  if (settings && connection) {
+    settings.reopenOwnedRoom = async (room) => {
+      resolveWorkspaceServices();
+      if (!workspaceNavigation) throw new Error("DSH Workspace services are not ready; reload the DSH page and try again");
+      return createDshOwnedRoomReopener({
+        rpc: connection.rpc,
+        workspaceNavigation,
+        ...(settings.refreshOwnedRooms ? { refreshOwnedRooms: () => settings.refreshOwnedRooms!() } : {}),
+      })(room);
+    };
+  }
   const createOwnedRoom = connection
     ? async (roomTitle: string, sourcePath: string): Promise<boolean> => {
         resolveWorkspaceServices();
