@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import css from "./collab-discussion.module.css";
 
 export type CollabDiscussionScope = "general" | `task:${string}`;
@@ -41,12 +41,22 @@ export interface CollabDiscussionViewPort extends CollabDiscussionPort {
   forRoom?(roomId: string): CollabDiscussionViewPort | undefined;
 }
 
+export function subscribeCollabDiscussionSnapshot(
+  port: CollabDiscussionViewPort,
+  listener: (snapshot: CollabDiscussionSnapshot) => void,
+): () => void {
+  const update = (): void => { listener(port.getSnapshot()); };
+  update();
+  return port.subscribe(update);
+}
+
 export interface CollabDiscussionProps {
   connection: "online" | "offline";
   messages: readonly CollabDiscussionMessage[];
   port: CollabDiscussionPort;
   scopes?: readonly CollabDiscussionScopeOption[];
   memberNames?: ReadonlyMap<string, string>;
+  snapshotPort?: CollabDiscussionViewPort;
 }
 
 const GENERAL_SCOPE: CollabDiscussionScopeOption = { value: "general", label: "General" };
@@ -84,21 +94,33 @@ function displayName(memberNames: ReadonlyMap<string, string> | undefined, autho
 }
 
 export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
-  const scopes = props.scopes?.length ? props.scopes : [GENERAL_SCOPE];
+  const [liveSnapshot, setLiveSnapshot] = useState<CollabDiscussionSnapshot>();
+  useEffect(() => {
+    if (!props.snapshotPort) return undefined;
+    return subscribeCollabDiscussionSnapshot(props.snapshotPort, setLiveSnapshot);
+  }, [props.snapshotPort]);
+  const snapshot = liveSnapshot ?? {
+    roomId: "",
+    connection: props.connection,
+    messages: props.messages,
+    scopes: props.scopes ?? [],
+    ...(props.memberNames ? { memberNames: props.memberNames } : {}),
+  };
+  const scopes = snapshot.scopes.length ? snapshot.scopes : [GENERAL_SCOPE];
   const [draft, setDraft] = useState("");
   const [scope, setScope] = useState<CollabDiscussionScope>(scopes[0]!.value);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const selectedSource = sourceMessage(props.messages, sourceMessageId);
-  const online = props.connection === "online";
+  const selectedSource = sourceMessage(snapshot.messages, sourceMessageId);
+  const online = snapshot.connection === "online";
 
   const submit = async (): Promise<void> => {
     if (busy || !online) return;
     setBusy(true);
     setError(undefined);
     try {
-      await sendCollabDiscussionMessage(props.port, { text: draft, scope, sourceMessageId }, props.messages);
+      await sendCollabDiscussionMessage(props.port, { text: draft, scope, sourceMessageId }, snapshot.messages);
       setDraft("");
       setSourceMessageId(undefined);
     } catch (cause) {
@@ -108,17 +130,17 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     }
   };
 
-  return <section className={css.discussion} data-collab-discussion="true" data-connection={props.connection} aria-label="Discussion">
+  return <section className={css.discussion} data-collab-discussion="true" data-connection={snapshot.connection} aria-label="Discussion">
     <header className={css.header}>
       <div><h2>Discussion</h2><p>Flat messages for the room and selected objects.</p></div>
       <span className={css.connection} role="status">{online ? "在线" : "离线"}</span>
     </header>
     {!online ? <p className={css.offline} role="status">当前离线，恢复连接后才能发送消息</p> : null}
-    {props.messages.length === 0 ? <p className={css.empty} role="status">暂无讨论消息</p> : <ul className={css.messages}>
-      {props.messages.map((message) => {
-        const source = sourceMessage(props.messages, message.sourceMessageId);
+    {snapshot.messages.length === 0 ? <p className={css.empty} role="status">暂无讨论消息</p> : <ul className={css.messages}>
+      {snapshot.messages.map((message) => {
+        const source = sourceMessage(snapshot.messages, message.sourceMessageId);
         return <li key={message.messageId} className={css.message} data-scope={message.scope}>
-          <div className={css.messageMeta}><strong>{displayName(props.memberNames, message.authorId)}</strong><span>{message.scope === "general" ? "General" : message.scope}</span></div>
+          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, message.authorId)}</strong><span>{message.scope === "general" ? "General" : message.scope}</span></div>
           <p className={css.text}>{message.text}</p>
           {message.sourceMessageId ? <div className={css.quote} data-reference-state={source ? "available" : "missing"}>
             <span>引用源</span>{source ? <p>{source.text}</p> : <p>引用源不可用</p>}

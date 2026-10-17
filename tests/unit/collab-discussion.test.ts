@@ -5,8 +5,10 @@ import {
   CollabDiscussion,
   createCollabDiscussionSendInput,
   sendCollabDiscussionMessage,
+  subscribeCollabDiscussionSnapshot,
   type CollabDiscussionMessage,
   type CollabDiscussionPort,
+  type CollabDiscussionViewPort,
 } from "../../src/collab-discussion.js";
 
 const messages: readonly CollabDiscussionMessage[] = [
@@ -64,6 +66,22 @@ describe("Collab Discussion", () => {
     expect(html).toContain("引用源不可用");
     expect(html).not.toContain("message-missing");
     expect(html).not.toContain("<ol");
+  });
+
+  it("notifies listeners with the latest snapshot when the port changes", () => {
+    let current = { roomId: "room-1", connection: "online" as const, messages, scopes: [{ value: "general" as const, label: "General" }] };
+    let notify: (() => void) | undefined;
+    const discussionPort = {
+      getSnapshot: () => current,
+      subscribe: (listener: () => void) => { notify = listener; return () => { notify = undefined; }; },
+      send: vi.fn(async () => undefined),
+    } satisfies CollabDiscussionViewPort;
+    const snapshots: string[] = [];
+    const unsubscribe = subscribeCollabDiscussionSnapshot(discussionPort, (snapshot) => { snapshots.push(snapshot.messages[0]?.text ?? ""); });
+    current = { ...current, messages: [{ ...messages[0]!, text: "Updated general context" }] };
+    notify?.();
+    unsubscribe();
+    expect(snapshots).toEqual(["General context", "Updated general context"]);
   });
 
   it("trims text, keeps only a valid source id, and maps the exact port contract", async () => {

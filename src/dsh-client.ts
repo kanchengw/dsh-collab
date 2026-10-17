@@ -1407,7 +1407,7 @@ function DshCollabBarPanel(props: {
   const discussionSnapshot = discussionPort?.getSnapshot();
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   const discussion = discussionPort && discussionSnapshot
-    ? createElement(CollabDiscussion, { port: discussionPort, ...discussionSnapshot })
+    ? createElement(CollabDiscussion, { port: discussionPort, snapshotPort: discussionPort, ...discussionSnapshot })
     : createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t });
   return createElement(CollabBarView, {
     key: roomKey,
