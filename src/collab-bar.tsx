@@ -6,9 +6,9 @@ import type { CollabPanelRenderScope } from "./collab-panel-host.js";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 import css from "./collab-bar.module.css";
 
-export type CollabBarTab = "activity" | "changes" | "reviews";
+export type CollabBarTab = "tasks" | "activity" | "changes" | "reviews";
 
-const TABS: readonly CollabBarTab[] = ["activity", "changes", "reviews"];
+const TABS: readonly CollabBarTab[] = ["tasks", "activity", "changes", "reviews"];
 
 export interface CollabBarRoomSnapshot {
   roomId: string;
@@ -21,7 +21,7 @@ export interface CollabBarRoomSnapshot {
 }
 
 export function nextCollabBarTab(current: CollabBarTab, key: string): CollabBarTab {
-  if (key === "Home") return "activity";
+  if (key === "Home") return "tasks";
   if (key === "End") return "reviews";
   const direction = key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0;
   if (direction === 0) return current;
@@ -82,6 +82,7 @@ export function CollabBarView(props: {
   selection?: DshCollabRoomSelection;
   roomSnapshot?: CollabBarRoomSnapshot;
   discussion?: ReactNode;
+  tasks?: ReactNode;
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
   initialTab?: CollabBarTab;
@@ -135,6 +136,7 @@ export function CollabBarView(props: {
       {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
     </nav>
     <section className={css.panel} id={`${id}-${activeTab}-panel`} role="tabpanel" aria-labelledby={`${id}-${activeTab}-tab`} data-active-tab={activeTab}>
+      {activeTab === "tasks" ? props.tasks ?? <EmptyState>{t("bar.tasksUnavailable")}</EmptyState> : null}
       {activeTab === "activity" ? <div className={css.activity}>{props.discussion}</div> : null}
       {activeTab === "changes" ? props.changesPort ? <CollabChanges port={props.changesPort} t={t} /> : <EmptyState>{t("bar.changesUnavailable")}</EmptyState> : null}
       {activeTab === "reviews" ? props.reviewsPort ? <CollabReviews port={props.reviewsPort} t={t} /> : <EmptyState>{t("bar.reviewsUnavailable")}</EmptyState> : null}

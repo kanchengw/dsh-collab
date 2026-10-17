@@ -125,6 +125,7 @@ describe("Collab Bar", () => {
     expect(html).toContain('data-connection="online"');
     expect(html).toContain("Online · 2 members");
     expect(html).toContain('role="tablist"');
+    expect(html).toContain(">Tasks<");
     expect(html).toContain(">Activity<");
     expect(html).toContain(">Changes<");
     expect(html).toContain(">Reviews<");
@@ -170,6 +171,7 @@ describe("Collab Bar", () => {
     }));
 
     expect(html).toContain("协作");
+    expect(html).toContain("任务");
     expect(html).toContain("动态");
     expect(html).toContain("变更");
     expect(html).toContain("审阅");
@@ -208,12 +210,13 @@ describe("Collab Bar", () => {
 
   it("uses predictable keyboard tab navigation", () => {
     const cases: Array<[CollabBarTab, string, CollabBarTab]> = [
+      ["tasks", "ArrowRight", "activity"],
       ["activity", "ArrowRight", "changes"],
       ["changes", "ArrowRight", "reviews"],
-      ["reviews", "ArrowRight", "activity"],
-      ["activity", "ArrowLeft", "reviews"],
-      ["reviews", "Home", "activity"],
-      ["activity", "End", "reviews"],
+      ["reviews", "ArrowRight", "tasks"],
+      ["activity", "ArrowLeft", "tasks"],
+      ["reviews", "Home", "tasks"],
+      ["tasks", "End", "reviews"],
       ["changes", "Enter", "changes"],
     ];
     for (const [current, key, expected] of cases) expect(nextCollabBarTab(current, key)).toBe(expected);
