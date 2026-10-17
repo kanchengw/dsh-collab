@@ -1,0 +1,152 @@
+.discussion {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  color: var(--dsh-collab-fg, #17202a);
+  font-family: var(--dsw-font-family, sans-serif);
+}
+
+.header,
+.messageMeta,
+.composer,
+.selectedQuote {
+  display: flex;
+  gap: 8px;
+}
+
+.header,
+.messageMeta {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.header h2,
+.header p,
+.text,
+.quote p,
+.offline,
+.empty,
+.error,
+.invalidReference {
+  margin: 0;
+}
+
+.header p,
+.connection,
+.messageMeta span,
+.empty,
+.offline,
+.invalidReference {
+  color: var(--dsh-collab-muted, #65717d);
+}
+
+.connection,
+.messageMeta span {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.offline,
+.error,
+.invalidReference {
+  padding: 8px;
+  border-radius: 6px;
+  background: #fff3f0;
+}
+
+.messages {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--dsh-collab-border, #d9dee4);
+  border-radius: 8px;
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote,
+.selectedQuote {
+  padding: 7px 9px;
+  border-left: 3px solid var(--dsh-collab-accent, #3578e5);
+  background: #f2f7ff;
+  font-size: 12px;
+}
+
+.quote span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--dsh-collab-muted, #65717d);
+  font-weight: 600;
+}
+
+.quoteButton,
+.selectedQuote button,
+.send,
+.composer select,
+.composer textarea {
+  font: inherit;
+}
+
+.quoteButton {
+  justify-self: start;
+}
+
+.composer {
+  flex-wrap: wrap;
+  align-items: end;
+  padding-top: 4px;
+}
+
+.composer label {
+  display: flex;
+  min-width: 130px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inputLabel {
+  flex: 1 1 220px;
+}
+
+.composer textarea {
+  min-width: 0;
+  resize: vertical;
+  padding: 7px;
+}
+
+.selectedQuote {
+  flex: 1 1 100%;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.send {
+  padding: 7px 12px;
+}
+
+button,
+select,
+textarea {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}

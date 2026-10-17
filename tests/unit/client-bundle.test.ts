@@ -18,6 +18,6 @@ describe("browser client bundle", () => {
     expect(bundle).toContain('"collab-bar"');
     expect(
       bundle.match(/tag\.setAttribute\("data-dsh-collab-css", styleId(?:\$\d+)?\)/g),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
   });
 });

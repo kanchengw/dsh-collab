@@ -18,6 +18,7 @@ import { type CollabPanelHost, type CollabPanelOpenTarget, type CollabPanelRende
 import { collabPanelScopeFromTab, createOfficialCollabPanelHost, openOfficialCollabRooms, registerOfficialCollabSidebar, type DshLayoutPanelPort, type DshSidebarRightPort, type DshSidebarRightTabProps, type DshSidebarRightTabsPort } from "./dsh-sidebar-embedding.js";
 import type { CollabChangesPort } from "./collab-changes.js";
 import { CollabTasks, type CollabTasksPort } from "./collab-tasks.js";
+import { CollabDiscussion, type CollabDiscussionViewPort } from "./collab-discussion.js";
 import type { CollabReviewsPort } from "./collab-reviews.js";
 import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./easytier-invitation.js";
 import type { CollabInvitationNetwork } from "./invitation.js";
@@ -1370,6 +1371,16 @@ export function resolveCollabTasksPortForRoom(port: CollabTasksPort | undefined,
   }
 }
 
+export function resolveCollabDiscussionPortForRoom(port: CollabDiscussionViewPort | undefined, roomId: string | undefined): CollabDiscussionViewPort | undefined {
+  if (!port || typeof roomId !== "string" || roomId.trim() === "") return undefined;
+  try {
+    const scoped = port.forRoom?.(roomId) ?? port;
+    return scoped.getSnapshot().roomId === roomId ? scoped : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function DshCollabBarPanel(props: {
   scope: CollabPanelRenderScope;
   port?: DshCollabClientPort;
@@ -1377,6 +1388,7 @@ function DshCollabBarPanel(props: {
   changesPort?: CollabChangesPort;
   reviewsPort?: CollabReviewsPort;
   tasksPort?: CollabTasksPort;
+  discussionPort?: CollabDiscussionViewPort;
   settings?: DshCollabSettingsPort;
   panelHost?: CollabPanelHost;
   openRooms?: () => void;
@@ -1391,13 +1403,18 @@ function DshCollabBarPanel(props: {
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
   const tasksPort = resolveCollabTasksPortForRoom(props.tasksPort, selection?.roomId);
+  const discussionPort = resolveCollabDiscussionPortForRoom(props.discussionPort, selection?.roomId);
+  const discussionSnapshot = discussionPort?.getSnapshot();
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
+  const discussion = discussionPort && discussionSnapshot
+    ? createElement(CollabDiscussion, { port: discussionPort, ...discussionSnapshot })
+    : createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t });
   return createElement(CollabBarView, {
     key: roomKey,
     scope: props.scope,
     selection,
     roomSnapshot: snapshot,
-    discussion: createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t }),
+    discussion,
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
@@ -1499,6 +1516,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
   const tasksPort = optionalService<CollabTasksPort>(context, "collabTasks");
+  const discussionPort = optionalService<CollabDiscussionViewPort>(context, "collabDiscussion");
   let workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
   let workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   let sessions = optionalService<DshClientSessions>(context, "sessions");
@@ -1606,6 +1624,7 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
           changesPort: changesPort ?? scoped?.changes,
           reviewsPort: reviewsPort ?? scoped?.reviews,
           tasksPort,
+          discussionPort,
           t: fallbackT,
         });
       },
@@ -1628,8 +1647,10 @@ export { CollabChanges, validateCollabChangesSnapshot } from "./collab-changes.j
 export type { CollabChangesPort, CollabChangesSnapshot, CollabChangesWorkspaceSnapshot } from "./collab-changes.js";
 export { CollabReviews, validateCollabReviewsSnapshot } from "./collab-reviews.js";
 export { CollabTasks, createCollabTaskActionHandlers, validateCollabTasksSnapshot } from "./collab-tasks.js";
+export { CollabDiscussion, createCollabDiscussionSendInput, sendCollabDiscussionMessage } from "./collab-discussion.js";
 export type { CollabReviewItem, CollabReviewMember, CollabReviewsPort, CollabReviewsSnapshot } from "./collab-reviews.js";
 export type { CollabTaskChangeSet, CollabTaskDecision, CollabTaskDiscussionMessage, CollabTaskItem, CollabTaskMember, CollabTasksPort, CollabTasksSnapshot } from "./collab-tasks.js";
+export type { CollabDiscussionMessage, CollabDiscussionPort, CollabDiscussionScope, CollabDiscussionScopeOption, CollabDiscussionSendInput, CollabDiscussionSnapshot, CollabDiscussionViewPort } from "./collab-discussion.js";
 export { CollabBarView, collabRoomMatchesScope, nextCollabBarTab } from "./collab-bar.js";
 export type { CollabBarRoomSnapshot, CollabBarTab } from "./collab-bar.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";
