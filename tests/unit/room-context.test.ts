@@ -407,6 +407,84 @@ describe("Room Context projections", () => {
     expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-bob", events })?.entries).toHaveLength(2);
     expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-carol", events })?.entries).toEqual([]);
   });
+  it("restores a Task from the committed prefix before projecting a later update", () => {
+    const snapshot = projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 1,
+      maxEntries: 10,
+      memberId: "member-bob",
+      priorEvents: [event(1, "task.created", {
+        taskId: "task-1",
+        title: "Initial task",
+        participantIds: ["member-alice", "member-bob"],
+        createdBy: "member-alice",
+      })],
+      events: [event(2, "task.updated", {
+        taskId: "task-1",
+        title: "Updated task",
+      })],
+    });
+
+    expect(snapshot?.entries).toEqual([
+      { kind: "task", taskId: "task-1", title: "Updated task", status: "open", blocked: false, participantIds: ["member-alice", "member-bob"] },
+    ]);
+  });
+
+  it("restores a task-scoped Decision from the committed prefix before projecting acceptance", () => {
+    const snapshot = projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 2,
+      maxEntries: 10,
+      memberId: "member-bob",
+      priorEvents: [
+        event(1, "task.created", {
+          taskId: "task-1",
+          title: "Task",
+          participantIds: ["member-alice", "member-bob"],
+          createdBy: "member-alice",
+        }),
+        event(2, "decision.proposed", {
+          decisionId: "decision-1",
+          scope: "task:task-1",
+          conclusion: "Keep it small.",
+          sourceMessageIds: ["message-1"],
+          proposedBy: "member-alice",
+        }),
+      ],
+      events: [event(3, "decision.accepted", {
+        decisionId: "decision-1",
+      })],
+    });
+
+    expect(snapshot?.entries).toEqual([
+      { kind: "decision", decisionId: "decision-1", scope: "task:task-1", status: "accepted", conclusion: "Keep it small.", sourceMessageIds: ["message-1"] },
+    ]);
+    expect(projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 2,
+      maxEntries: 10,
+      memberId: "member-carol",
+      priorEvents: [
+        event(1, "task.created", {
+          taskId: "task-1",
+          title: "Task",
+          participantIds: ["member-alice", "member-bob"],
+          createdBy: "member-alice",
+        }),
+        event(2, "decision.proposed", {
+          decisionId: "decision-1",
+          scope: "task:task-1",
+          conclusion: "Keep it small.",
+          sourceMessageIds: ["message-1"],
+          proposedBy: "member-alice",
+        }),
+      ],
+      events: [event(3, "decision.accepted", {
+        decisionId: "decision-1",
+      })],
+    })?.entries).toEqual([]);
+  });
+
   it("keeps the two projection types incompatible", () => {
     const input = { roomId: "room-1", afterSeq: 0, maxEntries: 10, events: [message(1, "human context")] };
     const agent = projectRoomContextForAgent(input)!;

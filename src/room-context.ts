@@ -45,6 +45,7 @@ export interface ProjectRoomContextInput {
   events: RoomEvent[];
   maxEntries: number;
   memberId?: string;
+  priorEvents?: RoomEvent[];
 }
 
 export const ROOM_CONTEXT_STATE_VERSION = 1 as const;
@@ -422,6 +423,11 @@ function projectRoomContextInternal(input: ProjectRoomContextInput, includeHuman
   const decisions = new Map<string, ProjectedDecisionContext>();
   let workspaceVersionId: string | undefined;
   let expectedSeq = input.afterSeq + 1;
+  for (const priorEvent of input.priorEvents ?? []) {
+    if (priorEvent.seq > input.afterSeq) throw invalidInput("room context prior event is ahead of afterSeq", { eventId: priorEvent.eventId });
+    if (priorEvent.type === "task.created" || priorEvent.type === "task.updated" || priorEvent.type === "task.assigned" || priorEvent.type === "task.status-changed" || priorEvent.type === "task.completed") structuredTaskEvent(priorEvent, roomId, undefined, tasks);
+    else if (priorEvent.type === "decision.proposed" || priorEvent.type === "decision.accepted" || priorEvent.type === "decision.superseded") structuredDecisionEvent(priorEvent, roomId, undefined, tasks, decisions);
+  }
   for (const event of input.events) {
     if (!event || event.roomId !== roomId) {
       throw invalidInput("room context event is outside the requested room", { expectedRoomId: roomId });
