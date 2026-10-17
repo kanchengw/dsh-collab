@@ -256,5 +256,8 @@ export function isRoomEventType(value: string): value is RoomEventType {
     || value === "task.updated"
     || value === "task.assigned"
     || value === "task.status-changed"
-    || value === "task.completed";
+    || value === "task.completed"
+    || value === "decision.proposed"
+    || value === "decision.accepted"
+    || value === "decision.superseded";
 }

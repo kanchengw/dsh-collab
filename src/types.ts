@@ -298,7 +298,10 @@ export type RoomEventType =
   | "task.updated"
   | "task.assigned"
   | "task.status-changed"
-  | "task.completed";
+  | "task.completed"
+  | "decision.proposed"
+  | "decision.accepted"
+  | "decision.superseded";
 
 export interface RoomActor {
   memberId: string;

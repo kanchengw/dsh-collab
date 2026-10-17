@@ -204,6 +204,40 @@ export interface TaskEvent {
   payload: TaskEventPayload;
 }
 
+export type DecisionStatus = "proposed" | "accepted" | "superseded";
+export type DecisionScope = "room" | `task:${string}`;
+
+export interface CollaborationDecision {
+  decisionId: string;
+  roomId: string;
+  scope: DecisionScope;
+  conclusion: string;
+  sourceMessageIds: string[];
+  proposedBy: string;
+  createdAt: number;
+  status: DecisionStatus;
+  acceptedBy?: string;
+  acceptedAt?: number;
+  supersededBy?: string;
+  supersededAt?: number;
+}
+
+export type DecisionEventType = "decision.proposed" | "decision.accepted" | "decision.superseded";
+
+export type DecisionEventPayload =
+  | { decisionId: string; scope: DecisionScope; conclusion: string; sourceMessageIds: string[]; proposedBy: string }
+  | { decisionId: string; acceptedBy: string }
+  | { decisionId: string; supersededBy: string };
+
+export interface DecisionEvent {
+  eventId: string;
+  roomId: string;
+  seq: number;
+  type: DecisionEventType;
+  actor: TaskMember;
+  createdAt: number;
+  payload: DecisionEventPayload;
+}
 export type SideTaskType = "explain" | "review";
 export type SideTaskState =
   | { status: "queued" }

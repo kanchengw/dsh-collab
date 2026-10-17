@@ -25,6 +25,7 @@ export * from "./local-sidecar-store.js";
 export * from "./local-sidecar-workspace.js";
 export * from "./collaboration-types.js";
 export * from "./tasks.js";
+export * from "./decisions.js";
 export * from "./collaboration-client.js";
 export * from "./dsh-cordis-agent.js";
 export * from "./dsh-cordis-host.js";

@@ -70,6 +70,9 @@ const EVENT_TYPES = new Set<RoomEvent["type"]>([
   "task.assigned",
   "task.status-changed",
   "task.completed",
+  "decision.proposed",
+  "decision.accepted",
+  "decision.superseded",
 ]);
 
 function record(value: unknown, field: string): Record<string, unknown> {
