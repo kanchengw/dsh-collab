@@ -209,7 +209,7 @@ export interface RoomContextDeliveryServiceInput {
 export interface RoomContextDeliveryBatchInput {
   roomId: string;
   toSeq: number;
-  createSnapshot(input: { roomId: string; fromSeq: number; toSeq: number }): RoomContextForAgent;
+  createSnapshot(input: { roomId: string; memberId: string; fromSeq: number; toSeq: number }): RoomContextForAgent;
 }
 
 /** Fans one bounded Room Context revision out to each linked native Session. */
@@ -228,6 +228,7 @@ export class RoomContextDeliveryService {
       const coordinator = this.coordinator(link.sessionId);
       const snapshot = input.createSnapshot({
         roomId: input.roomId,
+        memberId: link.memberId,
         fromSeq: link.lastInjectedRoomSeq + 1,
         toSeq: input.toSeq,
       });

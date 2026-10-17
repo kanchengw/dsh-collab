@@ -370,6 +370,43 @@ describe("Room Context projections", () => {
     });
   });
 
+  it("projects Task and room Decision events while excluding human messages", () => {
+    const snapshot = projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 0,
+      maxEntries: 10,
+      events: [
+        message(1, "human discussion"),
+        event(2, "task.created", {
+          taskId: "task-1",
+          title: "Ship task model",
+          participantIds: ["member-alice", "member-bob"],
+          createdBy: "member-alice",
+        }),
+        event(3, "decision.proposed", {
+          decisionId: "decision-1",
+          scope: "room",
+          conclusion: "Use the event ledger.",
+          sourceMessageIds: ["message-1"],
+          proposedBy: "member-alice",
+        }),
+      ],
+    });
+
+    expect(snapshot?.entries).toEqual([
+      { kind: "task", taskId: "task-1", title: "Ship task model", status: "open", blocked: false, participantIds: ["member-alice", "member-bob"] },
+      { kind: "decision", decisionId: "decision-1", scope: "room", status: "proposed", conclusion: "Use the event ledger.", sourceMessageIds: ["message-1"] },
+    ]);
+  });
+
+  it("filters task-scoped Decisions to related members only", () => {
+    const events = [
+      event(1, "task.created", { taskId: "task-1", title: "Task", participantIds: ["member-alice", "member-bob"], createdBy: "member-alice" }),
+      event(2, "decision.proposed", { decisionId: "decision-1", scope: "task:task-1", conclusion: "Keep it small.", sourceMessageIds: ["message-1"], proposedBy: "member-alice" }),
+    ];
+    expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-bob", events })?.entries).toHaveLength(2);
+    expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-carol", events })?.entries).toEqual([]);
+  });
   it("keeps the two projection types incompatible", () => {
     const input = { roomId: "room-1", afterSeq: 0, maxEntries: 10, events: [message(1, "human context")] };
     const agent = projectRoomContextForAgent(input)!;
@@ -470,6 +507,16 @@ describe("reduceRoomContext", () => {
         seq: 4,
       },
     });
+  });
+
+  it("reduces Task and structured Decision events into room context state", () => {
+    const state = reduceRoomContext(emptyContextState(), [
+      event(1, "task.created", { taskId: "task-1", title: "Task", participantIds: ["member-alice"], createdBy: "member-alice" }),
+      event(2, "task.status-changed", { taskId: "task-1", from: "open", to: "doing" }),
+      event(3, "decision.proposed", { decisionId: "decision-1", scope: "task:task-1", conclusion: "Keep it small.", sourceMessageIds: ["message-1"], proposedBy: "member-alice" }),
+    ]);
+    expect(state.tasks).toEqual([{ taskId: "task-1", title: "Task", status: "doing", blocked: false, participantIds: ["member-alice"], seq: 2 }]);
+    expect(state.collabDecisions).toEqual([{ decisionId: "decision-1", scope: "task:task-1", status: "proposed", conclusion: "Keep it small.", sourceMessageIds: ["message-1"], seq: 3 }]);
   });
 
   it("is idempotent for an already applied event and rejects gaps or foreign events", () => {

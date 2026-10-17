@@ -7,7 +7,9 @@ export type RoomContextEntry =
   | { kind: "message"; author: string; text: string }
   | { kind: "work-update"; author: string; summary: string; refs: string[] }
   | { kind: "changeset"; changeSetId: string; author: string; status: string; summary: string }
-  | { kind: "review"; changeSetId: string; author: string; decision: string };
+  | { kind: "review"; changeSetId: string; author: string; decision: string }
+  | { kind: "task"; taskId: string; title?: string; status?: string; blocked?: boolean; assigneeId?: string; participantIds: string[] }
+  | { kind: "decision"; decisionId: string; scope: string; status: string; conclusion?: string; sourceMessageIds: string[] };
 
 export type RoomContextAgentEntry = Exclude<RoomContextEntry, { kind: "message" }>;
 
@@ -42,6 +44,7 @@ export interface ProjectRoomContextInput {
   afterSeq: number;
   events: RoomEvent[];
   maxEntries: number;
+  memberId?: string;
 }
 
 export const ROOM_CONTEXT_STATE_VERSION = 1 as const;
@@ -103,6 +106,24 @@ export interface RoomContextWorkspaceVersion {
   seq: number;
 }
 
+export interface RoomContextTask {
+  taskId: string;
+  title: string;
+  status: string;
+  blocked: boolean;
+  assigneeId?: string;
+  participantIds: string[];
+  seq: number;
+}
+
+export interface RoomContextStructuredDecision {
+  decisionId: string;
+  scope: string;
+  status: string;
+  conclusion: string;
+  sourceMessageIds: string[];
+  seq: number;
+}
 export interface RoomContextState {
   version: typeof ROOM_CONTEXT_STATE_VERSION;
   roomId: string;
@@ -112,6 +133,8 @@ export interface RoomContextState {
   activeWorkUpdates: RoomContextWorkUpdate[];
   changeSets: RoomContextChangeSet[];
   currentWorkspaceVersion?: RoomContextWorkspaceVersion;
+  tasks?: RoomContextTask[];
+  collabDecisions?: RoomContextStructuredDecision[];
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -287,6 +310,102 @@ function projectCollaborationRoomEvent(event: RoomEvent, roomId: string): RoomCo
   return undefined;
 }
 
+interface ProjectedTaskContext {
+  taskId: string;
+  title: string;
+  status: string;
+  blocked: boolean;
+  assigneeId?: string;
+  participantIds: string[];
+}
+
+interface ProjectedDecisionContext {
+  decisionId: string;
+  scope: string;
+  status: string;
+  conclusion?: string;
+  sourceMessageIds: string[];
+}
+
+function structuredPayload(event: RoomEvent, roomId: string): Record<string, unknown> {
+  if (!isRecord(event.payload)) throw invalidInput(`${event.type} payload is invalid`, { eventId: event.eventId });
+  if (event.payload.roomId !== undefined && requiredText(event.payload.roomId, "payload.roomId") !== roomId) {
+    throw invalidInput(`${event.type} room does not match its durable event`, { eventId: event.eventId });
+  }
+  return event.payload;
+}
+
+function structuredTaskEvent(event: RoomEvent, roomId: string, memberId: string | undefined, tasks: Map<string, ProjectedTaskContext>): RoomContextEntry | undefined {
+  const payload = structuredPayload(event, roomId);
+  const taskId = requiredText(payload.taskId, "payload.taskId");
+  if (event.type === "task.created") {
+    const createdBy = requiredText(payload.createdBy, "payload.createdBy");
+    if (createdBy !== event.actor.memberId || !Array.isArray(payload.participantIds)) throw invalidInput("task.created payload is invalid", { eventId: event.eventId });
+    const participantIds = [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))];
+    tasks.set(taskId, { taskId, title: requiredText(payload.title, "payload.title"), status: "open", blocked: false, participantIds });
+  } else {
+    const task = tasks.get(taskId);
+    if (!task) return undefined;
+    task.participantIds = [...new Set([...task.participantIds, event.actor.memberId])];
+    if (event.type === "task.updated") {
+      if (payload.title !== undefined) task.title = requiredText(payload.title, "payload.title");
+      if (payload.blocked !== undefined) {
+        if (typeof payload.blocked !== "boolean") throw invalidInput("payload.blocked is invalid", { eventId: event.eventId });
+        task.blocked = payload.blocked;
+      }
+      if (Array.isArray(payload.participantIds)) task.participantIds = [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))];
+    } else if (event.type === "task.assigned") {
+      task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
+      task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+    } else if (event.type === "task.status-changed") {
+      task.status = requiredText(payload.to, "payload.to");
+    } else if (event.type === "task.completed") {
+      task.status = "done";
+    }
+  }
+  const task = tasks.get(taskId)!;
+  if (memberId !== undefined && !task.participantIds.includes(memberId)) return undefined;
+  return {
+    kind: "task",
+    taskId: task.taskId,
+    title: task.title,
+    status: task.status,
+    blocked: task.blocked,
+    ...(task.assigneeId ? { assigneeId: task.assigneeId } : {}),
+    participantIds: [...task.participantIds],
+  };
+}
+
+function structuredDecisionEvent(event: RoomEvent, roomId: string, memberId: string | undefined, tasks: Map<string, ProjectedTaskContext>, decisions: Map<string, ProjectedDecisionContext>): RoomContextEntry | undefined {
+  const payload = structuredPayload(event, roomId);
+  const decisionId = requiredText(payload.decisionId, "payload.decisionId");
+  if (event.type === "decision.proposed") {
+    const scope = requiredText(payload.scope, "payload.scope");
+    const sourceMessageIds = Array.isArray(payload.sourceMessageIds) ? [...new Set(payload.sourceMessageIds.map((value) => requiredText(value, "payload.sourceMessageIds")))] : [];
+    if (sourceMessageIds.length === 0 || (scope !== "room" && (!scope.startsWith("task:") || scope.slice(5).trim() === ""))) throw invalidInput("decision.proposed payload is invalid", { eventId: event.eventId });
+    const proposedBy = requiredText(payload.proposedBy, "payload.proposedBy");
+    if (proposedBy !== event.actor.memberId) throw invalidInput("decision.proposed authority does not match its durable event", { eventId: event.eventId });
+    decisions.set(decisionId, { decisionId, scope, status: "proposed", conclusion: requiredText(payload.conclusion, "payload.conclusion"), sourceMessageIds });
+  } else {
+    const decision = decisions.get(decisionId);
+    if (!decision) return undefined;
+    if (event.type === "decision.accepted") decision.status = "accepted";
+    if (event.type === "decision.superseded") decision.status = "superseded";
+  }
+  const decision = decisions.get(decisionId)!;
+  if (memberId !== undefined && decision.scope.startsWith("task:")) {
+    const taskIds = decision.scope.slice("task:".length).split(",");
+    if (!taskIds.some((taskId) => tasks.get(taskId)?.participantIds.includes(memberId))) return undefined;
+  }
+  return {
+    kind: "decision",
+    decisionId: decision.decisionId,
+    scope: decision.scope,
+    status: decision.status,
+    ...(decision.conclusion ? { conclusion: decision.conclusion } : {}),
+    sourceMessageIds: [...decision.sourceMessageIds],
+  };
+}
 function projectRoomContextInternal(input: ProjectRoomContextInput, includeHumanMessages: boolean): RoomContextForSummary | RoomContextForAgent | undefined {
   const roomId = requiredText(input.roomId, "roomId");
   if (!Number.isSafeInteger(input.afterSeq) || input.afterSeq < 0) {
@@ -299,6 +418,8 @@ function projectRoomContextInternal(input: ProjectRoomContextInput, includeHuman
   if (input.events.length === 0) return undefined;
 
   const entries: RoomContextEntry[] = [];
+  const tasks = new Map<string, ProjectedTaskContext>();
+  const decisions = new Map<string, ProjectedDecisionContext>();
   let workspaceVersionId: string | undefined;
   let expectedSeq = input.afterSeq + 1;
   for (const event of input.events) {
@@ -317,7 +438,13 @@ function projectRoomContextInternal(input: ProjectRoomContextInput, includeHuman
       if (includeHumanMessages) entries.push(message);
     } else if (event.type === "work-update.published") entries.push(projectWorkUpdate(event, roomId));
     else if (event.type === "workspace-version.published") workspaceVersionId = projectWorkspaceVersion(event, roomId);
-    else {
+    else if (event.type === "task.created" || event.type === "task.updated" || event.type === "task.assigned" || event.type === "task.status-changed" || event.type === "task.completed") {
+      const task = structuredTaskEvent(event, roomId, input.memberId, tasks);
+      if (task) entries.push(task);
+    } else if (event.type === "decision.proposed" || event.type === "decision.accepted" || event.type === "decision.superseded") {
+      const decision = structuredDecisionEvent(event, roomId, input.memberId, tasks, decisions);
+      if (decision) entries.push(decision);
+    } else {
       const collaboration = projectCollaborationRoomEvent(event, roomId);
       if (collaboration) entries.push(collaboration);
     }
@@ -448,6 +575,42 @@ function validateRoomContextState(value: unknown, expectedRoomId?: string): Room
     };
   });
 
+  const tasks = candidate.tasks === undefined ? undefined : (() => {
+    if (!Array.isArray(candidate.tasks) || candidate.tasks.length > 32) throw invalidInput("room context tasks are invalid", { field: "tasks" });
+    return candidate.tasks.map((value) => {
+      const task = stateRecord(value, "room context task");
+      const seq = safeSequence(task.seq, "task.seq");
+      if (seq > appliedThroughSeq) throw invalidInput("Task seq is ahead of appliedThroughSeq");
+      if (!Array.isArray(task.participantIds)) throw invalidInput("Task participantIds are invalid");
+      return {
+        taskId: requiredText(task.taskId, "task.taskId"),
+        title: requiredText(task.title, "task.title"),
+        status: requiredText(task.status, "task.status"),
+        blocked: task.blocked === true,
+        ...(task.assigneeId === undefined ? {} : { assigneeId: requiredText(task.assigneeId, "task.assigneeId") }),
+        participantIds: task.participantIds.map((memberId) => requiredText(memberId, "task.participantIds")),
+        seq,
+      };
+    });
+  })();
+
+  const collabDecisions = candidate.collabDecisions === undefined ? undefined : (() => {
+    if (!Array.isArray(candidate.collabDecisions) || candidate.collabDecisions.length > 32) throw invalidInput("room context structured decisions are invalid", { field: "collabDecisions" });
+    return candidate.collabDecisions.map((value) => {
+      const decision = stateRecord(value, "room context structured decision");
+      const seq = safeSequence(decision.seq, "structured decision.seq");
+      if (seq > appliedThroughSeq) throw invalidInput("Structured Decision seq is ahead of appliedThroughSeq");
+      if (!Array.isArray(decision.sourceMessageIds)) throw invalidInput("Structured Decision message references are invalid");
+      return {
+        decisionId: requiredText(decision.decisionId, "structured decision.decisionId"),
+        scope: requiredText(decision.scope, "structured decision.scope"),
+        status: requiredText(decision.status, "structured decision.status"),
+        conclusion: requiredText(decision.conclusion, "structured decision.conclusion"),
+        sourceMessageIds: decision.sourceMessageIds.map((messageId) => requiredText(messageId, "structured decision.sourceMessageIds")),
+        seq,
+      };
+    });
+  })();
   const currentWorkspaceVersion = candidate.currentWorkspaceVersion === undefined ? undefined : (() => {
     const version = stateRecord(candidate.currentWorkspaceVersion, "currentWorkspaceVersion");
     const changeSummary = stateRecord(version.changeSummary, "currentWorkspaceVersion.changeSummary");
@@ -476,6 +639,8 @@ function validateRoomContextState(value: unknown, expectedRoomId?: string): Room
     activeWorkUpdates,
     changeSets,
     currentWorkspaceVersion,
+    ...(tasks === undefined ? {} : { tasks }),
+    ...(collabDecisions === undefined ? {} : { collabDecisions }),
   });
 }
 
@@ -558,6 +723,77 @@ function applyChangeSetEvent(state: RoomContextState, event: RoomEvent): void {
   state.changeSets = replaceBounded(state.changeSets, changeSet, (candidate) => candidate.changeSetId === changeSetId, MAX_CONTEXT_CHANGESETS);
 }
 
+function applyTaskContextEvent(state: RoomContextState, event: RoomEvent): void {
+  const payload = structuredPayload(event, state.roomId);
+  const taskId = requiredText(payload.taskId, "payload.taskId");
+  const tasks = state.tasks ?? (state.tasks = []);
+  let task = tasks.find((candidate) => candidate.taskId === taskId);
+  if (event.type === "task.created") {
+    const createdBy = requiredText(payload.createdBy, "payload.createdBy");
+    if (createdBy !== event.actor.memberId || !Array.isArray(payload.participantIds)) throw invalidInput("task.created authority or participants are invalid", { eventId: event.eventId });
+    task = {
+      taskId,
+      title: requiredText(payload.title, "payload.title"),
+      status: "open",
+      blocked: false,
+      participantIds: [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))],
+      seq: event.seq,
+    };
+  } else if (!task) {
+    return;
+  } else {
+    task.participantIds = [...new Set([...task.participantIds, event.actor.memberId])];
+    if (event.type === "task.updated") {
+      if (payload.title !== undefined) task.title = requiredText(payload.title, "payload.title");
+      if (payload.blocked !== undefined) {
+        if (typeof payload.blocked !== "boolean") throw invalidInput("payload.blocked is invalid", { eventId: event.eventId });
+        task.blocked = payload.blocked;
+      }
+      if (Array.isArray(payload.participantIds)) task.participantIds = [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))];
+    } else if (event.type === "task.assigned") {
+      task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
+      task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+    } else if (event.type === "task.status-changed") {
+      task.status = requiredText(payload.to, "payload.to");
+    } else if (event.type === "task.completed") {
+      task.status = "done";
+    }
+    task.seq = event.seq;
+  }
+  state.tasks = replaceBounded(tasks, task, (candidate) => candidate.taskId === taskId, 32);
+}
+
+function applyStructuredDecisionContextEvent(state: RoomContextState, event: RoomEvent): void {
+  const payload = structuredPayload(event, state.roomId);
+  const decisionId = requiredText(payload.decisionId, "payload.decisionId");
+  const decisions = state.collabDecisions ?? (state.collabDecisions = []);
+  let decision = decisions.find((candidate) => candidate.decisionId === decisionId);
+  if (event.type === "decision.proposed") {
+    const proposedBy = requiredText(payload.proposedBy, "payload.proposedBy");
+    if (proposedBy !== event.actor.memberId || !Array.isArray(payload.sourceMessageIds)) throw invalidInput("decision.proposed authority or references are invalid", { eventId: event.eventId });
+    const scope = requiredText(payload.scope, "payload.scope");
+    if (scope !== "room" && (!scope.startsWith("task:") || scope.slice(5).trim() === "")) throw invalidInput("decision scope is invalid", { eventId: event.eventId });
+    decision = {
+      decisionId,
+      scope,
+      status: "proposed",
+      conclusion: requiredText(payload.conclusion, "payload.conclusion"),
+      sourceMessageIds: payload.sourceMessageIds.map((value) => requiredText(value, "payload.sourceMessageIds")),
+      seq: event.seq,
+    };
+  } else if (!decision) {
+    return;
+  } else if (event.type === "decision.accepted") {
+    decision.status = "accepted";
+    decision.seq = event.seq;
+  } else if (event.type === "decision.superseded") {
+    const replacementId = requiredText(payload.supersededBy, "payload.supersededBy");
+    if (!decisions.some((candidate) => candidate.decisionId === replacementId)) return;
+    decision.status = "superseded";
+    decision.seq = event.seq;
+  }
+  state.collabDecisions = replaceBounded(decisions, decision, (candidate) => candidate.decisionId === decisionId, 32);
+}
 export function reduceRoomContext(initial: RoomContextState, events: RoomEvent[]): RoomContextState {
   const state = validateRoomContextState(initial);
   if (!Array.isArray(events)) throw invalidInput("room context events must be an array", { field: "events" });
@@ -601,6 +837,16 @@ export function reduceRoomContext(initial: RoomContextState, events: RoomEvent[]
         text: `Workspace Version ${record.version.workspaceVersionId}: ${fileCount} ${fileCount === 1 ? "file" : "files"}, ${totalBytes} bytes`,
         sourceSeq: event.seq,
       };
+    } else if (event.type === "task.created"
+      || event.type === "task.updated"
+      || event.type === "task.assigned"
+      || event.type === "task.status-changed"
+      || event.type === "task.completed") {
+      applyTaskContextEvent(state, event);
+    } else if (event.type === "decision.proposed"
+      || event.type === "decision.accepted"
+      || event.type === "decision.superseded") {
+      applyStructuredDecisionContextEvent(state, event);
     } else if (event.type === "changeset.submitted"
       || event.type === "changeset.review-assigned"
       || event.type === "changeset.finding-created"

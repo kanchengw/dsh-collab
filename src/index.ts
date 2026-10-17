@@ -468,9 +468,10 @@ function registerGatewayControl(
             roomContextDelivery.deliver({
               roomId: event.roomId,
               toSeq: event.seq,
-              createSnapshot: ({ roomId, fromSeq, toSeq }) => {
+              createSnapshot: ({ roomId, memberId, fromSeq, toSeq }) => {
                 const snapshot = projectRoomContextForAgent({
                   roomId,
+                  memberId,
                   afterSeq: fromSeq - 1,
                   events: ledger.readCommittedAfter(roomId, fromSeq - 1, toSeq - fromSeq + 1),
                   maxEntries: 128,
