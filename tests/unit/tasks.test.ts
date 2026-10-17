@@ -167,6 +167,41 @@ describe("TaskStore", () => {
     store.linkChangeSet({ taskId: "task-1", changeSetId: "change-1", actor: bob, eventId: "event-change", now: 110 });
     expect(store.get("task-1")).toMatchObject({ participantIds: [alice.memberId, bob.memberId], changeSetIds: ["change-1"] });
   });
+  it("rejects illegal terminal transitions while reducing remote events", () => {
+    const created: TaskEvent = {
+      eventId: "event-created",
+      roomId: "room-1",
+      seq: 1,
+      type: "task.created",
+      actor: alice,
+      createdAt: 100,
+      payload: { taskId: "task-1", title: "Task", participantIds: [alice.memberId], createdBy: alice.memberId },
+    };
+    const cancelled: TaskEvent = {
+      eventId: "event-cancelled",
+      roomId: "room-1",
+      seq: 2,
+      type: "task.status-changed",
+      actor: alice,
+      createdAt: 110,
+      payload: { taskId: "task-1", from: "open", to: "cancelled", cancelledBy: alice.memberId },
+    };
+    const completedAfterCancel: TaskEvent = {
+      eventId: "event-completed-after-cancel",
+      roomId: "room-1",
+      seq: 3,
+      type: "task.completed",
+      actor: alice,
+      createdAt: 120,
+      payload: { taskId: "task-1", completedBy: alice.memberId },
+    };
+    expect(reduceTaskEvents([created, cancelled, completedAfterCancel]).tasks[0]).toMatchObject({ status: "cancelled" });
+
+    const doing: TaskEvent = { ...cancelled, eventId: "event-doing", seq: 2, type: "task.status-changed", payload: { taskId: "task-1", from: "open", to: "doing" } };
+    const done: TaskEvent = { ...completedAfterCancel, eventId: "event-done", seq: 3, createdAt: 120 };
+    const cancelAfterDone: TaskEvent = { ...cancelled, eventId: "event-cancel-after-done", seq: 4, createdAt: 130, payload: { taskId: "task-1", from: "done", to: "cancelled", cancelledBy: alice.memberId } };
+    expect(reduceTaskEvents([created, doing, done, cancelAfterDone]).tasks[0]).toMatchObject({ status: "done" });
+  });
   it("keeps old room events readable while accepting Task events", () => {
     const ledger = new EventLedger();
     ledger.append({

@@ -128,7 +128,7 @@ export function reduceTaskEvents(input: readonly TaskEvent[]): ReducedTasks {
       current.updatedAt = event.createdAt;
     } else if (event.type === "task.status-changed") {
       const changed = payload as { taskId: string; from: TaskStatus; to: TaskStatus; cancelledBy?: string };
-      if (current.status !== changed.from || (!isValidTransition(changed.from, changed.to) && changed.to !== "cancelled")) continue;
+      if (current.status !== changed.from || (changed.to === "cancelled" && (current.status === "done" || current.status === "cancelled")) || (!isValidTransition(changed.from, changed.to) && changed.to !== "cancelled")) continue;
       current.status = changed.to;
       if (changed.to === "cancelled") {
         current.cancelledAt = event.createdAt;
@@ -137,6 +137,7 @@ export function reduceTaskEvents(input: readonly TaskEvent[]): ReducedTasks {
       current.updatedAt = event.createdAt;
     } else if (event.type === "task.completed") {
       const completed = payload as Extract<TaskEventPayload, { completedBy: string }>;
+      if (current.status !== "doing" && current.status !== "in-review") continue;
       current.status = "done";
       current.completedAt = event.createdAt;
       current.completedBy = completed.completedBy;
