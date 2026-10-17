@@ -86,6 +86,24 @@ describe("DecisionStore", () => {
     expect(reduced.events.map((event) => event.eventId)).toEqual(["event-proposed", "event-accepted"]);
   });
 
+  it("rejects malformed reducer proposals and invalid superseded references", () => {
+    const store = new DecisionStore();
+    const first = store.propose(proposal());
+    const second = store.propose(proposal({ decisionId: "decision-2", eventId: "event-proposed-2", now: 110 }));
+    const events = store.events("room-1");
+    expect(() => reduceDecisionEvents([{ ...events[0]!, payload: { ...events[0]!.payload, scope: "task:" } }])).toThrow(/scope/i);
+    expect(() => reduceDecisionEvents([{ ...events[0]!, payload: { ...events[0]!.payload, sourceMessageIds: [] } }])).toThrow(/message/i);
+    expect(() => reduceDecisionEvents([
+      events[0]!,
+      { ...events[1]!, eventId: "event-superseded-missing", seq: 3, type: "decision.superseded", payload: { decisionId: first.decisionId, supersededBy: "missing" } },
+    ])).toThrow(/replacement/i);
+    expect(() => reduceDecisionEvents([
+      events[0]!,
+      events[1]!,
+      { ...events[1]!, eventId: "event-superseded-self", seq: 3, type: "decision.superseded", payload: { decisionId: second.decisionId, supersededBy: second.decisionId } },
+    ])).toThrow(/replacement/i);
+  });
+
   it("accepts protocol-shaped decision events while keeping event types distinct", () => {
     const event: DecisionEvent = {
       eventId: "event-proposed",

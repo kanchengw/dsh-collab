@@ -84,15 +84,21 @@ export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDe
     seen.set(event.eventId, copy(event));
     const payload = event.payload;
     if (event.type === "decision.proposed") {
-      const proposed = payload as Extract<DecisionEventPayload, { scope: DecisionScope }>;
-      if (decisions.has(proposed.decisionId)) continue;
+      const proposed = payload as { decisionId?: string; scope?: string; conclusion?: string; sourceMessageIds?: string[]; proposedBy?: string };
+      const decisionId = requiredText(proposed.decisionId ?? "", "payload.decisionId");
+      if (decisions.has(decisionId)) continue;
+      const decisionScope = normalizeScope(proposed.scope ?? "");
+      const conclusion = requiredText(proposed.conclusion ?? "", "payload.conclusion");
+      const sourceMessageIds = normalizeMessages(proposed.sourceMessageIds ?? []);
+      const proposedBy = requiredText(proposed.proposedBy ?? "", "payload.proposedBy");
+      if (proposedBy !== event.actor.memberId) throw invalidInput("decision.proposed authority does not match its durable event", { eventId: event.eventId });
       const decision: CollaborationDecision = {
-        decisionId: proposed.decisionId,
+        decisionId,
         roomId: event.roomId,
-        scope: proposed.scope,
-        conclusion: proposed.conclusion,
-        sourceMessageIds: [...proposed.sourceMessageIds],
-        proposedBy: proposed.proposedBy,
+        scope: decisionScope,
+        conclusion,
+        sourceMessageIds,
+        proposedBy,
         createdAt: event.createdAt,
         status: "proposed",
       };
@@ -100,19 +106,27 @@ export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDe
       accepted.push(copy(event));
       continue;
     }
-    const current = decisions.get(payload.decisionId);
+    const eventDecisionId = requiredText((payload as { decisionId?: string }).decisionId ?? "", "payload.decisionId");
+    const current = decisions.get(eventDecisionId);
     if (!current) continue;
     if (event.type === "decision.accepted") {
       if (current.status !== "proposed") continue;
-      const acceptedPayload = payload as Extract<DecisionEventPayload, { acceptedBy: string }>;
+      const acceptedPayload = payload as { acceptedBy?: string };
+      const acceptedBy = requiredText(acceptedPayload.acceptedBy ?? "", "payload.acceptedBy");
+      if (acceptedBy !== event.actor.memberId) throw invalidInput("decision.accepted authority does not match its durable event", { eventId: event.eventId });
       current.status = "accepted";
-      current.acceptedBy = acceptedPayload.acceptedBy;
+      current.acceptedBy = acceptedBy;
       current.acceptedAt = event.createdAt;
     } else if (event.type === "decision.superseded") {
       if (current.status === "superseded") continue;
-      const superseded = payload as Extract<DecisionEventPayload, { supersededBy: string }>;
+      const superseded = payload as { supersededBy?: string };
+      const replacementId = requiredText(superseded.supersededBy ?? "", "payload.supersededBy");
+      const replacement = decisions.get(replacementId);
+      if (!replacement || replacement.roomId !== current.roomId || replacement.decisionId === current.decisionId) {
+        throw invalidInput("decision.superseded replacement is invalid", { eventId: event.eventId });
+      }
       current.status = "superseded";
-      current.supersededBy = superseded.supersededBy;
+      current.supersededBy = replacementId;
       current.supersededAt = event.createdAt;
     }
     accepted.push(copy(event));
