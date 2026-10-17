@@ -79,6 +79,55 @@ describe("Collab Rooms navigation", () => {
     expect(html).not.toContain("Participating rooms");
   });
 
+  it("preserves the Owned Room Workspace path when opening a room", async () => {
+    const actions = port();
+    actions.bootstrap = vi.fn(async () => {});
+    const panelHost: CollabPanelHost = { register: () => () => {}, open: vi.fn() };
+
+    await openDshCollabOwnedRoom(actions, {
+      roomId: "room-owned",
+      hostSessionId: "session-owner",
+      title: "Release planning",
+      sharing: true,
+      workspacePath: "C:\\rooms\\release\\workspace",
+    }, panelHost);
+
+    expect(getDshCollabRoomSelection()).toEqual({
+      kind: "owned",
+      roomId: "room-owned",
+      hostSessionId: "session-owner",
+      roomTitle: "Release planning",
+      workspacePath: "C:\\rooms\\release\\workspace",
+    });
+    closeDshCollabRoom();
+  });
+
+  it("rebinds a persisted Owned room to a live Host Session before opening it", async () => {
+    const actions = port();
+    const room = {
+      roomId: "room-owned",
+      hostSessionId: "session-restored",
+      title: "Release planning",
+      sharing: false,
+      workspacePath: "C:\\rooms\\release\\workspace",
+      sourcePath: "C:\\projects\\release",
+      nativeWorkspaceId: "native-release",
+    };
+    actions.reopenOwnedRoom = vi.fn(async () => ({ hostSessionId: "session-live" }));
+    const panelHost: CollabPanelHost = { register: () => () => {}, open: vi.fn() };
+
+    await openDshCollabOwnedRoom(actions, room, panelHost);
+
+    expect(actions.reopenOwnedRoom).toHaveBeenCalledWith(room);
+    expect(getDshCollabRoomSelection()).toMatchObject({
+      kind: "owned",
+      roomId: "room-owned",
+      hostSessionId: "session-live",
+      workspacePath: "C:\\rooms\\release\\workspace",
+    });
+    closeDshCollabRoom();
+  });
+
   it("shows invitation preflight inside each shared room", () => {
     const actions = port();
     actions.getGatewaySnapshot = () => ({ status: "running", port: 4310, advertisedEndpoint: "ws://192.168.1.20:4310/collab" });

@@ -76,6 +76,43 @@ describe("real DSH client slot adapter", () => {
     }, "C:\\rooms\\other\\workspace")).toBeUndefined();
   });
 
+  it("does not restore a path-scoped Owned room when the current cwd is unknown", () => {
+    expect(resolveDshCollabRoomSelection("session-secondary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
+    } as never, {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host",
+      connection: "offline",
+      onlineCount: 0,
+      canSteer: true,
+    })).toBeUndefined();
+  });
+
+  it("keeps a legacy Owned room restricted to its original Host Session", () => {
+    const settings = {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true }],
+    } as never;
+    const current = {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host" as const,
+      connection: "offline" as const,
+      onlineCount: 0,
+      canSteer: true,
+    };
+
+    expect(resolveDshCollabRoomSelection("session-secondary", settings, current, "C:\\rooms\\release\\workspace")).toBeUndefined();
+    expect(resolveDshCollabRoomSelection("session-primary", settings, current, "C:\\rooms\\other\\workspace")).toEqual({
+      kind: "owned",
+      roomId: "room-owner",
+      hostSessionId: "session-primary",
+      roomTitle: "Release",
+    });
+  });
+
   it("does not expose an Owned room to a Participant in the same Room Workspace", () => {
     expect(resolveDshCollabRoomSelection("session-participant", {
       getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
@@ -88,6 +125,27 @@ describe("real DSH client slot adapter", () => {
       onlineCount: 2,
       canSteer: false,
     }, "C:\\rooms\\release\\workspace")).toBeUndefined();
+  });
+
+  it("keeps legacy and path-scoped Owned room visibility fail-closed", () => {
+    const snapshot = {
+      roomId: "room-owner",
+      roomTitle: "Release",
+      hostDisplayName: "Owner",
+      role: "host" as const,
+      connection: "offline" as const,
+      onlineCount: 0,
+      canSteer: true,
+    };
+    expect(resolveDshCollabRoomSelection("session-secondary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" }],
+    } as never, snapshot)).toBeUndefined();
+    expect(resolveDshCollabRoomSelection("session-secondary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true }],
+    } as never, snapshot, "C:\\rooms\\release\\workspace")).toBeUndefined();
+    expect(resolveDshCollabRoomSelection("session-primary", {
+      getOwnedRooms: () => [{ roomId: "room-owner", hostSessionId: "session-primary", title: "Release", sharing: true }],
+    } as never, snapshot, "C:\\rooms\\other\\workspace")).toMatchObject({ kind: "owned", roomId: "room-owner" });
   });
 
   it("restores a Joined room selection only for the Session bound to its local workspace", () => {

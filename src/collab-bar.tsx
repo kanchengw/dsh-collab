@@ -36,9 +36,8 @@ function comparableWorkspacePath(path: string): string {
 
 export function collabRoomMatchesScope(selection: DshCollabRoomSelection, scope: CollabPanelRenderScope): boolean {
   if (selection.kind === "joined") return selection.localSessionId === scope.sessionId;
-  if (selection.workspacePath !== undefined && scope.cwd !== undefined) {
-    return comparableWorkspacePath(selection.workspacePath) === comparableWorkspacePath(scope.cwd);
-  }
+  if (selection.workspacePath !== undefined) return scope.cwd !== undefined
+    && comparableWorkspacePath(selection.workspacePath) === comparableWorkspacePath(scope.cwd);
   return selection.hostSessionId === scope.sessionId;
 }
 

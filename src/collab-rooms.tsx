@@ -47,11 +47,15 @@ export function openDshCollabRoom(selection: DshCollabRoomSelection, panelHost?:
 }
 
 export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: DshCollabOwnedRoom, panelHost?: CollabPanelHost): Promise<void> {
+  let hostSessionId = room.hostSessionId;
+  if (!room.sharing && room.nativeWorkspaceId && port.reopenOwnedRoom) {
+    hostSessionId = (await port.reopenOwnedRoom(room)).hostSessionId;
+  }
   if (room.sharing) {
     if (!port.bootstrap) throw new Error("Owned room connection is unavailable");
     await port.bootstrap(room.roomId);
   }
-  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId: room.hostSessionId, roomTitle: room.title }, panelHost);
+  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId, roomTitle: room.title, ...(room.workspacePath ? { workspacePath: room.workspacePath } : {}) }, panelHost);
 }
 
 export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {

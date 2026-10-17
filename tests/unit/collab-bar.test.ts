@@ -73,6 +73,7 @@ describe("Collab Bar", () => {
 
     expect(collabRoomMatchesScope(selection as never, { sessionId: "session-secondary", cwd: "c:/rooms/release/workspace", visible: true })).toBe(true);
     expect(collabRoomMatchesScope(selection as never, { sessionId: "session-secondary", cwd: "C:\\rooms\\other\\workspace", visible: true })).toBe(false);
+    expect(collabRoomMatchesScope(selection as never, { sessionId: "session-primary", cwd: undefined, visible: true })).toBe(false);
   });
 
   it("keeps a Joined room matched only to its local Session", () => {
