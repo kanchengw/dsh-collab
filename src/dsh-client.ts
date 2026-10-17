@@ -1360,6 +1360,16 @@ function optionalService<T>(context: DshCollabClientContext, name: string): T | 
   try { return context.get?.<T>(name); } catch { return undefined; }
 }
 
+export function resolveCollabTasksPortForRoom(port: CollabTasksPort | undefined, roomId: string | undefined): CollabTasksPort | undefined {
+  if (!port || typeof roomId !== "string" || roomId.trim() === "") return undefined;
+  try {
+    const scoped = port.forRoom?.(roomId) ?? port;
+    return scoped.getSnapshot().roomId === roomId ? scoped : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function DshCollabBarPanel(props: {
   scope: CollabPanelRenderScope;
   port?: DshCollabClientPort;
@@ -1380,6 +1390,7 @@ function DshCollabBarPanel(props: {
     void props.workspacePorts.activateSession(props.scope.sessionId, selection.roomId).catch(() => undefined);
   }, [props.workspacePorts, props.scope.sessionId, selection?.roomId, snapshot.roomId, snapshot.role, snapshot.connection]);
   const roomKey = selection ? `${props.scope.sessionId}:${selection.kind}:${selection.roomId}` : `${props.scope.sessionId}:empty`;
+  const tasksPort = resolveCollabTasksPortForRoom(props.tasksPort, selection?.roomId);
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   return createElement(CollabBarView, {
     key: roomKey,
@@ -1390,7 +1401,7 @@ function DshCollabBarPanel(props: {
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
-    ...(props.tasksPort ? { tasks: createElement(CollabTasks, { port: props.tasksPort }) } : {}),
+    ...(tasksPort ? { tasks: createElement(CollabTasks, { port: tasksPort }) } : {}),
     t: props.t,
   });
 }
@@ -1622,3 +1633,4 @@ export type { CollabTaskChangeSet, CollabTaskDecision, CollabTaskDiscussionMessa
 export { CollabBarView, collabRoomMatchesScope, nextCollabBarTab } from "./collab-bar.js";
 export type { CollabBarRoomSnapshot, CollabBarTab } from "./collab-bar.js";
 export { closeDshCollabRoom, DshCollabRoomsLauncher, DshCollabRoomsPanel, openDshCollabRoom, setDshCollabRoomsOpen } from "./collab-rooms.js";
+

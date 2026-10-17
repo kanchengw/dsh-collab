@@ -49,6 +49,7 @@ export interface CollabTasksPort {
   claimTask(taskId: string): Promise<void>;
   setTaskStatus(taskId: string, status: TaskStatus): Promise<void>;
   addTaskParticipant(taskId: string, memberId: string): Promise<void>;
+  forRoom?(roomId: string): CollabTasksPort | undefined;
 }
 
 const TASK_STATUSES: readonly TaskStatus[] = ["open", "doing", "in-review", "done", "cancelled"];
