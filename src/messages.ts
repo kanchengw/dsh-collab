@@ -16,7 +16,7 @@ function requiredText(value: string, field: string): string {
   return value.trim();
 }
 
-export function classifyMessage(input: MessageInput): ClassifiedMessage {
+function normalizedInput(input: MessageInput): { messageId: string; roomId: string; authorMemberId: string; text: string } {
   const messageId = requiredText(input.messageId, "messageId");
   const roomId = requiredText(input.roomId, "roomId");
   const authorMemberId = requiredText(input.authorMemberId, "authorMemberId");
@@ -24,28 +24,35 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
   if (text.length > MAX_MESSAGE_LENGTH) {
     throw invalidInput("text exceeds the maximum length", { field: "text", max: MAX_MESSAGE_LENGTH });
   }
+  return { messageId, roomId, authorMemberId, text };
+}
 
+export function classifyMessage(input: MessageInput): ClassifiedMessage {
+  const { messageId, roomId, authorMemberId, text } = normalizedInput(input);
   const target = input.target ?? "room";
-  if (target === "room") {
-    if (input.mentions !== undefined && !Array.isArray(input.mentions)) {
-      throw invalidInput("mentions must be an array", { field: "mentions" });
-    }
-    const mentions = input.mentions?.map((mention) => requiredText(mention, "mention"));
-    const message: HumanMessage = {
-      kind: "human",
-      messageId,
-      roomId,
-      authorMemberId,
-      text,
-      visibility: "room",
-      ...(mentions && mentions.length > 0 ? { mentions: [...new Set(mentions)] } : {}),
-    };
-    return message;
+  if (target !== "room") {
+    throw invalidInput("@agent message targets are retired; use the human room", { target });
   }
-  if (target !== "dsh" && target !== "dsh-steer") {
-    throw invalidInput("invalid message target", { target });
+  if (input.mentions !== undefined && !Array.isArray(input.mentions)) {
+    throw invalidInput("mentions must be an array", { field: "mentions" });
   }
+  const mentions = input.mentions?.map((mention) => requiredText(mention, "mention"));
+  const message: HumanMessage = {
+    kind: "human",
+    messageId,
+    roomId,
+    authorMemberId,
+    text,
+    visibility: "room",
+    ...(mentions && mentions.length > 0 ? { mentions: [...new Set(mentions)] } : {}),
+  };
+  return message;
+}
 
+/** Compatibility decoder for snapshots and internal agent integrations created before U13. */
+export function classifyLegacyAgentMessage(input: MessageInput): AgentRequest {
+  const { messageId, roomId, authorMemberId, text } = normalizedInput(input);
+  if (input.target !== "dsh" && input.target !== "dsh-steer") throw invalidInput("legacy Agent target is required", { field: "target" });
   const message: AgentRequest = {
     kind: "agent-request",
     messageId,
@@ -53,7 +60,7 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
     authorMemberId,
     text,
     target: "dsh",
-    deliveryMode: target === "dsh-steer" ? "steer" : "followup",
+    deliveryMode: input.target === "dsh-steer" ? "steer" : "followup",
   };
   if (input.sourceMessageId !== undefined) message.sourceMessageId = requiredText(input.sourceMessageId, "sourceMessageId");
   if (input.contextRefs !== undefined) {

@@ -28,41 +28,9 @@ describe("classifyMessage", () => {
     }));
   });
 
-  it("creates a followup only for an explicit DSH target", () => {
-    const message = classifyMessage({
-      ...base,
-      messageId: "message-2",
-      text: "Run the release tests",
-      target: "dsh",
-      sourceMessageId: "message-1",
-      contextRefs: ["message-1"],
-    });
-
-    expect(message).toEqual({
-      kind: "agent-request",
-      messageId: "message-2",
-      roomId: "room-1",
-      authorMemberId: "member-alice",
-      text: "Run the release tests",
-      target: "dsh",
-      deliveryMode: "followup",
-      sourceMessageId: "message-1",
-      contextRefs: ["message-1"],
-    });
-  });
-
-  it("marks explicit current-execution requests as steer", () => {
-    const message = classifyMessage({
-      ...base,
-      text: "Use the staging config instead",
-      target: "dsh-steer",
-    });
-
-    expect(message).toMatchObject({
-      kind: "agent-request",
-      target: "dsh",
-      deliveryMode: "steer",
-    });
+  it("rejects retired Agent targets at the message boundary", () => {
+    expect(() => classifyMessage({ ...base, messageId: "message-2", text: "Run the release tests", target: "dsh" })).toThrow(/retired|human|room/i);
+    expect(() => classifyMessage({ ...base, messageId: "message-3", text: "Stop", target: "dsh-steer" })).toThrow(/retired|human|room/i);
   });
 
   it("trims text and rejects blank or oversized input", () => {
@@ -71,12 +39,4 @@ describe("classifyMessage", () => {
     expect(() => classifyMessage({ ...base, text: "x".repeat(10_001) })).toThrow(/text/i);
   });
 
-  it("limits Agent context references to three messages", () => {
-    expect(() => classifyMessage({
-      ...base,
-      text: "@agent compare these",
-      target: "dsh",
-      contextRefs: ["message-1", "message-2", "message-3", "message-4"],
-    })).toThrow(/context references/i);
-  });
 });

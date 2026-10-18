@@ -121,11 +121,9 @@ describe("local end-to-end collaboration", () => {
       expect(human.status).toBe(201);
       await Promise.all([waitForEvent(one.frames, (event) => event.type === "human.message"), waitForEvent(two.frames, (event) => event.type === "human.message")]);
 
-      const agent = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
-      expect(agent.status).toBe(202);
-      expect(followups).toEqual(["Summarize the thread"]);
-      await waitForEvent(one.frames, (event) => event.type === "agent.request.created" && typeof event.payload === "object" && event.payload !== null && (event.payload as { text?: string }).text === "Summarize the thread");
-      await Promise.all([waitForEvent(one.frames, (event) => event.type === "agent.state.changed"), waitForEvent(two.frames, (event) => event.type === "agent.state.changed")]);
+      const retiredAgentRoute = await jsonRequest(base, { method: "POST", path: "/v1/rooms/room-1/messages", token: joined2.data.roomToken, body: { clientMessageId: "m-agent", text: "Summarize the thread", target: "dsh" } });
+      expect(retiredAgentRoute.status).toBe(422);
+      expect(followups).toEqual([]);
 
       const cursor = two.frames.filter((frame): frame is Extract<DecodedServerStreamFrame, { kind: "event" }> => frame.kind === "event").at(-1)?.event.seq ?? 0;
       two.close();

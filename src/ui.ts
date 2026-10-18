@@ -1,6 +1,6 @@
 import type { AgentOutputFrame, AgentQueueItem, MessageInput, MessageTarget, RoomEvent } from "./types.js";
 
-export type ComposerTarget = MessageTarget;
+export type ComposerTarget = "room";
 
 export interface ComposerMentionMember {
   memberId: string;
@@ -27,19 +27,9 @@ export interface TimelineItem {
   streaming?: boolean;
 }
 
-export const AGENT_MENTION = "@agent";
-
-/** Resolve the shared composer route without treating email-like text as a mention. */
-export function composerTargetForText(text: string): Exclude<ComposerTarget, "dsh-steer"> {
-  return /(?:^|[^A-Za-z0-9_])@agent(?![A-Za-z0-9_])/.test(text) ? "dsh" : "room";
-}
-
-export function shouldSuggestAgentMention(draft: string): boolean {
-  return /(?:^|[^A-Za-z0-9_])@$/.test(draft);
-}
-
-export function insertAgentMention(draft: string): string {
-  return shouldSuggestAgentMention(draft) ? `${draft.slice(0, -1)}${AGENT_MENTION} ` : draft;
+/** All current composer submissions stay in the human General room. */
+export function composerTargetForText(_text: string): ComposerTarget {
+  return "room";
 }
 
 export function mentionQuery(draft: string, selectionStart = draft.length, selectionEnd = selectionStart): string | undefined {
@@ -108,15 +98,9 @@ export function createComposerSubmission(input: {
   authorMemberId: string;
   text: string;
   target: ComposerTarget;
-  canSteer?: boolean;
   sourceMessageId?: string;
-  contextRefs?: string[];
   mentions?: string[];
 }): MessageInput {
-  if (input.target === "dsh-steer" && input.canSteer !== true) {
-    throw new Error("steer target requires capability");
-  }
-  const agentTarget = input.target === "dsh" || input.target === "dsh-steer";
   return {
     messageId: input.messageId,
     roomId: input.roomId,
@@ -124,13 +108,11 @@ export function createComposerSubmission(input: {
     text: input.text,
     target: input.target,
     ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
-    ...(agentTarget && input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
-    ...(!agentTarget && input.mentions && input.mentions.length > 0 ? { mentions: [...input.mentions] } : {}),
+    ...(input.mentions && input.mentions.length > 0 ? { mentions: [...input.mentions] } : {}),
   };
 }
 
-export function composerTargetForGesture(text: string, agentBusy: boolean, shiftKey: boolean): ComposerTarget {
-  if (shiftKey && agentBusy && composerTargetForText(text) === "dsh") return "dsh-steer";
+export function composerTargetForGesture(text: string, _agentBusy: boolean, _shiftKey: boolean): ComposerTarget {
   return composerTargetForText(text);
 }
 

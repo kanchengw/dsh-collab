@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/protocol.js";
 
 const hash = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
@@ -295,7 +295,7 @@ describe("SideTask publication API", () => {
 
     const splitSnapshot = runtime.snapshot();
     const orphanRequestId = `internal:mainline:${hash(`room-1\0${publicationId}\0mainline-integration`)}`;
-    const orphanMessage = classifyMessage({ messageId: orphanRequestId, roomId: "room-1", authorMemberId: hostMemberId, text: "Uncommitted integration", target: "dsh" });
+    const orphanMessage = classifyLegacyAgentMessage({ messageId: orphanRequestId, roomId: "room-1", authorMemberId: hostMemberId, text: "Uncommitted integration", target: "dsh" });
     if (orphanMessage.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
     orphanMessage.requestId = orphanRequestId;
     splitSnapshot.dispatcher.records.push({
@@ -327,7 +327,7 @@ describe("SideTask publication API", () => {
     expect(recovered.ledger.readAfter("room-1", 0, 500)).toContainEqual(expect.objectContaining({ eventId: `${orphanRequestId}:failed`, type: "agent.request.failed" }));
     await recovered.dispose();
 
-    const blocker = classifyMessage({ messageId: "queue-blocker", roomId: "room-1", authorMemberId: hostMemberId, text: "Wait", target: "dsh" });
+    const blocker = classifyLegacyAgentMessage({ messageId: "queue-blocker", roomId: "room-1", authorMemberId: hostMemberId, text: "Wait", target: "dsh" });
     if (blocker.kind !== "agent-request") throw new Error("test fixture did not create an Agent request");
     await runtime.gateway.dispatcher.submit({ principalId: "host", message: blocker });
 
@@ -382,7 +382,7 @@ describe("SideTask publication API", () => {
     });
     const conflictingPublicationId = (conflictingPublication.body as { publication: { publicationId: string } }).publication.publicationId;
     const conflictingRequestId = `internal:mainline:${hash(`room-1\0${conflictingPublicationId}\0mainline-integration`)}`;
-    const conflictingMessage = classifyMessage({
+    const conflictingMessage = classifyLegacyAgentMessage({
       messageId: conflictingRequestId,
       roomId: "room-1",
       authorMemberId: hostMemberId,

@@ -91,21 +91,14 @@ describe("P1 two-participant collaboration flow", () => {
     expect(alice.events).toEqual(bob.events);
     expect(alice.events).toContainEqual(expect.objectContaining({ type: "human.message" }));
 
-    const agentRequest = await gateway.handle({
+    const retiredAgentRoute = await gateway.handle({
       method: "POST",
       path: "/v1/rooms/room-1/messages",
       headers: { authorization: "Bearer " + body<{ roomToken: string }>(joinedBob).roomToken },
       body: { clientMessageId: "client-agent", text: "Run the release tests", target: "dsh" },
     });
-    expect(agentRequest.status).toBe(202);
-
-    await vi.waitFor(() => {
-      expect(alice.events).toEqual(bob.events);
-      expect(alice.events).toContainEqual(expect.objectContaining({
-        type: "agent.state.changed",
-        payload: expect.objectContaining({ state: "output", hostSessionId: "session-host" }),
-      }));
-    });
+    expect(retiredAgentRoute.status).toBe(422);
+    expect(alice.events).not.toContainEqual(expect.objectContaining({ type: "agent.state.changed" }));
 
     const beforeDisconnect = alice.lastEventSeq;
     alice.close();

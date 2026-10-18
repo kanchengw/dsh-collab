@@ -28,6 +28,21 @@ type RoomRecord = {
   members: Map<string, RoomMember>;
 };
 
+export function migrateRoomStoreSnapshot(snapshot: RoomStoreSnapshot): RoomStoreSnapshot {
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.rooms)) {
+    throw new CollabError("SNAPSHOT_INVALID", "unsupported room snapshot");
+  }
+  const migrated = copy(snapshot);
+  for (const entry of migrated.rooms) {
+    if (!entry || !entry.room || !Array.isArray(entry.members)) {
+      throw new CollabError("SNAPSHOT_INVALID", "invalid room snapshot entry");
+    }
+    const host = entry.members.find((member) => member.principalId === entry.room.hostId);
+    if (host) host.role = "host";
+  }
+  return migrated;
+}
+
 export class RoomStore {
   private readonly rooms = new Map<string, RoomRecord>();
   private readonly listeners = new Set<() => void>();
@@ -130,11 +145,9 @@ export class RoomStore {
   }
 
   static fromSnapshot(snapshot: RoomStoreSnapshot): RoomStore {
-    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.rooms)) {
-      throw new CollabError("SNAPSHOT_INVALID", "unsupported room snapshot");
-    }
+    const migrated = migrateRoomStoreSnapshot(snapshot);
     const store = new RoomStore();
-    for (const entry of snapshot.rooms) {
+    for (const entry of migrated.rooms) {
       if (!entry || !entry.room || !Array.isArray(entry.members)) {
         throw new CollabError("SNAPSHOT_INVALID", "invalid room snapshot entry");
       }

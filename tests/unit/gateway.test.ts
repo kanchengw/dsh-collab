@@ -268,7 +268,7 @@ describe("CollabGateway route contract", () => {
     ] });
   });
 
-  it("accepts mentions only for active members of the current room while preserving @agent requests", async () => {
+  it("accepts mentions only for active members of the current room and retires @agent requests", async () => {
     const { gateway, rooms } = setup();
     rooms.addMember("room-2", { memberId: "member-foreign", principalId: "foreign", displayName: "Foreign", now: 2 });
     const host = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
@@ -308,7 +308,7 @@ describe("CollabGateway route contract", () => {
       path: "/v1/rooms/room-1/messages",
       headers,
       body: { messageId: "message-agent-mention", text: "@agent run tests", target: "dsh", mentions: ["member-missing"] },
-    })).resolves.toMatchObject({ status: 202, body: { request: { message: { target: "dsh" } } } });
+    })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
   });
 
   it("does not stream a room event until its persistence barrier succeeds", async () => {
@@ -470,73 +470,33 @@ describe("CollabGateway route contract", () => {
     expect(response.body).toMatchObject({ member: { memberId: "member-alice", role: "participant" } });
   });
 
-  it("routes an explicit DSH request through the one Host dispatcher", async () => {
-    const { gateway, calls } = setup();
-    const created = await request(gateway, {
-      method: "POST",
-      path: "/v1/rooms/room-1/invites",
-      auth: { principalId: "host" },
-      body: { inviteId: "invite-1", expiresAt: 100 },
-    });
-    const joined = await request(gateway, {
-      method: "POST",
-      path: "/v1/rooms/room-1/join",
-      auth: { principalId: "bob" },
-      body: { inviteId: "invite-1", token: (created.body as { token: string }).token, memberId: "member-bob", displayName: "Bob", resumeCredential: "bob-resume" },
-    });
-    const roomToken = (joined.body as { roomToken: string }).roomToken;
-
-    const agentRequest = await request(gateway, {
+  it("rejects the retired DSH message route", async () => {
+    const { gateway } = setup();
+    const bootstrapped = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const roomToken = (bootstrapped.body as { roomToken: string }).roomToken;
+    const response = await request(gateway, {
       method: "POST",
       path: "/v1/rooms/room-1/messages",
       headers: bearer(roomToken),
       body: { messageId: "message-agent", text: "run tests", target: "dsh" },
     });
-    expect(agentRequest.status).toBe(202);
-    await vi.waitFor(() => {
-      expect(calls).toEqual(["message-agent"]);
-      expect(gateway.dispatcher.get("message-agent")).toMatchObject({ status: "completed" });
-    });
+    expect(response).toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    expect(gateway.dispatcher.get("message-agent")).toBeUndefined();
   });
 
-  it("waits for the active DSH turn before dispatching the next request", async () => {
-    const calls: string[] = [];
-    const idleWaiters: Array<() => void> = [];
-    const agent = {
-      followup(input: { requestId: string }) { calls.push(input.requestId); },
-      steer() {},
-      cancel() {},
-      whenIdle() { return new Promise<void>((resolve) => idleWaiters.push(resolve)); },
-    };
-    const { gateway } = setup(agent);
-    const bootstrapped = await request(gateway, {
-      method: "GET",
-      path: "/v1/rooms/room-1/bootstrap",
-      auth: { principalId: "host" },
-    });
+  it("does not enqueue retired DSH requests", async () => {
+    const { gateway } = setup();
+    const bootstrapped = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
     const roomToken = (bootstrapped.body as { roomToken: string }).roomToken;
-
-    await request(gateway, {
-      method: "POST",
-      path: "/v1/rooms/room-1/messages",
-      headers: bearer(roomToken),
-      body: { messageId: "message-first", text: "first", target: "dsh" },
-    });
-    await vi.waitFor(() => expect(calls).toEqual(["message-first"]));
-    await request(gateway, {
-      method: "POST",
-      path: "/v1/rooms/room-1/messages",
-      headers: bearer(roomToken),
-      body: { messageId: "message-second", text: "second", target: "dsh" },
-    });
-    expect(calls).toEqual(["message-first"]);
-
-    idleWaiters.shift()?.();
-    await vi.waitFor(() => expect(calls).toEqual(["message-first", "message-second"]));
-    expect(gateway.dispatcher.get("message-first")).toMatchObject({ status: "completed" });
-
-    idleWaiters.shift()?.();
-    await vi.waitFor(() => expect(gateway.dispatcher.get("message-second")).toMatchObject({ status: "completed" }));
+    for (const messageId of ["message-first", "message-second"]) {
+      await expect(request(gateway, {
+        method: "POST",
+        path: "/v1/rooms/room-1/messages",
+        headers: bearer(roomToken),
+        body: { messageId, text: messageId, target: "dsh" },
+      })).resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    }
+    expect(gateway.dispatcher.queued()).toEqual([]);
   });
 
   it("rejects missing, invalid, and cross-room credentials with stable errors", async () => {
@@ -1016,86 +976,32 @@ describe("CollabGateway route contract", () => {
     expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "human.message")).toHaveLength(1);
   });
 
-  it("confirms an Agent request in persistent state before starting delivery", async () => {
-    let persistenceFails = true;
-    let gateway: CollabGateway | undefined;
-    const statusAtCommit: string[] = [];
-    const commitCriticalState = vi.fn(async () => {
-      statusAtCommit.push(gateway?.dispatcher.get("request:room-1:agent-persist")?.status ?? "missing");
-      if (persistenceFails) throw new Error("state write failed");
-    });
-    const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
-      maxMessagesPerMemberPerWindow: 2,
-      messageWindowMs: 60_000,
-      maxQueuedRequestsPerRoom: 2,
-    }));
-    gateway = runtime.gateway;
-    const host = await request(runtime.gateway, {
-      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
-    });
-    const message = {
-      method: "POST" as const,
-      path: "/v1/rooms/room-1/messages",
-      headers: bearer((host.body as { roomToken: string }).roomToken),
-      body: { clientMessageId: "agent-persist", text: "run tests", target: "dsh" },
-    };
-
-    expect(await request(runtime.gateway, message)).toMatchObject({ status: 500, body: { error: { code: "INTERNAL_ERROR" } } });
-    expect(runtime.calls).toEqual([]);
-    expect(runtime.gateway.dispatcher.get("request:room-1:agent-persist")).toMatchObject({ status: "queued" });
-
-    persistenceFails = false;
-    expect(await request(runtime.gateway, {
-      ...message,
-      body: { clientMessageId: "agent-second", text: "run lint", target: "dsh" },
-    })).toMatchObject({ status: 202 });
-    await vi.waitFor(() => expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]));
-
-    expect(await request(runtime.gateway, message)).toMatchObject({ status: 202, body: { request: { status: "queued" } } });
-    expect(runtime.calls).toEqual(["request:room-1:agent-persist", "request:room-1:agent-second"]);
-
-    expect(commitCriticalState).toHaveBeenCalledTimes(7);
-    expect(statusAtCommit).toEqual(["queued", "queued", "queued", "running", "completed", "completed", "completed"]);
-    expect(runtime.ledger.readAfter("room-1", 0, 500).filter((event) => event.type === "agent.request.queued")).toHaveLength(2);
-  });
-
-  it("does not let an earlier persistence barrier dispatch a later unconfirmed Agent request", async () => {
-    const releases: Array<() => void> = [];
-    let gatewayCommits = 0;
-    const commitCriticalState = vi.fn(() => {
-      if (gatewayCommits++ < 2) return new Promise<void>((resolve) => releases.push(resolve));
-      return Promise.resolve();
-    });
-    const runtime = setup(undefined, false, commitCriticalState, new ResourceLimiter({
-      maxMessagesPerMemberPerWindow: 2,
-      messageWindowMs: 60_000,
-      maxQueuedRequestsPerRoom: 2,
-    }));
-    const host = await request(runtime.gateway, {
-      method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" },
-    });
-    const sendAgent = (clientMessageId: string, text: string) => request(runtime.gateway, {
+  it("does not persist a retired Agent request", async () => {
+    const runtime = setup();
+    const host = await request(runtime.gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const roomToken = (host.body as { roomToken: string }).roomToken;
+    const response = await request(runtime.gateway, {
       method: "POST",
       path: "/v1/rooms/room-1/messages",
-      headers: bearer((host.body as { roomToken: string }).roomToken),
-      body: { clientMessageId, text, target: "dsh" },
+      headers: bearer(roomToken),
+      body: { clientMessageId: "agent-persist", text: "run lint", target: "dsh" },
     });
+    expect(response).toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    expect(runtime.gateway.dispatcher.queued()).toEqual([]);
+  });
 
-    const first = sendAgent("agent-first", "run tests");
-    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(1));
-    const second = sendAgent("agent-second", "run lint");
-    await Promise.resolve();
-    expect(commitCriticalState).toHaveBeenCalledTimes(1);
-
-    releases[0]!();
-    await expect(first).resolves.toMatchObject({ status: 202 });
-    await vi.waitFor(() => expect(commitCriticalState).toHaveBeenCalledTimes(2));
-    releases[1]!();
-    await expect(second).resolves.toMatchObject({ status: 202 });
-    await vi.waitFor(() => expect(runtime.calls).toEqual([
-      "request:room-1:agent-first",
-      "request:room-1:agent-second",
-    ]));
+  it("does not dispatch a retired Agent request after any persistence barrier", async () => {
+    const runtime = setup();
+    const host = await request(runtime.gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const roomToken = (host.body as { roomToken: string }).roomToken;
+    const response = await request(runtime.gateway, {
+      method: "POST",
+      path: "/v1/rooms/room-1/messages",
+      headers: bearer(roomToken),
+      body: { clientMessageId: "agent-persist", text: "run lint", target: "dsh" },
+    });
+    expect(response).toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    expect(runtime.calls).toEqual([]);
   });
 
   it("confirms a cancelled request in persistent state before reporting success", async () => {

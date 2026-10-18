@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EventLedger } from "../../src/events.js";
 import { AgentDispatcher } from "../../src/dispatcher.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import { RoomStore } from "../../src/room.js";
 import type { AgentRequest, HostAgentPort, MessageTarget } from "../../src/types.js";
 
@@ -33,7 +33,7 @@ function request(
   authorMemberId: string,
   target: MessageTarget,
 ): AgentRequest {
-  const message = classifyMessage({
+  const message = classifyLegacyAgentMessage({
     messageId,
     roomId: "room-1",
     authorMemberId,

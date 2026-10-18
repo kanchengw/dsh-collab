@@ -3,7 +3,7 @@ import { ApprovalStore } from "../../src/approvals.js";
 import { CollabGateway } from "../../src/gateway.js";
 import { EventLedger } from "../../src/events.js";
 import { InviteStore } from "../../src/invites.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import { RoomStore } from "../../src/room.js";
 import type { HostAgentPort } from "../../src/types.js";
 
@@ -47,7 +47,7 @@ describe("security regression", () => {
   });
 
   it("bounds context references before mapping untrusted input", () => {
-    expect(() => classifyMessage({ messageId: "message-1", roomId: "room-1", authorMemberId: "member-1", text: "hello", target: "dsh", contextRefs: Array.from({ length: 65 }, (_, index) => `ref-${String(index)}`) }))
+    expect(() => classifyLegacyAgentMessage({ messageId: "message-1", roomId: "room-1", authorMemberId: "member-1", text: "hello", target: "dsh", contextRefs: Array.from({ length: 65 }, (_, index) => `ref-${String(index)}`) }))
       .toThrow("too many context references");
   });
 });

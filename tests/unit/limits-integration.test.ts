@@ -33,37 +33,27 @@ describe("resource limits at transport/domain boundaries", () => {
     expect(second.status).toBe(429);
   });
 
-  it("limits queued Agent requests per room", async () => {
+  it("rejects retired Agent requests before queue limits", async () => {
     const { gateway } = setup(new ResourceLimiter({ maxQueuedRequestsPerRoom: 1 }));
     const token = await joinParticipant(gateway, "invite-queue", "bob", "member-bob");
-    const first = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-1", text: "first", target: "dsh" } });
-    const second = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-2", text: "second", target: "dsh" } });
-    const third = await gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: "agent-3", text: "third", target: "dsh" } });
-    expect(first.status).toBe(202);
-    expect(second.status).toBe(202);
-    expect(third.status).toBe(429);
-    expect(gateway.dispatcher.queued()).toHaveLength(1);
+    for (const clientMessageId of ["agent-1", "agent-2", "agent-3"]) {
+      await expect(gateway.handle({ method: "POST", path: "/v1/rooms/room-1/messages", headers: { authorization: `Bearer ${token}` }, body: { clientMessageId, text: clientMessageId, target: "dsh" } }))
+        .resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    }
+    expect(gateway.dispatcher.queued()).toHaveLength(0);
   });
 
-  it("does not apply one room's queued-request limit to another room", async () => {
+  it("does not create retired Agent requests in any room", async () => {
     let tokenSequence = 0;
     const { gateway, rooms } = setup(new ResourceLimiter({ maxQueuedRequestsPerRoom: 1 }), () => `room-token-${String(++tokenSequence)}`);
     rooms.createRoom({ roomId: "room-2", hostId: "host", hostSessionId: "session-host", title: "Other", hostDisplayName: "Host", now: 2 });
     const room1Token = ((await gateway.handle({ method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } })).body as { roomToken: string }).roomToken;
     const room2Token = ((await gateway.handle({ method: "GET", path: "/v1/rooms/room-2/bootstrap", auth: { principalId: "host" } })).body as { roomToken: string }).roomToken;
-    const send = (roomId: string, token: string, clientMessageId: string) => gateway.handle({
-      method: "POST",
-      path: `/v1/rooms/${roomId}/messages`,
-      headers: { authorization: `Bearer ${token}` },
-      body: { clientMessageId, text: clientMessageId, target: "dsh" },
-    });
-
-    const active = await send("room-1", room1Token, "room-1-active");
-    expect(active, JSON.stringify(active.body)).toMatchObject({ status: 202 });
-    const queued = await send("room-1", room1Token, "room-1-queued");
-    expect(queued, JSON.stringify(queued.body)).toMatchObject({ status: 202 });
-    expect((await send("room-2", room2Token, "room-2-queued")).status).toBe(202);
-    expect(gateway.dispatcher.queued().map((record) => record.roomId)).toEqual(["room-1", "room-2"]);
+    for (const [roomId, token] of [["room-1", room1Token], ["room-2", room2Token]] as const) {
+      await expect(gateway.handle({ method: "POST", path: `/v1/rooms/${roomId}/messages`, headers: { authorization: `Bearer ${token}` }, body: { clientMessageId: roomId, text: roomId, target: "dsh" } }))
+        .resolves.toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    }
+    expect(gateway.dispatcher.queued()).toHaveLength(0);
   });
 
   it("limits concurrent stream connections", async () => {

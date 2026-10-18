@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EventLedger } from "../../src/events.js";
 import { AgentDispatcher } from "../../src/dispatcher.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import { RoomStore } from "../../src/room.js";
 import type { AgentRequest, HostAgentPort, MessageTarget } from "../../src/types.js";
 
@@ -26,7 +26,7 @@ function createDispatcher(agent: HostAgentPort, commitCriticalState?: () => Prom
 }
 
 function request(messageId: string, text: string, target: MessageTarget = "dsh"): AgentRequest {
-  const message = classifyMessage({
+  const message = classifyLegacyAgentMessage({
     messageId,
     roomId: "room-1",
     authorMemberId: "member-alice",

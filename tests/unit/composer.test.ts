@@ -1,21 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { composerKeyAction, composerMentionMenuKeyAction, composerMentionSuggestions, composerTargetForGesture, composerTargetForText, createComposerSubmission, extractComposerMentionIds, insertAgentMention, insertMemberMention, projectCollabUnread, shouldSuggestAgentMention, shouldSuggestMemberMention } from "../../src/ui.js";
+import { composerKeyAction, composerMentionMenuKeyAction, composerMentionSuggestions, composerTargetForGesture, composerTargetForText, createComposerSubmission, extractComposerMentionIds, insertMemberMention, projectCollabUnread, shouldSuggestMemberMention } from "../../src/ui.js";
 
 describe("collab composer mentions", () => {
-  it("routes only the canonical lowercase @agent mention to the Host Agent", () => {
+  it("routes every composer draft to the human General room", () => {
     expect(composerTargetForText("Could someone review this?")).toBe("room");
-    expect(composerTargetForText("@agent run the tests")).toBe("dsh");
-    expect(composerTargetForText("Please ask @agent to summarize")).toBe("dsh");
-    expect(composerTargetForText("请@agent总结一下")).toBe("dsh");
-    expect(composerTargetForText("@Agent run the tests")).toBe("room");
+    expect(composerTargetForText("@agent run the tests")).toBe("room");
+    expect(composerTargetForText("Please ask @agent to summarize")).toBe("room");
+    expect(composerTargetForText("请@agent总结一下")).toBe("room");
     expect(composerTargetForText("owner@agent.example")).toBe("room");
-  });
-
-  it("offers and inserts the lowercase Agent mention after a typed at-sign", () => {
-    expect(shouldSuggestAgentMention("@")).toBe(true);
-    expect(shouldSuggestAgentMention("请问@")).toBe(true);
-    expect(shouldSuggestAgentMention("owner@")).toBe(false);
-    expect(insertAgentMention("Please ask @")).toBe("Please ask @agent ");
   });
 
   it("suggests human members at a real @ token, supports keyboard selection, and ignores email-like text", () => {
@@ -40,7 +32,6 @@ describe("collab composer mentions", () => {
 
   it("keeps member mentions on room submissions and counts related versus room unread", () => {
     expect(createComposerSubmission({ messageId: "m-mention", roomId: "room-1", authorMemberId: "member-owner", text: "@Alice review", target: "room", mentions: ["member-alice"] })).toMatchObject({ mentions: ["member-alice"], target: "room" });
-    expect(createComposerSubmission({ messageId: "m-agent", roomId: "room-1", authorMemberId: "member-owner", text: "@agent review", target: "dsh", mentions: ["member-alice"] })).not.toHaveProperty("mentions");
     expect(projectCollabUnread([
       { eventId: "e1", roomId: "room-1", seq: 1, type: "human.message", createdAt: 1, actor: { memberId: "member-alice", principalId: "alice" }, payload: { mentions: ["member-owner"] } },
       { eventId: "e2", roomId: "room-1", seq: 2, type: "human.message", createdAt: 2, actor: { memberId: "member-bob", principalId: "bob" }, payload: { mentions: [] } },
@@ -61,14 +52,10 @@ describe("collab composer mentions", () => {
       target: "room",
       text: "ask @Alice",
     });
-    expect(createComposerSubmission({ messageId: "m-2", roomId: "room-1", authorMemberId: "member-1", text: "run tests", target: "dsh" })).toMatchObject({ target: "dsh" });
-    expect(createComposerSubmission({ messageId: "m-2b", roomId: "room-1", authorMemberId: "member-1", text: "hello", target: "room", contextRefs: ["message-1"] })).not.toHaveProperty("contextRefs");
-    expect(createComposerSubmission({ messageId: "m-2c", roomId: "room-1", authorMemberId: "member-1", text: "@agent summarize", target: "dsh", contextRefs: ["message-1", "message-2", "message-3"] })).toMatchObject({ contextRefs: ["message-1", "message-2", "message-3"] });
+    expect(createComposerSubmission({ messageId: "m-2", roomId: "room-1", authorMemberId: "member-1", text: "run tests", target: "room" })).toMatchObject({ target: "room" });
+    expect(createComposerSubmission({ messageId: "m-2b", roomId: "room-1", authorMemberId: "member-1", text: "hello", target: "room" })).not.toHaveProperty("contextRefs");
   });
 
-  it("rejects a steer submission when the caller lacks the capability", () => {
-    expect(() => createComposerSubmission({ messageId: "m-3", roomId: "room-1", authorMemberId: "member-1", text: "stop", target: "dsh-steer", canSteer: false })).toThrow("steer");
-  });
 
   it("matches the native DSH Enter, newline, IME, and repeat behavior", () => {
     expect(composerKeyAction({ key: "Enter" })).toBe("submit");
@@ -79,9 +66,9 @@ describe("collab composer mentions", () => {
     expect(composerKeyAction({ key: "a" })).toBe("native");
   });
 
-  it("uses Shift+Enter as steer only for an Agent request while busy", () => {
-    expect(composerTargetForGesture("@agent continue", false, true)).toBe("dsh");
-    expect(composerTargetForGesture("@agent continue", true, true)).toBe("dsh-steer");
+  it("keeps Shift+Enter in the human General room", () => {
+    expect(composerTargetForGesture("@agent continue", false, true)).toBe("room");
+    expect(composerTargetForGesture("@agent continue", true, true)).toBe("room");
     expect(composerTargetForGesture("hello", true, true)).toBe("room");
   });
 });

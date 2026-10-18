@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AgentDispatcher } from "../../src/dispatcher.js";
 import { EventLedger } from "../../src/events.js";
 import { RoomStore } from "../../src/room.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import type { AgentRequest, HostAgentPort } from "../../src/types.js";
 
 function roomStore() {
@@ -25,7 +25,7 @@ function roomStore() {
 }
 
 function request(messageId: string): AgentRequest {
-  const message = classifyMessage({
+  const message = classifyLegacyAgentMessage({
     messageId,
     roomId: "room-1",
     authorMemberId: "member-alice",

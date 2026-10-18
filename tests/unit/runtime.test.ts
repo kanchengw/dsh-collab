@@ -4,13 +4,13 @@ import { AgentDispatcher } from "../../src/dispatcher.js";
 import { EventLedger } from "../../src/events.js";
 import { CollabRuntime } from "../../src/runtime.js";
 import { RoomStore } from "../../src/room.js";
-import { classifyMessage } from "../../src/messages.js";
+import { classifyLegacyAgentMessage } from "../../src/messages.js";
 import type { AgentRequest, HostAgentPort } from "../../src/types.js";
 
 const agent: HostAgentPort = { followup() {}, steer() {}, cancel() {} };
 
 function request(messageId: string): AgentRequest {
-  const message = classifyMessage({ messageId, roomId: "room-1", authorMemberId: "member-host", text: messageId, target: "dsh" });
+  const message = classifyLegacyAgentMessage({ messageId, roomId: "room-1", authorMemberId: "member-host", text: messageId, target: "dsh" });
   if (message.kind !== "agent-request") throw new Error("test fixture did not create an AgentRequest");
   return message;
 }

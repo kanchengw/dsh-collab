@@ -92,30 +92,18 @@ describe("P1 idempotency and cursor compensation", () => {
     expect((events.body as { events: RoomEvent[] }).events.filter((event) => event.type === "human.message")).toHaveLength(1);
   });
 
-  it("keeps transport clientMessageId separate from Agent messageId and requestId", async () => {
-    const { gateway, calls } = setupGateway();
+  it("rejects retired Agent message routes before creating transport state", async () => {
+    const { gateway } = setupGateway();
     const joined = await joinBob(gateway);
     const token = (joined.body as { roomToken: string }).roomToken;
-    const request = await gateway.handle({
+    const response = await gateway.handle({
       method: "POST",
       path: "/v1/rooms/room-1/messages",
       headers: bearer(token),
       body: { clientMessageId: "client-agent", text: "run tests", target: "dsh" },
     });
-    const record = (request.body as { request: { requestId: string; message: { messageId: string } } }).request;
-    expect(request.status).toBe(202);
-    expect(record.requestId).not.toBe(record.message.messageId);
-    expect(record.requestId).toContain("client-agent");
-
-    const retry = await gateway.handle({
-      method: "POST",
-      path: "/v1/rooms/room-1/messages",
-      headers: bearer(token),
-      body: { clientMessageId: "client-agent", text: "run tests", target: "dsh" },
-    });
-    expect(retry).toEqual(request);
-    expect(gateway.dispatcher.queued()).toHaveLength(0);
-    expect(calls).toEqual([record.requestId]);
+    expect(response).toMatchObject({ status: 422, body: { error: { code: "INVALID_INPUT" } } });
+    expect(gateway.dispatcher.queued()).toEqual([]);
   });
 
   it("buffers an event gap and drains it once the missing cursor arrives", () => {

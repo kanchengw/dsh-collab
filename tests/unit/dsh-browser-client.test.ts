@@ -829,9 +829,9 @@ describe("browser Gateway client", () => {
     await client.bootstrap();
     expect(client.getSnapshot()).toMatchObject({ members: [{ memberId: "member-host", displayName: "Local Host" }] });
     expect(client.getSnapshot()).toMatchObject({ roomId: "room-1", memberId: "member-host", role: "host", connection: "online", canSteer: true });
-    await client.send({ text: "run tests", target: "dsh", contextRefs: ["event-1", "event-2"] });
+    await client.send({ text: "run tests", target: "room" });
     expect(requests.at(-1)?.url).toBe("http://127.0.0.1:3080/collab/v1/rooms/room-1/messages");
-    expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "dsh", contextRefs: ["event-1", "event-2"] });
+    expect(JSON.parse(String(requests.at(-1)?.init?.body))).toMatchObject({ text: "run tests", target: "room" });
     expect(socketUrls[0]).toContain("ticket=stream-ticket");
     expect(socketUrls[0]).not.toContain("host-room-token");
     expect(requests.find(({ url }) => url.endsWith("/stream-tickets"))?.init?.headers?.authorization).toBe("Bearer host-room-token");
@@ -882,7 +882,7 @@ describe("browser Gateway client", () => {
     client.dispose();
   });
 
-  it("reuses an Agent request ID after a lost response", async () => {
+  it("reuses a human message ID after a lost response for a second client", async () => {
     const messageBodies: Array<Record<string, unknown>> = [];
     const fetch: BrowserFetch = async (url, init) => {
       if (url.endsWith("/bootstrap")) return response({
@@ -895,7 +895,7 @@ describe("browser Gateway client", () => {
       if (url.endsWith("/messages")) {
         messageBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         if (messageBodies.length === 1) throw new TypeError("network response was lost");
-        return response({ request: { status: "queued" } }, 202);
+        return response({ message: { text: "run tests" } }, 201);
       }
       throw new Error(`unexpected request ${url}`);
     };
@@ -912,8 +912,8 @@ describe("browser Gateway client", () => {
     const client = createDshBrowserCollabClient({ gatewayUrl: "http://127.0.0.1:4310/collab", roomId: "room-1", fetch, WebSocket });
     await client.bootstrap();
 
-    await expect(client.send({ text: "run tests", target: "dsh" })).rejects.toThrow("Gateway is unreachable");
-    await client.send({ text: "run tests", target: "dsh" });
+    await expect(client.send({ text: "run tests", target: "room" })).rejects.toThrow("Gateway is unreachable");
+    await client.send({ text: "run tests", target: "room" });
 
     expect(messageBodies).toHaveLength(2);
     expect(messageBodies[1]?.clientMessageId).toBe(messageBodies[0]?.clientMessageId);

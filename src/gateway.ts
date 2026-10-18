@@ -23,6 +23,7 @@ import { MAINLINE_REQUEST_PREFIX, type ReviewService } from "./reviews.js";
 import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
 import type {
   GatewayRequest,
+  AgentRequest,
   GatewayResponse,
   HostAgentPort,
   MessageTarget,
@@ -552,8 +553,10 @@ export class CollabGateway {
         publicationId,
       }, (prepared) => {
         const requestId = prepared.publication.integrationRequestId!;
-        const message = classifyMessage({
+        const message: AgentRequest = {
+          kind: "agent-request",
           messageId: requestId,
+          requestId,
           roomId,
           authorMemberId: prepared.publication.acceptedBy!,
           text: integrationPrompt({
@@ -563,10 +566,9 @@ export class CollabGateway {
             findings: prepared.findings,
           }),
           target: "dsh",
+          deliveryMode: "followup",
           contextRefs: [reviewPointId, prepared.publication.workspaceSnapshotId, prepared.publication.publicationId],
-        });
-        if (message.kind !== "agent-request") throw new Error("Mainline integration message is invalid");
-        message.requestId = requestId;
+        };
         const existing = this.dispatcher.get(requestId);
         if (existing) {
           if (JSON.stringify(existing.message) !== JSON.stringify(message)) {
@@ -731,6 +733,15 @@ export class CollabGateway {
   private async message(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const claims = this.claims(roomId, request);
     const body = objectBody(request.body);
+    const requestedTarget = body.target as MessageTarget | undefined;
+    if (requestedTarget === "dsh-steer") {
+      this.options.rooms.authorize(roomId, claims.principalId, "steer");
+      throw invalidInput("@agent steer messages are retired; use the human room", { field: "target" });
+    }
+    if (requestedTarget === "dsh") {
+      this.options.rooms.authorize(roomId, claims.principalId, "agentRequest");
+      throw invalidInput("@agent messages are retired; use the human room", { field: "target" });
+    }
     const hasClientMessageId = body.clientMessageId !== undefined;
     const clientMessageId = requiredText(body.clientMessageId ?? body.messageId, "clientMessageId");
     if (!hasClientMessageId && clientMessageId.startsWith(MAINLINE_REQUEST_PREFIX)) {

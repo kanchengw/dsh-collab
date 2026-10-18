@@ -19,10 +19,9 @@ export function DshCollabComposer(props: {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingCursor = useRef<number>();
   const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const agentBusy = (props.snapshot.agentQueue ?? []).some((item) => item.status === "running");
-  const target = composerTargetForGesture(draft, agentBusy, false);
+  const target = composerTargetForGesture(draft, false, false);
   const mentionOptions = composerMentionSuggestions(draft, props.snapshot.members ?? [], selection.start, selection.end);
-  const showMentions = mentionOpen && mentionOptions.length > 0 && target === "room";
+  const showMentions = mentionOpen && mentionOptions.length > 0;
   useIsomorphicLayoutEffect(() => {
     const cursor = pendingCursor.current;
     const textarea = textareaRef.current;
@@ -47,7 +46,7 @@ export function DshCollabComposer(props: {
     setBusy(true);
     setError(false);
     try {
-      await props.port.send({ text, target, ...(target === "room" ? { mentions: extractComposerMentionIds(text, props.snapshot.members ?? []) } : {}) });
+      await props.port.send({ text, target, mentions: extractComposerMentionIds(text, props.snapshot.members ?? []) });
       setDraft("");
     } catch {
       setError(true);
@@ -86,7 +85,7 @@ export function DshCollabComposer(props: {
         {mentionOptions.map((member, index) => <li key={member.memberId}><button type="button" role="option" aria-selected={index === mentionIndex} onMouseDown={(event) => { event.preventDefault(); applyMemberMention(member, readSelection()); }}>{member.displayName}</button></li>)}
       </ul> : null}
       <div className={css.composerFooter}>
-        <span className={css.composerHint}>{error ? props.t("composer.sendError") : props.t(target === "dsh" ? "composer.routeAgent" : "composer.routeHint")}</span>
+        <span className={css.composerHint}>{error ? props.t("composer.sendError") : props.t("composer.routeHint")}</span>
         <button type="submit" className={css.composerSubmit} disabled={busy || draft.trim() === ""}>{busy ? "…" : props.t("composer.send")}</button>
       </div>
     </form>
