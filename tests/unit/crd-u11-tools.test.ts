@@ -22,7 +22,7 @@ function agent(id = "session-1", cwd = "C:\\workspace\\room-1") {
     session: { header: { cwd } },
     ctx: {
       tools: {
-        register: vi.fn((nextDefinition) => {
+        register: vi.fn<(nextDefinition: DshCollabToolDefinition) => () => void>((nextDefinition) => {
           definition = nextDefinition;
           return vi.fn();
         }),
@@ -107,7 +107,7 @@ describe("CRD-U11 collab task agent tools", () => {
   it("projects a published milestone as structured Task context only for Task members", async () => {
     const ledger = new EventLedger();
     addEvent(ledger, { eventId: "task-1", type: "task.created", payload: { taskId: "task-1", title: "Fix reconnect", participantIds: ["member-alice"], createdBy: "member-alice" } });
-    const publisher = new LedgerTaskMilestonePublisher({ ledger, principalForMember: () => "alice", now: () => 200 });
+    const publisher = new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice", now: () => 200 });
     await publisher.publish({ clientRequestId: "milestone-1", roomId: "room-1", taskId: "task-1", memberId: "member-alice", sourceSessionId: "session-1", kind: "changeset-submitted", changeSetId: "change-1" });
 
     await expect(new LedgerRoomContextReader({ ledger }).read({ roomId: "room-1", memberId: "member-alice", cursor: 1 })).resolves.toMatchObject({ nextCursor: 2, entries: [{ kind: "task-milestone", taskId: "task-1", milestone: "changeset-submitted", changeSetId: "change-1" }] });
@@ -117,7 +117,7 @@ describe("CRD-U11 collab task agent tools", () => {
   it("binds both read-only context and milestone tools to the existing Room Project Agent", async () => {
     const linked = agent();
     const ledger = new EventLedger();
-    const milestones = new LedgerTaskMilestonePublisher({ ledger, principalForMember: () => "alice" });
+    const milestones = new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice" });
     bindCollabTaskAgentTools({
       agents: new Map([["session-1", linked.value]]),
       projects: roomProjects(),
@@ -137,9 +137,9 @@ describe("CRD-U11 collab task agent tools", () => {
 
   it("injects structured Task context through the native Session binding", () => {
     const linked = agent();
-    const deliver = vi.fn(() => ({ deliveryId: "task-context", messageId: "message-context", state: "injected" as const }));
+    const deliver = vi.fn((_input: { deliveryId: string; text: string }) => ({ deliveryId: "task-context", messageId: "message-context", state: "injected" as const }));
     const ledger = new EventLedger();
-    bindCollabTaskAgentTools({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", taskId: "task-1", tasks: tasksFor(), contextBinding: contextBinding(deliver), context: new LedgerRoomContextReader({ ledger }), milestones: new LedgerTaskMilestonePublisher({ ledger, principalForMember: () => "alice" }) });
+    bindCollabTaskAgentTools({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", taskId: "task-1", tasks: tasksFor(), contextBinding: contextBinding(deliver), context: new LedgerRoomContextReader({ ledger }), milestones: new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice" }) });
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: "task-context:room-1:task-1:session-1", text: expect.stringContaining("dsh-collab.task-context") }));
     const delivery = deliver.mock.calls[0]?.[0] as { text: string } | undefined;
     expect(delivery).toBeDefined();
@@ -154,7 +154,7 @@ describe("CRD-U11 collab task agent tools", () => {
       sessionId: "session-1",
       contextBinding: contextBinding(),
       context: new LedgerRoomContextReader({ ledger: new EventLedger() }),
-      milestones: new LedgerTaskMilestonePublisher({ ledger: new EventLedger(), principalForMember: () => "alice" }),
+      milestones: new LedgerTaskMilestonePublisher({ ledger: new EventLedger(), tasks: tasksFor(), principalForMember: () => "alice" }),
     };
 
     expect(() => bindCollabTaskAgentTools({ ...common, taskId: "missing", tasks: tasksFor() })).toThrow(/task/i);
@@ -174,7 +174,7 @@ describe("CRD-U11 collab task agent tools", () => {
       tasks,
       contextBinding: contextBinding(),
       context: new LedgerRoomContextReader({ ledger }),
-      milestones: new LedgerTaskMilestonePublisher({ ledger, principalForMember: () => "alice" }),
+      milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
     });
     expect(binding).toMatchObject({ roomId: "room-1", memberId: "member-alice", sessionId: "session-1", taskId: "task-1" });
     const milestoneDefinition = vi.mocked(linked.value.ctx.tools.register).mock.calls[1]?.[0] as DshCollabToolDefinition;
@@ -194,9 +194,41 @@ describe("CRD-U11 collab task agent tools", () => {
     await expect(reader.read({ roomId: "room-2", memberId: "member-alice", cursor: 0 })).resolves.toMatchObject({ roomId: "room-2", nextCursor: 0, entries: [] });
   });
 
+  it("re-resolves the current Session workspace and validates the native binding Session id on every call", async () => {
+    const linked = agent();
+    const projects = roomProjects();
+    const tasks = tasksFor();
+    const contextBindingValue = contextBinding();
+    const ledger = new EventLedger();
+    bindCollabTaskAgentTools({
+      agents: new Map([["session-1", linked.value]]),
+      projects,
+      sessionId: "session-1",
+      taskId: "task-1",
+      tasks,
+      contextBinding: contextBindingValue,
+      context: new LedgerRoomContextReader({ ledger }),
+      milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
+    });
+    linked.value.session!.header!.cwd = "C:\\workspace\\other";
+    const contextDefinition = vi.mocked(linked.value.ctx.tools.register).mock.calls[0]![0];
+    await expect(contextDefinition.execute({ cursor: 0 }, { callId: "workspace-change", signal: new AbortController().signal })).rejects.toThrow(/workspace|Room Project/i);
+
+    expect(() => bindCollabTaskAgentTools({
+      agents: new Map([["session-1", linked.value]]),
+      projects,
+      sessionId: "session-1",
+      taskId: "task-1",
+      tasks,
+      contextBinding: { ...contextBinding(), sessionId: "other-session" } as DshNativeAgentContextBinding,
+      context: new LedgerRoomContextReader({ ledger }),
+      milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
+    })).toThrow(/session/i);
+  });
+
   it("allows only milestone backfills and rejects realtime progress", async () => {
     const ledger = new EventLedger();
-    const publisher = new LedgerTaskMilestonePublisher({ ledger, principalForMember: () => "alice", now: () => 200 });
+    const publisher = new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice", now: () => 200 });
 
     await expect(publisher.publish({
       clientRequestId: "milestone-1",
@@ -220,8 +252,10 @@ describe("CRD-U11 collab task agent tools", () => {
 
   it("rejects cross-room and unbound milestone publication, while making retries idempotent and conflicts explicit", async () => {
     const ledger = new EventLedger();
+    const tasks = tasksFor();
     const publisher = new LedgerTaskMilestonePublisher({
       ledger,
+      tasks,
       principalForMember: (memberId) => memberId === "member-alice" ? "alice" : undefined,
       boundSession: (roomId, memberId, sessionId) => roomId === "room-1" && memberId === "member-alice" && sessionId === "session-1",
     });
@@ -240,5 +274,31 @@ describe("CRD-U11 collab task agent tools", () => {
     await expect(publisher.publish(request)).resolves.toMatchObject({ milestoneId: "milestone-1" });
     await expect(publisher.publish(request)).resolves.toMatchObject({ milestoneId: "milestone-1" });
     await expect(publisher.publish({ ...request, summary: "Conflicting retry." })).rejects.toMatchObject({ code: "REQUEST_CONFLICT" });
+  });
+
+  it("rejects unknown, cross-room, and foreign-member milestone publication at the publisher boundary", async () => {
+    const ledger = new EventLedger();
+    const tasks = tasksFor();
+    tasks.create({ taskId: "task-2", roomId: "room-2", title: "Other room", actor: actor(), eventId: "task-created-task-2", now: 100 });
+    const publisher = new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: (memberId) => memberId === "member-alice" || memberId === "member-bob" ? memberId : undefined });
+    const request = { clientRequestId: "publisher-validation", roomId: "room-1", taskId: "task-1", memberId: "member-alice", sourceSessionId: "session-1", kind: "completed" as const };
+
+    await expect(publisher.publish({ ...request, taskId: "missing" })).rejects.toMatchObject({ code: "REQUEST_NOT_FOUND" });
+    await expect(publisher.publish({ ...request, roomId: "room-2" })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+    await expect(publisher.publish({ ...request, memberId: "member-bob" })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+  });
+
+  it("rejects forged milestone kinds while projecting Room Context", async () => {
+    const ledger = new EventLedger();
+    addEvent(ledger, { eventId: "task-created", type: "task.created", payload: { taskId: "task-1", title: "Task", participantIds: ["member-alice"], createdBy: "member-alice" } });
+    ledger.append({
+      eventId: "milestone-forged",
+      roomId: "room-1",
+      type: "task.milestone",
+      actor: actor(),
+      createdAt: 100,
+      payload: { roomId: "room-1", taskId: "task-1", memberId: "member-alice", sourceSessionId: "session-1", milestone: "forged-value" },
+    });
+    await expect(new LedgerRoomContextReader({ ledger }).read({ roomId: "room-1", memberId: "member-alice", cursor: 0 })).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 });

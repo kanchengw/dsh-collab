@@ -329,6 +329,14 @@ interface ProjectedDecisionContext {
   sourceMessageIds: string[];
 }
 
+const ROOM_CONTEXT_TASK_MILESTONE_KINDS = [
+  "changeset-submitted",
+  "review-requested",
+  "blocked",
+  "completed",
+  "needs-human-decision",
+] as const;
+
 function projectTaskMilestoneEvent(
   event: RoomEvent,
   roomId: string,
@@ -343,6 +351,9 @@ function projectTaskMilestoneEvent(
   }
   if (memberId !== undefined && !tasks.get(taskId)!.participantIds.includes(memberId)) return undefined;
   const milestone = requiredText(payload.milestone, "payload.milestone");
+  if (!ROOM_CONTEXT_TASK_MILESTONE_KINDS.includes(milestone as typeof ROOM_CONTEXT_TASK_MILESTONE_KINDS[number])) {
+    throw invalidInput("payload.milestone is invalid", { eventId: event.eventId });
+  }
   const summary = payload.summary === undefined ? undefined : requiredText(payload.summary, "payload.summary");
   const changeSetId = payload.changeSetId === undefined ? undefined : requiredText(payload.changeSetId, "payload.changeSetId");
   return {

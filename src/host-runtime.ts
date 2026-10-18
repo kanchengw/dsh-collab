@@ -26,6 +26,7 @@ import { IntegrationJournalStore } from "./integration-journal.js";
 import { CollabError } from "./errors.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 import type { RoomEvent } from "./types.js";
+import { TaskStore, type TaskStoreSnapshot } from "./tasks.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -59,6 +60,7 @@ export interface DshCollabHostRuntimeOptions {
   integrationJournalRoot?: string;
   commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
+  taskStore?: TaskStore;
   roomContextDelivery?: { onCommitted(event: RoomEvent, ledger: EventLedger): void };
 }
 
@@ -68,6 +70,7 @@ export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   reviews?: ReviewServiceSnapshot;
   changeSetReviews?: ChangeSetReviewServiceSnapshot;
   changeSetApply?: ChangeSetApplyPreflightServiceSnapshot;
+  tasks?: TaskStoreSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -88,6 +91,7 @@ export interface DshCollabHostRuntime {
   readonly changeSetIntegration?: ChangeSetIntegrationService;
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
+  readonly taskStore: TaskStore;
   snapshot(): DshCollabHostRuntimeSnapshot;
   commitCriticalState(): Promise<void>;
   recoverPendingIntegrations(): Promise<void>;
@@ -126,6 +130,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     rooms.createRoom({ roomId: options.roomId, hostId: options.hostId, hostSessionId: options.hostSessionId, title: options.title, hostDisplayName: options.hostDisplayName, now: options.now?.() });
   }
   const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
+  const taskStore = snapshot?.tasks ? TaskStore.fromSnapshot(snapshot.tasks) : options.taskStore ?? new TaskStore();
   const workUpdates = new WorkUpdateService({ rooms, ledger, now: options.now });
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
   const resumes = snapshot?.resumes
@@ -303,7 +308,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), ...(changeSetApply ? { changeSetApply } : {}), ...(changeSetIntegration ? { changeSetIntegration } : {}), reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, taskStore, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), ...(changeSetApply ? { changeSetApply } : {}), ...(changeSetIntegration ? { changeSetIntegration } : {}), reviewPoints, reviews,
     snapshot: () => ({
       ...collabRuntime.snapshot(),
       resumes: resumes.snapshot(),
@@ -311,6 +316,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       reviews: reviews.snapshot(),
       ...(changeSetReviews ? { changeSetReviews: changeSetReviews.snapshot() } : {}),
       ...(changeSetApply ? { changeSetApply: changeSetApply.snapshot() } : {}),
+      tasks: taskStore.snapshot(),
     }),
     commitCriticalState: () => ledger.commit(options.commitCriticalState),
     recoverPendingIntegrations: async () => {

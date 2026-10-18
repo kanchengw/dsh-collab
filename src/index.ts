@@ -16,6 +16,7 @@ export * from "./change-set-integration.js";
 export * from "./canonical-workspace.js";
 export * from "./integration-journal.js";
 export * from "./dsh-collab-tools.js";
+export * from "./task-agent-handoff.js";
 export * from "./gateway.js";
 export * from "./dsh-host.js";
 export * from "./dsh-local-agent.js";
@@ -87,6 +88,8 @@ import { WorkspaceSnapshotStore } from "./workspace-snapshot-store.js";
 import { WorkspaceVersionClient } from "./workspace-version-transport.js";
 import type { ParticipantGatewayTransport } from "./participant.js";
 import { OwnerRoomProjectService } from "./owner-room-project.js";
+import { LedgerRoomContextReader, LedgerTaskMilestonePublisher } from "./dsh-collab-tools.js";
+import { handleTaskAgentHandoff, TaskAgentHandoffService, createDshCollabToolAgentRegistry } from "./task-agent-handoff.js";
 import { OwnerRoomWorkspaceBootstrapper } from "./owner-room-bootstrap.js";
 
 interface DshCollabSettingsScope {
@@ -398,6 +401,37 @@ function registerGatewayControl(
   const roomSessionLinkFile = new RoomSessionLinkFile(resolveDefaultRoomSessionLinkFile());
   const roomSessionLinks = RoomSessionLinkStore.fromSnapshot(roomSessionLinkFile.loadSync() ?? { version: 1, links: [] });
   const nativeRoomContextBindings = new Map<string, DshNativeAgentContextBinding>();
+  const taskAgentHandoff = new TaskAgentHandoffService({
+    agents: createDshCollabToolAgentRegistry({ get: (sessionId) => context.agents.get(sessionId) }),
+    projects: roomProjects,
+    resolve: (sessionId) => {
+      const current = mounted;
+      const contextBinding = nativeRoomContextBindings.get(sessionId);
+      if (!current || !contextBinding) return undefined;
+      const tasks = current.runtime.taskStore;
+      return {
+        tasks,
+        contextBinding,
+        context: new LedgerRoomContextReader({ ledger: current.runtime.ledger }),
+        milestones: new LedgerTaskMilestonePublisher({
+          ledger: current.runtime.ledger,
+          tasks,
+          principalForMember: (memberId, roomId) => {
+            if (roomId) {
+              try {
+                const member = current.runtime.rooms.listMembers(roomId).find((candidate) => candidate.memberId === memberId && candidate.status === "active");
+                if (member) return member.principalId;
+              } catch {
+                // The publisher still applies the TaskStore membership check below.
+              }
+            }
+            return tasks.principalForMember(memberId);
+          },
+          boundSession: (_roomId, _memberId, boundSessionId) => nativeRoomContextBindings.get(boundSessionId)?.sessionId === boundSessionId,
+        }),
+      };
+    },
+  });
   const persistRoomSessionLinks = (): void => {
     void roomSessionLinkFile.save(roomSessionLinks.snapshot()).catch((error: unknown) => console.warn("dsh-collab Room Session Link save failed", error));
   };
@@ -423,6 +457,7 @@ function registerGatewayControl(
       persistRoomSessionLinks();
     },
     onDisassociation: (sessionId) => {
+      taskAgentHandoff.disposeSession(sessionId);
       nativeRoomContextBindings.delete(sessionId);
       workspaceControl?.unbindRoomProjectSession(sessionId);
       roomContextDelivery.unbind(sessionId);
@@ -446,6 +481,7 @@ function registerGatewayControl(
     await starting?.catch(() => undefined);
     const current = mounted;
     mounted = undefined;
+    taskAgentHandoff.dispose();
     roomContextDelivery.dispose();
     await roomSessionLinkFile.save(roomSessionLinks.snapshot());
     await roomSessionLinkFile.flush();
@@ -575,6 +611,7 @@ function registerGatewayControl(
   };
   const removeControl = context.connection.rpc.handle("/dsh-collab", async (endpoint, payload, signal) => {
     try {
+      if (endpoint === "task/handoff") return { ok: true, value: handleTaskAgentHandoff(taskAgentHandoff, payload) };
       if (endpoint === "gateway/status") {
         if (starting) return { ok: true, value: { status: "starting" } };
         if (mounted) {
@@ -733,6 +770,7 @@ function registerGatewayControl(
   context.effect?.(() => async () => {
     await removeControl();
     roomProjectObserver.dispose();
+    taskAgentHandoff.dispose();
     await Promise.all([stop(), sidecar?.dispose(), workspaceControl?.dispose()]);
     unsubscribeSideTasks?.();
     await sideTaskPersistence?.flush();

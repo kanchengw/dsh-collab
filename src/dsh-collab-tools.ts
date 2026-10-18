@@ -100,7 +100,7 @@ function idempotencyKey(sessionId: string, callId: string): string {
 
 function currentProject(projects: RoomProjectStore, agent: DshCollabScopedAgent, expected: RoomProject): RoomProject {
   const current = roomProjectForCwd(projects, agent.session?.header?.cwd);
-  if (!current || current.roomId !== expected.roomId || current.memberId !== expected.memberId) {
+  if (!current || current.roomId !== expected.roomId || current.memberId !== expected.memberId || current.workspacePath !== expected.workspacePath) {
     throw new Error("Session is no longer in the active Collab Room Project");
   }
   return current;
@@ -336,14 +336,20 @@ function taskMilestoneFromEvent(event: RoomEvent): CollabTaskMilestone {
 export class LedgerTaskMilestonePublisher implements CollabTaskMilestonePublisher {
   constructor(private readonly options: {
     ledger: EventLedger;
-    principalForMember: (memberId: string) => string | undefined;
+    tasks: TaskStore;
+    principalForMember: (memberId: string, roomId?: string) => string | undefined;
     boundSession?: (roomId: string, memberId: string, sessionId: string) => boolean;
     now?: () => number;
   }) {}
 
   async publish(input: PublishCollabTaskMilestoneRequest): Promise<CollabTaskMilestone> {
     if (!COLLAB_TASK_MILESTONE_KINDS.includes(input.kind)) throw invalidInput("task milestone kind is not supported", { kind: input.kind });
-    const principalId = this.options.principalForMember(input.memberId);
+    const task = this.options.tasks.get(input.taskId, false);
+    if (!task) throw new CollabError("REQUEST_NOT_FOUND", "Task was not found", { taskId: input.taskId });
+    if (task.roomId !== input.roomId) throw new CollabError("ACTION_FORBIDDEN", "Task belongs to another Collab Room", { taskId: input.taskId, roomId: input.roomId });
+    if (!task.participantIds.includes(input.memberId)) throw new CollabError("ACTION_FORBIDDEN", "Current member is not a Task participant", { taskId: input.taskId, memberId: input.memberId });
+    if (task.assigneeId !== undefined && task.assigneeId !== input.memberId) throw new CollabError("ACTION_FORBIDDEN", "Task is assigned to another member", { taskId: input.taskId, assigneeId: task.assigneeId });
+    const principalId = this.options.principalForMember(input.memberId, input.roomId);
     if (!principalId || (this.options.boundSession && !this.options.boundSession(input.roomId, input.memberId, input.sourceSessionId))) {
       throw new CollabError("ACTION_FORBIDDEN", "Task milestone Session is not bound to the requested Room member", { roomId: input.roomId, memberId: input.memberId, sessionId: input.sourceSessionId });
     }
@@ -405,17 +411,22 @@ export function bindCollabTaskAgentTools(input: {
 }): CollabTaskAgentToolsBinding {
   const agent = input.agents.get(input.sessionId);
   if (!agent || agent.id !== input.sessionId) throw new CollabError("ACTION_FORBIDDEN", "Task Agent Session is not live", { sessionId: input.sessionId });
+  if (input.contextBinding.sessionId !== input.sessionId) throw new CollabError("ACTION_FORBIDDEN", "Native Agent context binding belongs to another Session", { sessionId: input.sessionId });
   const project = roomProjectForCwd(input.projects, agent.session?.header?.cwd);
   if (!project) throw new CollabError("ACTION_FORBIDDEN", "Session is not in a Collab Room Project", { sessionId: input.sessionId });
   const boundTask = input.tasks.get(input.taskId, false);
   if (!boundTask) throw new CollabError("REQUEST_NOT_FOUND", "Task was not found", { taskId: input.taskId });
   validateTaskAgentBinding(boundTask, project, input.taskId);
   let disposed = false;
-  const assertBinding = (): void => {
+  const assertBinding = (): { agent: DshCollabScopedAgent; project: RoomProject; task: CollaborationTask } => {
     const task = input.tasks.get(input.taskId, false);
     if (!task) throw new CollabError("REQUEST_NOT_FOUND", "Task binding no longer exists", { taskId: input.taskId });
-    validateTaskAgentBinding(task, project, input.taskId);
-    if (input.agents.get(input.sessionId) !== agent) throw new CollabError("ACTION_FORBIDDEN", "Task Agent Session is no longer live", { sessionId: input.sessionId });
+    const currentAgent = input.agents.get(input.sessionId);
+    if (currentAgent !== agent) throw new CollabError("ACTION_FORBIDDEN", "Task Agent Session is no longer live", { sessionId: input.sessionId });
+    const current = currentProject(input.projects, currentAgent, project);
+    if (input.contextBinding.sessionId !== input.sessionId) throw new CollabError("ACTION_FORBIDDEN", "Native Agent context binding belongs to another Session", { sessionId: input.sessionId });
+    validateTaskAgentBinding(task, current, input.taskId);
+    return { agent: currentAgent, project: current, task };
   };
   const taskContextDeliveryId = `task-context:${project.roomId}:${input.taskId}:${input.sessionId}`;
   const contextUnregister = agent.ctx.tools.register({
@@ -428,10 +439,10 @@ export function bindCollabTaskAgentTools(input: {
     },
     async execute(rawArgs) {
       if (disposed) throw new Error("Collab task Agent tool binding is disposed");
-      assertBinding();
+      const current = assertBinding();
       const args = exactObject(rawArgs, ["cursor"]);
       if (!Number.isSafeInteger(args.cursor) || (args.cursor as number) < 0) throw invalidInput("cursor must be a non-negative integer");
-      return input.context.read({ roomId: project.roomId, memberId: project.memberId, cursor: args.cursor as number });
+      return input.context.read({ roomId: current.project.roomId, memberId: current.project.memberId, cursor: args.cursor as number });
     },
   });
   const milestoneUnregister = agent.ctx.tools.register({
@@ -444,13 +455,13 @@ export function bindCollabTaskAgentTools(input: {
     },
     async execute(rawArgs, execution) {
       if (disposed) throw new Error("Collab task Agent tool binding is disposed");
-      assertBinding();
+      const current = assertBinding();
       const args = exactObject(rawArgs, ["taskId", "kind", "summary", "changeSetId"]);
       if (typeof args.taskId !== "string" || typeof args.kind !== "string" || !COLLAB_TASK_MILESTONE_KINDS.includes(args.kind as CollabTaskMilestoneKind)) throw invalidInput("Task milestone arguments are invalid");
       if (args.taskId !== input.taskId) throw new CollabError("ACTION_FORBIDDEN", "Task milestone is outside the bound Task", { boundTaskId: input.taskId, requestedTaskId: args.taskId });
       if (args.summary !== undefined && typeof args.summary !== "string") throw invalidInput("summary must be a string");
       if (args.changeSetId !== undefined && typeof args.changeSetId !== "string") throw invalidInput("changeSetId must be a string");
-      const milestone = await input.milestones.publish({ clientRequestId: idempotencyKey(input.sessionId, execution.callId), roomId: project.roomId, taskId: args.taskId, memberId: project.memberId, sourceSessionId: input.sessionId, kind: args.kind as CollabTaskMilestoneKind, ...(args.summary === undefined ? {} : { summary: args.summary }), ...(args.changeSetId === undefined ? {} : { changeSetId: args.changeSetId }) });
+      const milestone = await input.milestones.publish({ clientRequestId: idempotencyKey(input.sessionId, execution.callId), roomId: current.project.roomId, taskId: args.taskId, memberId: current.project.memberId, sourceSessionId: input.sessionId, kind: args.kind as CollabTaskMilestoneKind, ...(args.summary === undefined ? {} : { summary: args.summary }), ...(args.changeSetId === undefined ? {} : { changeSetId: args.changeSetId }) });
       return { milestoneId: milestone.milestoneId, taskId: milestone.taskId, kind: milestone.kind };
     },
   });

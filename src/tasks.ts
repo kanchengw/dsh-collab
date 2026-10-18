@@ -258,6 +258,13 @@ export class TaskStore {
     return copy(task as CollaborationTask);
   }
 
+  principalForMember(memberId: string): string | undefined {
+    for (const event of [...this.allEvents].sort(eventSort).reverse()) {
+      if (event.actor.memberId === memberId) return event.actor.principalId;
+    }
+    return undefined;
+  }
+
   events(roomId?: string): TaskEvent[] {
     return this.allEvents.filter((event) => roomId === undefined || event.roomId === roomId).sort(eventSort).map(copy);
   }
