@@ -40,6 +40,12 @@ export class DshRoomProjectRegistrar {
     return operation;
   }
 
+  rebindHostPrimarySession(input: { roomId: string; fromSessionId: string; toSessionId: string }): Promise<RoomProject> {
+    const operation = this.queue.then(() => this.rebindHostPrimarySessionNow(input));
+    this.queue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
   private async registerNow(input: DshRoomProjectRegistrationInput, options: RoomProjectRegistrationOptions): Promise<RoomProject> {
     const canonicalInput = { ...input, workspacePath: await realpath(input.workspacePath) };
     // Keep the live mapping untouched until both DSH and durable storage succeed.
@@ -64,5 +70,12 @@ export class DshRoomProjectRegistrar {
     staged.setHostPrimarySessionId(input);
     await this.input.persistence.save(staged.snapshot());
     return this.input.store.setHostPrimarySessionId(input);
+  }
+
+  private async rebindHostPrimarySessionNow(input: { roomId: string; fromSessionId: string; toSessionId: string }): Promise<RoomProject> {
+    const staged = RoomProjectStore.fromSnapshot(this.input.store.snapshot());
+    staged.rebindHostPrimarySession(input);
+    await this.input.persistence.save(staged.snapshot());
+    return this.input.store.rebindHostPrimarySession(input);
   }
 }

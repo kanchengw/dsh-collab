@@ -101,7 +101,7 @@ export function reduceTaskEvents(input: readonly TaskEvent[]): ReducedTasks {
         ...(created.description === undefined ? {} : { description: created.description }),
         status: "open",
         blocked: false,
-        assigneeId: undefined,
+        assigneeId: created.createdBy,
         participantIds: [...new Set(created.participantIds)],
         changeSetIds: [],
         createdBy: created.createdBy,
@@ -191,8 +191,13 @@ export class TaskStore {
     requiredText(input.taskId, "taskId");
     requiredText(input.roomId, "roomId");
     const title = requiredText(input.title, "title");
-    if (this.get(input.taskId, false)) throw new CollabError("EVENT_CONFLICT", "task already exists");
+    const description = input.description === undefined ? undefined : requiredText(input.description, "description");
     const actor = normalizeMember(input.actor);
+    const existing = this.get(input.taskId, false);
+    if (existing) {
+      if (existing.roomId === input.roomId && existing.title === title && existing.description === description && existing.createdBy === actor.memberId) return existing;
+      throw new CollabError("EVENT_CONFLICT", "task already exists");
+    }
     this.append({
       eventId: input.eventId,
       roomId: input.roomId,
@@ -254,6 +259,7 @@ export class TaskStore {
 
   setStatus(input: TaskMutationInput & { status: TaskStatus }): CollaborationTask {
     const task = this.get(input.taskId);
+    if (input.status === "done") throw invalidInput("Task status done is owned by ChangeSet merge", { field: "status" });
     if (!isValidTransition(task.status, input.status)) throw invalidInput("Task status transition is invalid", { field: "status" });
     this.append({ eventId: input.eventId, roomId: task.roomId, type: "task.status-changed", actor: normalizeMember(input.actor), createdAt: input.now, payload: { taskId: task.taskId, from: task.status, to: input.status } });
     return this.get(input.taskId);
@@ -312,6 +318,10 @@ export class TaskStore {
 
   events(roomId?: string): TaskEvent[] {
     return this.allEvents.filter((event) => roomId === undefined || event.roomId === roomId).sort(eventSort).map(copy);
+  }
+
+  list(roomId?: string): CollaborationTask[] {
+    return reduceTaskEvents(this.allEvents).tasks.filter((task) => roomId === undefined || task.roomId === roomId).map(copy);
   }
 
   snapshot(): TaskStoreSnapshot {

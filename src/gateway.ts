@@ -6,6 +6,8 @@ import { EventLedger } from "./events.js";
 import { InviteStore } from "./invites.js";
 import { ResourceLimiter } from "./limits.js";
 import { classifyMessage } from "./messages.js";
+import type { TaskStore } from "./tasks.js";
+import type { DecisionStore } from "./decisions.js";
 import { RoomStore } from "./room.js";
 import { RoomTokenStore } from "./tokens.js";
 import { ResumeCredentialStore } from "./resume-credentials.js";
@@ -20,7 +22,8 @@ import type { WorkUpdateService } from "./work-updates.js";
 import type { WorkspaceVersionService } from "./workspace-versions.js";
 import type { ReviewPointCreateFile, ReviewPointService } from "./review-points.js";
 import { MAINLINE_REQUEST_PREFIX, type ReviewService } from "./reviews.js";
-import type { ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
+import type { CollaborationDecision, ReviewFinding, ReviewFindingCreateInput, ReviewFindingLocation, ReviewLifecycle } from "./collaboration-types.js";
+import type { TaskStatus } from "./collaboration-types.js";
 import type {
   GatewayRequest,
   AgentRequest,
@@ -66,6 +69,8 @@ interface GatewayOptions {
   workUpdates?: WorkUpdateService;
   reviewPoints?: ReviewPointService;
   reviews?: ReviewService;
+  taskStore?: TaskStore;
+  decisionStore?: DecisionStore;
   commitCriticalState?: () => Promise<void>;
 }
 
@@ -290,7 +295,13 @@ export class CollabGateway {
     try {
       await this.options.ledger.awaitDurable();
       const url = new URL(request.path, "http://dsh-collab.local");
-      const segments = url.pathname.split("/").filter(Boolean);
+      const segments = url.pathname.split("/").filter(Boolean).map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          throw invalidInput("path segment is invalid", { field: "path" });
+        }
+      });
       if (segments.length < 4 || segments[0] !== "v1" || segments[1] !== "rooms") {
         return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       }
@@ -320,6 +331,8 @@ export class CollabGateway {
       if (resource === "workspace-versions") return await this.workspaceVersions(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "change-sets") return await this.changeSets(roomId, segments.slice(4), url.searchParams, request);
       if (resource === "review-points") return await this.reviewPoints(roomId, segments.slice(4), url.searchParams, request);
+      if (resource === "tasks") return await this.tasks(roomId, segments.slice(4), request);
+      if (resource === "decisions") return await this.decisions(roomId, segments.slice(4), request);
       if (segments.length !== 4) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
       if (request.method === "GET" && resource === "bootstrap") return this.bootstrap(roomId, request);
       if (request.method === "POST" && resource === "stream-tickets") return this.createStreamTicket(roomId, request);
@@ -730,6 +743,135 @@ export class CollabGateway {
     return { status: 200, body: { events, nextSeq: events.at(-1)?.seq ?? after } };
   }
 
+  private validateDiscussionReferences(roomId: string, scope: string | undefined, sourceMessageId: string | undefined): void {
+    if (sourceMessageId !== undefined) {
+      const exists = this.options.ledger.readAfter(roomId, 0, Number.MAX_SAFE_INTEGER).some((event) => {
+        if (event.type !== "human.message") return false;
+        const payload = event.payload as { messageId?: unknown };
+        return payload.messageId === sourceMessageId;
+      });
+      if (!exists) throw invalidInput("sourceMessageId must reference a message in this room", { field: "sourceMessageId" });
+    }
+    if (scope?.startsWith("task:") && this.options.taskStore) {
+      const taskIds = scope.slice("task:".length).split(",").map((taskId) => requiredText(taskId, "scope"));
+      const tasks = new Set(this.options.taskStore.list(roomId).map((task) => task.taskId));
+      const missing = taskIds.find((taskId) => !tasks.has(taskId));
+      if (missing) throw invalidInput("scope references a task outside this room", { field: "scope", taskId: missing });
+    }
+  }
+
+  private validateDecisionReferences(roomId: string, scope: string, sourceMessageIds: string[]): void {
+    if (!Array.isArray(sourceMessageIds) || sourceMessageIds.length === 0) throw invalidInput("sourceMessageIds must contain at least one message", { field: "sourceMessageIds" });
+    for (const sourceMessageId of sourceMessageIds) this.validateDiscussionReferences(roomId, scope, sourceMessageId);
+  }
+
+  private authorizeDecisionAcceptance(roomId: string, decision: CollaborationDecision, memberId: string): void {
+    if (decision.proposedBy === memberId) return;
+    if (decision.scope.startsWith("task:") && this.options.taskStore) {
+      const taskIds = new Set(decision.scope.slice("task:".length).split(","));
+      if (this.options.taskStore.list(roomId).some((task) => taskIds.has(task.taskId) && task.assigneeId === memberId)) return;
+    }
+    throw new CollabError("ACTION_FORBIDDEN", "only the decision proposer or task assignee can accept this Decision", { decisionId: decision.decisionId });
+  }
+
+  private async tasks(roomId: string, tail: string[], request: GatewayRequest): Promise<GatewayResponse> {
+    const tasks = this.options.taskStore;
+    if (!tasks) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    const claims = this.claims(roomId, request);
+    const actor = this.options.rooms.authorize(roomId, claims.principalId, "humanMessage");
+    const beforeSeq = this.options.ledger.latestSeq(roomId);
+    if (request.method === "POST" && tail.length === 0) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "title", "description"]);
+      const clientRequestId = requestIdField(body, "clientRequestId");
+      const task = tasks.create({
+        taskId: `task:${clientRequestId}`,
+        roomId,
+        title: requiredText(body.title, "title"),
+        ...(body.description === undefined ? {} : { description: requiredText(body.description, "description") }),
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        eventId: `task:${roomId}:created:${clientRequestId}`,
+        now: this.now(),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 201, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    if (tail.length !== 2) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    const taskId = requiredText(tail[0], "taskId");
+    const current = tasks.get(taskId);
+    if (current.roomId !== roomId) throw invalidInput("task does not belong to this room", { field: "taskId" });
+    if (request.method === "POST" && tail[1] === "claim") {
+      const task = tasks.claim({ taskId, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:claim`, now: this.now() });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    if (request.method === "POST" && tail[1] === "unassign") {
+      if (request.body !== undefined) allowedFields(objectBody(request.body), []);
+      const task = tasks.assign({ taskId, assigneeId: undefined, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:unassign`, now: this.now() });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    if (request.method === "PUT" && tail[1] === "status") {
+      const body = objectBody(request.body);
+      allowedFields(body, ["status"]);
+      const status = requiredText(body.status, "status") as TaskStatus;
+      if (!["open", "doing", "in-review", "done", "cancelled"].includes(status)) throw invalidInput("task status is invalid", { field: "status" });
+      const task = tasks.setStatus({ taskId, status, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:status:${status}`, now: this.now() });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    if (request.method === "POST" && tail[1] === "participants") {
+      const body = objectBody(request.body);
+      allowedFields(body, ["memberId"]);
+      const memberId = requiredText(body.memberId, "memberId");
+      const participant = this.options.rooms.listMembers(roomId).find((member) => member.memberId === memberId && member.status === "active");
+      if (!participant) throw new CollabError("MEMBER_NOT_FOUND", "participant is not an active member of this room", { memberId });
+      const task = tasks.addParticipant({ taskId, memberId, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:participant:${memberId}`, now: this.now() });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+  }
+
+  private async decisions(roomId: string, tail: string[], request: GatewayRequest): Promise<GatewayResponse> {
+    const decisions = this.options.decisionStore;
+    if (!decisions) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+    const claims = this.claims(roomId, request);
+    const actor = this.options.rooms.authorize(roomId, claims.principalId, "humanMessage");
+    const beforeSeq = this.options.ledger.latestSeq(roomId);
+    if (request.method === "POST" && tail.length === 0) {
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "scope", "conclusion", "sourceMessageIds"]);
+      const clientRequestId = requestIdField(body, "clientRequestId");
+      const scope = requiredText(body.scope, "scope");
+      const sourceMessageIds = body.sourceMessageIds as string[];
+      this.validateDecisionReferences(roomId, scope, sourceMessageIds);
+      const decision = decisions.propose({
+        decisionId: `decision:${clientRequestId}`,
+        roomId,
+        scope,
+        conclusion: requiredText(body.conclusion, "conclusion"),
+        sourceMessageIds,
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        eventId: `decision:${roomId}:proposed:${clientRequestId}`,
+        now: this.now(),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 201, body: { decision, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    if (request.method === "POST" && tail.length === 2 && tail[1] === "accept") {
+      if (request.body !== undefined) allowedFields(objectBody(request.body), []);
+      const decisionId = requiredText(tail[0], "decisionId");
+      const current = decisions.get(decisionId);
+      if (current.roomId !== roomId) throw invalidInput("decision does not belong to this room", { field: "decisionId" });
+      this.authorizeDecisionAcceptance(roomId, current, actor.memberId);
+      const decision = decisions.accept({ decisionId, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `decision:${roomId}:${decisionId}:accepted`, now: this.now() });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { decision, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } satisfies ErrorBody };
+  }
+
   private async message(roomId: string, request: GatewayRequest): Promise<GatewayResponse> {
     const claims = this.claims(roomId, request);
     const body = objectBody(request.body);
@@ -760,9 +902,11 @@ export class CollabGateway {
       text: requiredText(body.text, "text"),
       target: body.target as MessageTarget | undefined,
       sourceMessageId: body.sourceMessageId as string | undefined,
+      scope: body.scope as import("./types.js").MessageScope | undefined,
       contextRefs: body.contextRefs as string[] | undefined,
       mentions: body.mentions as string[] | undefined,
     });
+    if (message.kind === "human") this.validateDiscussionReferences(roomId, message.scope, message.sourceMessageId);
     if (message.kind === "human" && message.mentions) {
       const activeMemberIds = new Set(this.options.rooms.listMembers(roomId).filter((member) => member.status === "active").map((member) => member.memberId));
       const invalidMentions = message.mentions.filter((memberId) => !activeMemberIds.has(memberId));

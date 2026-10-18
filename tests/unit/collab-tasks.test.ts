@@ -40,8 +40,7 @@ function decision(overrides: Partial<CollaborationDecision> = {}): Collaboration
     sourceMessageIds: ["message-1"],
     proposedBy: "member-bob",
     createdAt: 3,
-    status: "accepted",
-    acceptedBy: "member-alice",
+    status: "proposed",
     acceptedAt: 4,
     ...overrides,
   };
@@ -74,6 +73,7 @@ function snapshot(overrides: Partial<CollabTasksSnapshot> = {}): CollabTasksSnap
       discussion: [{ messageId: "message-1", authorId: "member-bob", text: "I reproduced the reconnect race." }],
     }],
     selectedTaskId: taskId,
+    roomDecisions: [decision({ scope: "room", decisionId: "decision-room", status: "accepted", acceptedBy: "member-alice", acceptedAt: 4 })],
     ...overrides,
   };
 }
@@ -86,8 +86,11 @@ function port(value: CollabTasksSnapshot): CollabTasksPort {
     createTask: vi.fn(async () => undefined),
     selectTask: vi.fn(async () => undefined),
     claimTask: vi.fn(async () => undefined),
+    unassignTask: vi.fn(async () => undefined),
     setTaskStatus: vi.fn(async () => undefined),
     addTaskParticipant: vi.fn(async () => undefined),
+    proposeDecision: vi.fn(async () => undefined),
+    acceptDecision: vi.fn(async () => undefined),
   };
 }
 
@@ -108,6 +111,9 @@ describe("Collab Tasks", () => {
     expect(html).toContain("Doing");
     expect(html).toContain("I reproduced the reconnect race.");
     expect(html).toContain("Decision");
+    expect(html).toContain("Room decisions");
+    expect(html).toContain("Propose decision");
+    expect(html).toContain("Accept decision");
     expect(html).toContain("Keep reconnect state in the room projection.");
     expect(html).toContain("ChangeSet");
     expect(html).toContain("Persist reconnect state");
@@ -136,11 +142,13 @@ describe("Collab Tasks", () => {
 
     await actions.createTask({ title: "New task", description: "A bounded task." });
     await actions.claimTask(taskId);
+    await actions.unassignTask(taskId);
     await actions.setTaskStatus(taskId, "in-review");
     await actions.addTaskParticipant(taskId, "member-bob");
 
     expect(tasksPort.createTask).toHaveBeenCalledWith({ title: "New task", description: "A bounded task." });
     expect(tasksPort.claimTask).toHaveBeenCalledWith(taskId);
+    expect(tasksPort.unassignTask).toHaveBeenCalledWith(taskId);
     expect(tasksPort.setTaskStatus).toHaveBeenCalledWith(taskId, "in-review");
     expect(tasksPort.addTaskParticipant).toHaveBeenCalledWith(taskId, "member-bob");
   });

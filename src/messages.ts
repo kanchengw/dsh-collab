@@ -4,6 +4,7 @@ import type {
   ClassifiedMessage,
   HumanMessage,
   MessageInput,
+  MessageScope,
 } from "./types.js";
 
 const MAX_MESSAGE_LENGTH = 10_000;
@@ -14,6 +15,13 @@ function requiredText(value: string, field: string): string {
     throw invalidInput(field + " must not be blank", { field });
   }
   return value.trim();
+}
+
+function normalizeScope(value: unknown): MessageScope {
+  if (value === undefined) return "general";
+  const scope = requiredText(value as string, "scope");
+  if (scope === "general" || /^task:[^\s]+$/.test(scope)) return scope as MessageScope;
+  throw invalidInput("scope is invalid", { field: "scope" });
 }
 
 function normalizedInput(input: MessageInput): { messageId: string; roomId: string; authorMemberId: string; text: string } {
@@ -37,13 +45,17 @@ export function classifyMessage(input: MessageInput): ClassifiedMessage {
     throw invalidInput("mentions must be an array", { field: "mentions" });
   }
   const mentions = input.mentions?.map((mention) => requiredText(mention, "mention"));
+  const scope = normalizeScope(input.scope);
+  const sourceMessageId = input.sourceMessageId === undefined ? undefined : requiredText(input.sourceMessageId, "sourceMessageId");
   const message: HumanMessage = {
     kind: "human",
     messageId,
     roomId,
     authorMemberId,
     text,
+    scope,
     visibility: "room",
+    ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
     ...(mentions && mentions.length > 0 ? { mentions: [...new Set(mentions)] } : {}),
   };
   return message;

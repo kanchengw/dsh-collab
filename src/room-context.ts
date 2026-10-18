@@ -394,8 +394,12 @@ function structuredTaskEvent(event: RoomEvent, roomId: string, memberId: string 
       }
       if (Array.isArray(payload.participantIds)) task.participantIds = [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))];
     } else if (event.type === "task.assigned") {
-      task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
-      task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+      if (payload.assigneeId === undefined) {
+        delete task.assigneeId;
+      } else {
+        task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
+        task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+      }
     } else if (event.type === "task.status-changed") {
       task.status = requiredText(payload.to, "payload.to");
     } else if (event.type === "task.completed") {
@@ -817,8 +821,12 @@ function applyTaskContextEvent(state: RoomContextState, event: RoomEvent): void 
       }
       if (Array.isArray(payload.participantIds)) task.participantIds = [...new Set(payload.participantIds.map((value) => requiredText(value, "payload.participantIds")))];
     } else if (event.type === "task.assigned") {
-      task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
-      task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+      if (payload.assigneeId === undefined) {
+        delete task.assigneeId;
+      } else {
+        task.assigneeId = requiredText(payload.assigneeId, "payload.assigneeId");
+        task.participantIds = [...new Set([...task.participantIds, task.assigneeId])];
+      }
     } else if (event.type === "task.status-changed") {
       task.status = requiredText(payload.to, "payload.to");
     } else if (event.type === "task.completed") {

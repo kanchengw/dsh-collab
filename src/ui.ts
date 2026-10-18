@@ -119,12 +119,32 @@ export function composerTargetForGesture(text: string, _agentBusy: boolean, _shi
 export function projectCollabUnread(events: readonly RoomEvent[], currentMemberId?: string, lastReadSeq = 0): CollabUnreadCounts {
   let personal = 0;
   let total = 0;
-  for (const event of events) {
+  const taskParticipants = new Map<string, Set<string>>();
+  const ordered = [...events].sort((left, right) => left.seq - right.seq);
+  for (const event of ordered) {
+    const payload = objectPayload(event.payload);
+    const taskId = typeof payload.taskId === "string" ? payload.taskId : undefined;
+    if (taskId !== undefined) {
+      const participants = taskParticipants.get(taskId) ?? new Set<string>();
+      if (event.type === "task.created" && Array.isArray(payload.participantIds)) {
+        for (const memberId of payload.participantIds) if (typeof memberId === "string") participants.add(memberId);
+      }
+      if (event.type === "task.updated" && Array.isArray(payload.participantIds)) {
+        participants.clear();
+        for (const memberId of payload.participantIds) if (typeof memberId === "string") participants.add(memberId);
+      }
+      if (event.type === "task.assigned" && typeof payload.assigneeId === "string") participants.add(payload.assigneeId);
+      taskParticipants.set(taskId, participants);
+    }
     if (event.seq <= lastReadSeq) continue;
     if (currentMemberId !== undefined && event.actor.memberId === currentMemberId) continue;
     total += 1;
-    const payload = objectPayload(event.payload);
-    if (currentMemberId !== undefined && Array.isArray(payload.mentions) && payload.mentions.includes(currentMemberId)) personal += 1;
+    const mentioned = currentMemberId !== undefined && Array.isArray(payload.mentions) && payload.mentions.includes(currentMemberId);
+    const assigned = currentMemberId !== undefined && event.type === "task.assigned" && payload.assigneeId === currentMemberId;
+    const taskParticipant = currentMemberId !== undefined && taskId !== undefined && taskParticipants.get(taskId)?.has(currentMemberId) === true
+      && (event.type === "task.created" || event.type === "task.updated" || event.type === "task.assigned" || event.type === "task.status-changed" || event.type === "task.completed");
+    const decision = event.type === "decision.proposed" || event.type === "decision.accepted" || event.type === "decision.superseded";
+    if (mentioned || assigned || taskParticipant || decision) personal += 1;
   }
   return { personal, total };
 }

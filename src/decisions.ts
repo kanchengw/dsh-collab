@@ -7,6 +7,7 @@ import type {
   DecisionScope,
   TaskMember,
 } from "./collaboration-types.js";
+import type { RoomEvent } from "./types.js";
 
 export interface ProposeDecisionInput {
   decisionId: string;
@@ -68,6 +69,8 @@ function normalizeScope(value: string): DecisionScope {
 function sortEvents(a: DecisionEvent, b: DecisionEvent): number {
   return a.seq - b.seq || a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId);
 }
+
+const DECISION_EVENT_TYPES: readonly DecisionEventType[] = ["decision.proposed", "decision.accepted", "decision.superseded"];
 
 export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDecisions {
   const events = [...input].sort(sortEvents);
@@ -141,20 +144,50 @@ export function reduceDecisionEvents(input: readonly DecisionEvent[]): ReducedDe
 
 export class DecisionStore {
   private readonly allEvents: DecisionEvent[];
+  private eventSink?: (event: DecisionEvent) => void;
 
-  constructor(events: readonly DecisionEvent[] = []) {
+  constructor(events: readonly DecisionEvent[] = [], options?: { eventSink?: (event: DecisionEvent) => void }) {
     this.allEvents = events.map(copy);
+    this.eventSink = options?.eventSink;
     reduceDecisionEvents(this.allEvents);
+  }
+
+  static fromRoomEvents(events: readonly RoomEvent[]): DecisionStore {
+    const decisionSeq = new Map<string, number>();
+    const decisionEvents: DecisionEvent[] = [];
+    for (const event of events) {
+      if (!DECISION_EVENT_TYPES.includes(event.type as DecisionEventType)) continue;
+      const seq = (decisionSeq.get(event.roomId) ?? 0) + 1;
+      decisionSeq.set(event.roomId, seq);
+      decisionEvents.push({
+        eventId: event.eventId.startsWith("decision:") ? event.eventId.slice("decision:".length) : event.eventId,
+        roomId: event.roomId,
+        seq,
+        type: event.type as DecisionEventType,
+        actor: event.actor,
+        createdAt: event.createdAt,
+        payload: event.payload as DecisionEventPayload,
+      });
+    }
+    return new DecisionStore(decisionEvents);
+  }
+
+  setEventSink(eventSink: ((event: DecisionEvent) => void) | undefined): void {
+    this.eventSink = eventSink;
   }
 
   propose(input: ProposeDecisionInput): CollaborationDecision {
     const decisionId = requiredText(input.decisionId, "decisionId");
     const roomId = requiredText(input.roomId, "roomId");
     const conclusion = requiredText(input.conclusion, "conclusion");
-    if (this.get(decisionId, false)) throw new CollabError("EVENT_CONFLICT", "decision already exists");
     const decisionScope = normalizeScope(input.scope);
     const sourceMessageIds = normalizeMessages(input.sourceMessageIds);
     const decisionActor = actor(input.actor);
+    const existing = this.get(decisionId, false);
+    if (existing) {
+      if (existing.roomId === roomId && existing.scope === decisionScope && existing.conclusion === conclusion && JSON.stringify(existing.sourceMessageIds) === JSON.stringify(sourceMessageIds) && existing.proposedBy === decisionActor.memberId) return existing;
+      throw new CollabError("EVENT_CONFLICT", "decision already exists");
+    }
     this.append({
       eventId: input.eventId,
       roomId,
@@ -176,6 +209,7 @@ export class DecisionStore {
 
   accept(input: DecisionMutationInput): CollaborationDecision {
     const decision = this.get(input.decisionId);
+    if (decision.status === "accepted") return decision;
     if (decision.status !== "proposed") throw invalidInput("Only proposed decisions can be accepted", { field: "decisionId" });
     const decisionActor = actor(input.actor);
     this.append({ eventId: input.eventId, roomId: decision.roomId, type: "decision.accepted", actor: decisionActor, createdAt: input.now, payload: { decisionId: decision.decisionId, acceptedBy: decisionActor.memberId } });
@@ -224,6 +258,8 @@ export class DecisionStore {
       throw new CollabError("EVENT_CONFLICT", "decision event conflict");
     }
     const roomEvents = this.allEvents.filter((event) => event.roomId === input.roomId);
-    this.allEvents.push({ eventId: requiredText(input.eventId, "eventId"), roomId: input.roomId, seq: roomEvents.length + 1, type: input.type, actor: actor(input.actor), createdAt: input.createdAt ?? Date.now(), payload: copy(input.payload) });
+    const event: DecisionEvent = { eventId: requiredText(input.eventId, "eventId"), roomId: input.roomId, seq: roomEvents.length + 1, type: input.type, actor: actor(input.actor), createdAt: input.createdAt ?? Date.now(), payload: copy(input.payload) };
+    this.eventSink?.(copy(event));
+    this.allEvents.push(event);
   }
 }

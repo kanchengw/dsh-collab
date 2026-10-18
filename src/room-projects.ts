@@ -182,6 +182,23 @@ export class RoomProjectStore {
     project.hostPrimarySessionId = sessionId;
     return copy(project);
   }
+  rebindHostPrimarySession(input: { roomId: string; fromSessionId: string; toSessionId: string }): RoomProject {
+    const roomId = requiredText(input.roomId, "roomId");
+    const fromSessionId = requiredText(input.fromSessionId, "fromSessionId");
+    const toSessionId = requiredText(input.toSessionId, "toSessionId");
+    const project = this.projects.get(roomId);
+    if (!project) throw new CollabError("REQUEST_NOT_FOUND", "Room Project does not exist", { roomId });
+    if (project.hostPrimarySessionId === toSessionId) return copy(project);
+    if (project.hostPrimarySessionId !== fromSessionId) {
+      throw new CollabError("REQUEST_CONFLICT", "Room Project is no longer bound to the expected Host Primary Session", { roomId });
+    }
+    const owner = [...this.projects.values()].find((candidate) => candidate.hostPrimarySessionId === toSessionId);
+    if (owner && owner.roomId !== roomId) {
+      throw new CollabError("REQUEST_CONFLICT", "Host Primary Session is already registered for another Room Project", { toSessionId });
+    }
+    project.hostPrimarySessionId = toSessionId;
+    return copy(project);
+  }
 
   replaceMember(input: { roomId: string; memberId: string }): RoomProject {
     const roomId = requiredText(input.roomId, "roomId");

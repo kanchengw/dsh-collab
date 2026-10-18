@@ -12,6 +12,8 @@ import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY } from "../../src/p
 import { ResourceLimiter } from "../../src/limits.js";
 import { RoomStreamHub } from "../../src/stream.js";
 import type { StreamFrame } from "../../src/types.js";
+import { TaskStore } from "../../src/tasks.js";
+import { DecisionStore } from "../../src/decisions.js";
 
 function setup(
   agentOverride?: HostAgentPort,
@@ -19,6 +21,7 @@ function setup(
   commitCriticalState?: () => Promise<void>,
   limits?: ResourceLimiter,
   now: () => number = () => 10,
+  stores?: { taskStore?: TaskStore; decisionStore?: DecisionStore },
 ) {
   const rooms = new RoomStore();
   rooms.createRoom({
@@ -60,6 +63,12 @@ function setup(
   const workspaceSharing = new WorkspaceSharingRegistry();
   const workspace = new WorkspaceService({ rooms, ledger, registry: workspaceSharing, now: () => 10 });
   const tokenFactory = vi.fn(() => `room-token-${String(Math.random())}`);
+  stores?.taskStore?.setEventSink((event) => {
+    ledger.append({ eventId: `task:${event.eventId}`, roomId: event.roomId, type: event.type, actor: event.actor, createdAt: event.createdAt, payload: event.payload });
+  });
+  stores?.decisionStore?.setEventSink((event) => {
+    ledger.append({ eventId: `decision:${event.eventId}`, roomId: event.roomId, type: event.type, actor: event.actor, createdAt: event.createdAt, payload: event.payload });
+  });
   const gateway = new CollabGateway({
     rooms, ledger, invites, agent: agentOverride ?? agent, now, approvals,
     hostPrincipalId: "host",
@@ -70,6 +79,8 @@ function setup(
     tokenFactory,
     ...(commitCriticalState ? { commitCriticalState } : {}),
     ...(limits ? { limits } : {}),
+    ...(stores?.taskStore ? { taskStore: stores.taskStore } : {}),
+    ...(stores?.decisionStore ? { decisionStore: stores.decisionStore } : {}),
   });
   return { gateway, calls, rooms, ledger, approvals, workspaceSharing, activeRooms, tokenFactory };
 }
@@ -266,6 +277,71 @@ describe("CollabGateway route contract", () => {
       expect.objectContaining({ type: "member.joined", seq: 1 }),
       expect.objectContaining({ type: "human.message", seq: 2 }),
     ] });
+  });
+
+  it("authenticates Task and Decision REST routes and persists their domain events", async () => {
+    const taskStore = new TaskStore();
+    const decisionStore = new DecisionStore();
+    const { gateway, ledger } = setup(undefined, false, undefined, undefined, () => 10, { taskStore, decisionStore });
+    const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((bootstrap.body as { roomToken: string }).roomToken);
+
+    await expect(request(gateway, { method: "POST", path: "/v1/rooms/room-1/tasks", body: { title: "Ship", clientRequestId: "task-create" } })).resolves.toMatchObject({ status: 401 });
+    const created = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/tasks", headers,
+      body: { title: "Ship", clientRequestId: "task-create" },
+    });
+    expect(created).toMatchObject({ status: 201, body: { task: { taskId: "task:task-create", status: "open" } } });
+    const taskId = (created.body as { task: { taskId: string } }).task.taskId;
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/claim`, headers,
+    })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: "member-host" } } });
+    await expect(request(gateway, {
+      method: "PUT", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/status`, headers,
+      body: { status: "doing" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { status: "doing" } } });
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/participants`, headers,
+      body: { memberId: "member-alice" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { participantIds: expect.arrayContaining(["member-alice"]) } } });
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/unassign`, headers,
+    })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: undefined } } });
+    await expect(request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/messages", headers,
+      body: { messageId: "message-1", text: "Source" },
+    })).resolves.toMatchObject({ status: 201 });
+    await expect(request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/decisions", headers,
+      body: { scope: `task:${taskId}`, conclusion: "Ship it.", sourceMessageIds: ["message-1"], clientRequestId: "decision-propose" },
+    })).resolves.toMatchObject({ status: 201, body: { decision: { decisionId: "decision:decision-propose", status: "proposed" } } });
+    await expect(request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/decisions/decision%3Adecision-propose/accept", headers,
+    })).resolves.toMatchObject({ status: 200, body: { decision: { status: "accepted" } } });
+
+    expect(ledger.readAfter("room-1", 0).map((event) => event.type)).toEqual([
+      "task.created", "task.assigned", "task.status-changed", "task.updated", "task.assigned", "human.message", "decision.proposed", "decision.accepted",
+    ]);
+  });
+
+  it("writes Discussion scope and source references into the human message ledger event", async () => {
+    const { gateway, ledger } = setup();
+    const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((bootstrap.body as { roomToken: string }).roomToken);
+    await expect(request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/messages", headers,
+      body: { messageId: "message-1", text: "Source" },
+    })).resolves.toMatchObject({ status: 201 });
+    const response = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/messages", headers,
+      body: { messageId: "message-2", text: "Follow up", scope: "task:task-1", sourceMessageId: "message-1" },
+    });
+
+    expect(response).toMatchObject({ status: 201, body: { message: { scope: "task:task-1", sourceMessageId: "message-1" } } });
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({
+      type: "human.message",
+      payload: { scope: "task:task-1", sourceMessageId: "message-1" },
+    });
   });
 
   it("accepts mentions only for active members of the current room and retires @agent requests", async () => {

@@ -407,6 +407,27 @@ describe("Room Context projections", () => {
     expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-bob", events })?.entries).toHaveLength(2);
     expect(projectRoomContextForAgent({ roomId: "room-1", afterSeq: 0, maxEntries: 10, memberId: "member-carol", events })?.entries).toEqual([]);
   });
+  it("continues projecting after a task is unassigned", () => {
+    const snapshot = projectRoomContextForAgent({
+      roomId: "room-1",
+      afterSeq: 2,
+      maxEntries: 10,
+      priorEvents: [
+        event(1, "task.created", { taskId: "task-1", title: "Task", participantIds: ["member-alice"], createdBy: "member-alice" }),
+        event(2, "task.assigned", { taskId: "task-1", assigneeId: "member-bob" }),
+      ],
+      events: [
+        event(3, "task.assigned", { taskId: "task-1", assigneeId: undefined }),
+        event(4, "task.status-changed", { taskId: "task-1", from: "open", to: "doing" }),
+      ],
+    });
+
+    expect(snapshot).toMatchObject({ fromSeq: 3, toSeq: 4 });
+    expect(snapshot?.entries).toEqual([
+      { kind: "task", taskId: "task-1", title: "Task", status: "open", blocked: false, participantIds: ["member-alice", "member-bob"] },
+      { kind: "task", taskId: "task-1", title: "Task", status: "doing", blocked: false, participantIds: ["member-alice", "member-bob"] },
+    ]);
+  });
   it("restores a Task from the committed prefix before projecting a later update", () => {
     const snapshot = projectRoomContextForAgent({
       roomId: "room-1",

@@ -69,6 +69,10 @@ async function fixture(input: {
       calls.push("record-session");
       return roomProjects.setHostPrimarySessionId(input);
     }),
+    rebindHostPrimarySession: vi.fn(async (input: { roomId: string; fromSessionId: string; toSessionId: string }) => {
+      calls.push("rebind-session");
+      return roomProjects.rebindHostPrimarySession(input);
+    }),
   };
   const service = new OwnerRoomProjectService({
     hostId: "host-principal",
@@ -181,6 +185,22 @@ describe("OwnerRoomProjectService", () => {
     expect(value.rooms.getRoom("room-fixed").hostSessionId).toBe("host-primary-session");
     expect(value.roomProjects.get("room-fixed")?.hostPrimarySessionId).toBe("host-primary-session");
     expect(value.calls).toEqual(["record-session", "commit"]);
+  });
+
+  it("rebinds an already completed Room Project after the DSH runtime restarts", async () => {
+    const value = await fixture();
+    await value.service.prepare({ sourcePath: value.sourcePath, sourceSessionId: "source-session", roomTitle: "Atlas" });
+    value.sessionPaths.set("host-primary-old", value.workspacePath);
+    await value.service.complete({ roomId: "room-fixed", sourceSessionId: "source-session", hostPrimarySessionId: "host-primary-old" });
+    value.calls.length = 0;
+    value.sessionPaths.set("host-primary-new", value.workspacePath);
+
+    await expect(value.service.complete({ roomId: "room-fixed", sourceSessionId: "host-primary-old", hostPrimarySessionId: "host-primary-new" })).resolves.toEqual({ roomId: "room-fixed", hostPrimarySessionId: "host-primary-new" });
+
+    expect(value.rooms.getRoom("room-fixed").hostSessionId).toBe("host-primary-new");
+    expect(value.roomProjects.get("room-fixed")?.hostPrimarySessionId).toBe("host-primary-new");
+    expect(value.bootstrap.rebindHostPrimarySession).toHaveBeenCalledWith({ roomId: "room-fixed", fromSessionId: "host-primary-old", toSessionId: "host-primary-new" });
+    expect(value.calls).toEqual(["rebind-session", "commit"]);
   });
 
   it("leaves prepare state retryable when the browser has not created a Session yet", async () => {

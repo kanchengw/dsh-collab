@@ -62,7 +62,7 @@ export interface CollabDiscussionProps {
 const GENERAL_SCOPE: CollabDiscussionScopeOption = { value: "general", label: "General" };
 
 function isDiscussionScope(value: string): value is CollabDiscussionScope {
-  return value === "general" || /^task:[^:\s]+$/.test(value);
+  return value === "general" || /^task:[^\s]+$/.test(value);
 }
 
 function sourceMessage(messages: readonly CollabDiscussionMessage[], sourceMessageId: string | undefined): CollabDiscussionMessage | undefined {

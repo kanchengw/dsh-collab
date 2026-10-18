@@ -109,9 +109,14 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
     setBusy("save");
     setNotice(undefined);
     try {
+      const runtimePort = gateway.status === "running" ? gateway.port : 0;
       const next = {
         gatewayHost: exposeMode === "loopback" ? "127.0.0.1" as const : "0.0.0.0" as const,
-        gatewayPort: saved.gatewayPort,
+        gatewayPort: Number.isSafeInteger(saved.gatewayPort) && saved.gatewayPort >= 1 && saved.gatewayPort <= 65535
+          ? saved.gatewayPort
+          : Number.isSafeInteger(runtimePort) && runtimePort >= 1 && runtimePort <= 65535
+          ? runtimePort
+          : defaultCollabSettings.gatewayPort,
         exposeMode,
         advertisedEndpoint: connectionMethod === "private-network"
           ? ""

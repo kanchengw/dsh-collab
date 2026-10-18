@@ -24,6 +24,7 @@ import { assertEasyTierPrivateIpv4, decodeEasyTierInvitationNetwork } from "./ea
 import type { CollabInvitationNetwork } from "./invitation.js";
 import { DshCollabWorkspacePorts, type OpenParticipantRoomWorkspaceInput } from "./collab-workspace-client.js";
 import { DshCollabComposer } from "./collab-composer.js";
+import { createCollabDiscussionPort, createCollabTasksPort } from "./collab-live-ports.js";
 
 interface DshClientWorkspaces {
   create(input: { path: string }): Promise<{ workspaceId: string }>;
@@ -320,8 +321,15 @@ export interface DshCollabClientSnapshot {
 export interface DshCollabClientPort {
   getSnapshot(): DshCollabClientSnapshot;
   subscribe(listener: () => void): () => void;
-  send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[] }): Promise<void>;
-  markRead?(): void;
+  send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[]; sourceMessageId?: string; scope?: string }): Promise<void>;
+  createTask?(roomId: string, input: { title: string; description?: string }): Promise<void>;
+  claimTask?(roomId: string, taskId: string): Promise<void>;
+  unassignTask?(roomId: string, taskId: string): Promise<void>;
+  setTaskStatus?(roomId: string, taskId: string, status: string): Promise<void>;
+  addTaskParticipant?(roomId: string, taskId: string, memberId: string): Promise<void>;
+  proposeDecision?(roomId: string, input: { scope: string; conclusion: string; sourceMessageIds: string[] }): Promise<void>;
+  acceptDecision?(roomId: string, decisionId: string): Promise<void>;
+    markRead?(): void;
   editAgentRequest?(requestId: string, text: string): Promise<void>;
   withdrawAgentRequest?(requestId: string): Promise<void>;
 }
@@ -1522,8 +1530,11 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
   }
   const changesPort = optionalService<CollabChangesPort>(context, "collabChanges");
   const reviewsPort = optionalService<CollabReviewsPort>(context, "collabReviews");
-  const tasksPort = optionalService<CollabTasksPort>(context, "collabTasks");
-  const discussionPort = optionalService<CollabDiscussionViewPort>(context, "collabDiscussion");
+  const providedTasksPort = optionalService<CollabTasksPort>(context, "collabTasks");
+  const providedDiscussionPort = optionalService<CollabDiscussionViewPort>(context, "collabDiscussion");
+  const hasLiveRoomEvents = client?.getSnapshot().roomEvents !== undefined;
+  const tasksPort = providedTasksPort ?? (client?.createTask && hasLiveRoomEvents ? createCollabTasksPort(client) : undefined);
+  const discussionPort = providedDiscussionPort ?? (client?.send && hasLiveRoomEvents ? createCollabDiscussionPort(client) : undefined);
   let workspaces = optionalService<DshClientWorkspaces>(context, "workspaces");
   let workspaceNavigation = optionalService<DshClientWorkspaceNavigation>(context, "uiWorkspace");
   let sessions = optionalService<DshClientSessions>(context, "sessions");

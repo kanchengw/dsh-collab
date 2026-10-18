@@ -69,4 +69,8 @@ export class OwnerRoomWorkspaceBootstrapper {
   complete(input: { roomId: string; sessionId: string }): Promise<RoomProject> {
     return this.options.registrar.recordHostPrimarySession(input);
   }
+
+  rebindHostPrimarySession(input: { roomId: string; fromSessionId: string; toSessionId: string }): Promise<RoomProject> {
+    return this.options.registrar.rebindHostPrimarySession(input);
+  }
 }

@@ -37,6 +37,8 @@ export interface CollabTasksSnapshot {
   members: readonly CollabTaskMember[];
   tasks: readonly CollabTaskItem[];
   selectedTaskId?: string;
+  roomDecisions?: readonly CollabTaskDecision[];
+  availableMessageIds?: readonly string[];
   error?: string;
 }
 
@@ -47,12 +49,15 @@ export interface CollabTasksPort {
   createTask(input: { title: string; description?: string }): Promise<void>;
   selectTask(taskId: string): Promise<void>;
   claimTask(taskId: string): Promise<void>;
+  unassignTask?(taskId: string): Promise<void>;
   setTaskStatus(taskId: string, status: TaskStatus): Promise<void>;
   addTaskParticipant(taskId: string, memberId: string): Promise<void>;
+  proposeDecision?(input: { scope: string; conclusion: string; sourceMessageIds: string[] }): Promise<void>;
+  acceptDecision?(decisionId: string): Promise<void>;
   forRoom?(roomId: string): CollabTasksPort | undefined;
 }
 
-const TASK_STATUSES: readonly TaskStatus[] = ["open", "doing", "in-review", "done", "cancelled"];
+const TASK_STATUSES: readonly TaskStatus[] = ["open", "doing", "in-review"];
 
 function requiredText(value: string, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} must not be blank`);
@@ -86,6 +91,14 @@ export function validateCollabTasksSnapshot(snapshot: CollabTasksSnapshot): Coll
     }
     taskIds.add(task.taskId);
   }
+  const availableMessageIds = new Set<string>();
+  for (const messageId of snapshot.availableMessageIds ?? []) {
+    if (messageId.trim() === "" || availableMessageIds.has(messageId)) throw new Error("Collab Tasks message references are invalid");
+    availableMessageIds.add(messageId);
+  }
+  for (const decision of snapshot.roomDecisions ?? []) {
+    if (decision.roomId !== snapshot.roomId || decision.scope !== "room") throw new Error("Collab Tasks room Decision is invalid");
+  }
   if (snapshot.selectedTaskId !== undefined && !taskIds.has(snapshot.selectedTaskId)) throw new Error("Collab Tasks selected task is invalid");
   return snapshot;
 }
@@ -97,8 +110,15 @@ export function createCollabTaskActionHandlers(port: CollabTasksPort) {
       ...(input.description?.trim() ? { description: input.description.trim() } : {}),
     }),
     claimTask: (taskId: string) => port.claimTask(requiredText(taskId, "taskId")),
+    unassignTask: (taskId: string) => port.unassignTask?.(requiredText(taskId, "taskId")) ?? Promise.reject(new Error("Task assignment actions are unavailable")),
     setTaskStatus: (taskId: string, status: TaskStatus) => port.setTaskStatus(requiredText(taskId, "taskId"), status),
     addTaskParticipant: (taskId: string, memberId: string) => port.addTaskParticipant(requiredText(taskId, "taskId"), requiredText(memberId, "memberId")),
+    proposeDecision: (input: { scope: string; conclusion: string; sourceMessageIds: string[] }) => port.proposeDecision?.({
+      scope: requiredText(input.scope, "scope"),
+      conclusion: requiredText(input.conclusion, "conclusion"),
+      sourceMessageIds: input.sourceMessageIds.map((messageId) => requiredText(messageId, "sourceMessageId")),
+    }) ?? Promise.reject(new Error("Decision actions are unavailable")),
+    acceptDecision: (decisionId: string) => port.acceptDecision?.(requiredText(decisionId, "decisionId")) ?? Promise.reject(new Error("Decision actions are unavailable")),
   };
 }
 
@@ -111,10 +131,30 @@ function statusLabel(status: TaskStatus): string {
   return status === "in-review" ? "In review" : status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+function DecisionComposer(props: { scope: string; sourceMessageIds: readonly string[]; port: CollabTasksPort; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
+  const [conclusion, setConclusion] = useState("");
+  const available = props.port.proposeDecision !== undefined && props.sourceMessageIds.length > 0;
+  return <form className={css.actions} onSubmit={(event) => {
+    event.preventDefault();
+    if (!available) return;
+    props.run("decision", async () => {
+      await props.port.proposeDecision!({ scope: props.scope, conclusion: requiredText(conclusion, "conclusion"), sourceMessageIds: [...props.sourceMessageIds] });
+      setConclusion("");
+    });
+  }}><label>Conclusion<input aria-label="Decision conclusion" required value={conclusion} onChange={(event) => { setConclusion(event.currentTarget.value); }} /></label><button type="submit" disabled={!available || props.busy !== undefined}>Propose decision</button></form>;
+}
+
+function DecisionList(props: { decisions: readonly CollabTaskDecision[]; port: CollabTasksPort; snapshot: CollabTasksSnapshot; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
+  return <ul className={css.list}>{props.decisions.map((decision) => <li key={decision.decisionId}><strong>{decision.status}</strong><span>{decision.conclusion}</span>{decision.status === "proposed" ? <button type="button" disabled={props.port.acceptDecision === undefined || props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("accept-decision", () => props.port.acceptDecision!(decision.decisionId)); }}>Accept decision</button> : null}</li>)}</ul>;
+}
+
 function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot; port: CollabTasksPort; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
   const { task } = props.item;
   const [participantId, setParticipantId] = useState("");
   const [status, setStatus] = useState<TaskStatus>(task.status);
+  const terminal = task.status === "done" || task.status === "cancelled";
+  const statusOptions: readonly TaskStatus[] = terminal ? [task.status] : TASK_STATUSES;
+  const sourceMessageIds = (props.item.discussion ?? []).map((message) => message.messageId);
   return <section className={css.detail} aria-label="Task details">
     <header className={css.detailHeader}><div><h3>{task.title}</h3><p>{task.description}</p></div><span className={css.status}>{statusLabel(task.status)}</span></header>
     <dl className={css.meta}>
@@ -123,10 +163,11 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
     </dl>
     <div className={css.actions}>
       <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || task.assigneeId === props.snapshot.currentMemberId} onClick={() => { props.run("claim", () => props.port.claimTask(task.taskId)); }}>Claim task</button>
-      <select aria-label="Task status" value={status} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setStatus(event.currentTarget.value as TaskStatus); }}>
-        {TASK_STATUSES.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}
+      {task.assigneeId && props.port.unassignTask ? <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("unassign", () => props.port.unassignTask!(task.taskId)); }}>Unassign task</button> : null}
+      <select aria-label="Task status" value={status} disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setStatus(event.currentTarget.value as TaskStatus); }}>
+        {statusOptions.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}
       </select>
-      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || status === task.status} onClick={() => { props.run("status", () => props.port.setTaskStatus(task.taskId, status)); }}>Update status</button>
+      <button type="button" disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined || status === task.status} onClick={() => { props.run("status", () => props.port.setTaskStatus(task.taskId, status)); }}>Update status</button>
     </div>
     <div className={css.actions}>
       <select aria-label="Task participant" value={participantId} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setParticipantId(event.currentTarget.value); }}>
@@ -138,7 +179,8 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
     <h4>Discussion</h4>
     {(props.item.discussion ?? []).length === 0 ? <p className={css.hint}>No discussion yet</p> : <ul className={css.list}>{props.item.discussion!.map((message) => <li key={message.messageId}><strong>{memberName(props.snapshot, message.authorId)}</strong><span>{message.text}</span></li>)}</ul>}
     <h4>Decision</h4>
-    {props.item.decisions.length === 0 ? <p className={css.hint}>No decisions linked</p> : <ul className={css.list}>{props.item.decisions.map((decision) => <li key={decision.decisionId}><strong>{statusLabel(decision.status as TaskStatus)}</strong><span>{decision.conclusion}</span></li>)}</ul>}
+    {props.item.decisions.length === 0 ? <p className={css.hint}>No decisions linked</p> : <DecisionList decisions={props.item.decisions} port={props.port} snapshot={props.snapshot} busy={props.busy} run={props.run} />}
+    <DecisionComposer scope={`task:${task.taskId}`} sourceMessageIds={sourceMessageIds} port={props.port} busy={props.busy} run={props.run} />
     <h4>ChangeSet</h4>
     {props.item.changeSets.length === 0 ? <p className={css.hint}>No ChangeSets linked</p> : <ul className={css.list}>{props.item.changeSets.map((changeSet) => <li key={changeSet.changeSetId}><strong>{changeSet.title}</strong><span>{changeSet.status}</span></li>)}</ul>}
   </section>;
@@ -171,6 +213,7 @@ export function CollabTasks(props: { port: CollabTasksPort }): ReactNode {
   return <section className={css.tasks} aria-label="Task board" data-collab-tasks="true" data-role={snapshot.role} data-connection={snapshot.connection}>
     <header className={css.header}><div><h2>Task board</h2><p>Create, claim, and move work through the room.</p></div><span className={css.connection} role="status">{snapshot.connection === "online" ? "Online" : "Offline"}</span></header>
     {snapshot.connection === "offline" ? <p className={css.offline} role="status">Reconnect to create or update tasks.</p> : null}
+    <section aria-label="Room decisions"><h3>Room decisions</h3>{(snapshot.roomDecisions ?? []).length === 0 ? <p className={css.hint}>No room decisions yet</p> : <DecisionList decisions={snapshot.roomDecisions!} port={props.port} snapshot={snapshot} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} />}<DecisionComposer scope="room" sourceMessageIds={snapshot.availableMessageIds ?? snapshot.tasks.flatMap((item) => item.discussion ?? []).map((message) => message.messageId)} port={props.port} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} /></section>
     {error ? <div className={css.error} role="alert">{error}<button type="button" onClick={() => { run("refresh", () => props.port.refresh()); }}>Retry</button></div> : null}
     <form className={css.create} onSubmit={create}><label>Title<input required maxLength={120} value={title} onChange={(event) => { setTitle(event.currentTarget.value); }} /></label><label>Description<textarea value={description} onChange={(event) => { setDescription(event.currentTarget.value); }} /></label><button type="submit" disabled={snapshot.connection === "offline" || busy !== undefined}>Create task</button></form>
     <section className={css.board} aria-label="Tasks">

@@ -28,6 +28,28 @@ describe("classifyMessage", () => {
     }));
   });
 
+  it("preserves discussion scope and source message references in HumanMessage", () => {
+    expect(classifyMessage({
+      ...base,
+      text: "Follow up on the task.",
+      scope: "task:task-1",
+      sourceMessageId: "message-source",
+    })).toEqual(expect.objectContaining({
+      kind: "human",
+      scope: "task:task-1",
+      sourceMessageId: "message-source",
+    }));
+  });
+
+  it("accepts task discussion scopes when the durable task id contains a namespace separator", () => {
+    expect(classifyMessage({
+      ...base,
+      messageId: "message-namespace",
+      text: "Follow up on the generated task.",
+      scope: "task:task:task-create",
+    })).toMatchObject({ scope: "task:task:task-create" });
+  });
+
   it("rejects retired Agent targets at the message boundary", () => {
     expect(() => classifyMessage({ ...base, messageId: "message-2", text: "Run the release tests", target: "dsh" })).toThrow(/retired|human|room/i);
     expect(() => classifyMessage({ ...base, messageId: "message-3", text: "Stop", target: "dsh-steer" })).toThrow(/retired|human|room/i);

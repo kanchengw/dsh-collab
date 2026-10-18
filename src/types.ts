@@ -160,6 +160,7 @@ export interface AuthorizationOptions {
 }
 
 export type MessageTarget = "room" | "dsh" | "dsh-steer";
+export type MessageScope = "general" | `task:${string}`;
 
 export interface MessageInput {
   messageId: string;
@@ -167,6 +168,7 @@ export interface MessageInput {
   authorMemberId: string;
   text: string;
   target?: MessageTarget;
+  scope?: MessageScope;
   sourceMessageId?: string;
   contextRefs?: string[];
   mentions?: string[];
@@ -178,7 +180,9 @@ export interface HumanMessage {
   roomId: string;
   authorMemberId: string;
   text: string;
+  scope: MessageScope;
   visibility: "room";
+  sourceMessageId?: string;
   mentions?: string[];
 }
 

@@ -1,13 +1,38 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshEphemeralParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, resolveDshCollabRoomSelection, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
+import { apply, applyDshCollabClient, createDshBrowserEasyTierTransport, createDshGatewayControlPort, createDshParticipantPersistence, createDshEphemeralParticipantPersistence, createDshParticipantSecretPort, createDshParticipantWorkspaceOpener, createDshOwnedRoomReopener, createDshSettingsPort, decodeDshParticipantSettings, DshCollabSettingsCard, inject, resolveDshCollabRoomSelection, type DshCollabClientContext, type DshCollabClientSnapshot } from "../../src/dsh-client.js";
 import { DshCollabSettingsPanel } from "../../src/collab-settings-card.js";
 import { closeDshCollabRoom, openDshCollabRoom } from "../../src/collab-rooms.js";
 import type { ParticipantResumeState } from "../../src/dsh-browser-client.js";
 import type { DshCollabJoinedRoom } from "../../src/settings-shared.js";
 
 const snapshot: DshCollabClientSnapshot = { roomId: "room-1", roomTitle: "Release", hostDisplayName: "Host", role: "host", connection: "online", onlineCount: 3, canSteer: true };
+
+describe("persisted Owned room rebinding", () => {
+  it("connects the native Workspace, completes the Room Project, and refreshes rooms", async () => {
+    const order: string[] = [];
+    const connectWorkspace = vi.fn(async (workspaceId: string) => { order.push(`connect:${workspaceId}`); return "session-live"; });
+    const openSession = vi.fn((sessionId: string) => { order.push(`open:${sessionId}`); });
+    const refreshOwnedRooms = vi.fn(async () => { order.push("refresh"); });
+    const rpc = {
+      call: vi.fn(async (_channel: string, endpoint: string, payload: unknown) => {
+        order.push(`${endpoint}:${JSON.stringify(payload)}`);
+        return { ok: true, value: { hostPrimarySessionId: "session-live" } };
+      }),
+    };
+    const reopen = createDshOwnedRoomReopener({ rpc, workspaceNavigation: { connectWorkspace, openSession }, refreshOwnedRooms });
+
+    await expect(reopen({ roomId: "room-owned", hostSessionId: "session-old", title: "Release", sharing: false, nativeWorkspaceId: "native-room" })).resolves.toEqual({ hostSessionId: "session-live" });
+
+    expect(order).toEqual([
+      "connect:native-room",
+      "open:session-live",
+      "owner/room-project/complete:{\"roomId\":\"room-owned\",\"sourceSessionId\":\"session-old\",\"hostPrimarySessionId\":\"session-live\"}",
+      "refresh",
+    ]);
+  });
+});
 
 function memoryParticipantSecrets() {
   const records = new Map<string, ParticipantResumeState>();
@@ -272,22 +297,52 @@ describe("real DSH client slot adapter", () => {
 
   it("starts and stops the Host Gateway only through the official Connection RPC", async () => {
     const calls: string[] = [];
-    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn() };
+    const configureGateway = vi.fn();
+    const base = { getSnapshot: () => ({ gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" }), save: vi.fn(), configureGateway };
     const port = createDshGatewayControlPort(base, {
       call: vi.fn(async (_channel: string, endpoint: string) => {
         calls.push(endpoint);
         if (endpoint === "rooms/list") return { ok: true, value: { rooms: [] } };
-        return { ok: true, value: endpoint.endsWith("start") ? { status: "running", port: 4310 } : { status: "stopped" } };
+        return { ok: true, value: endpoint.endsWith("start") ? { status: "running", port: 4399 } : { status: "stopped" } };
       }),
     });
 
     expect(port.getGatewaySnapshot?.()).toEqual({ status: "stopped" });
     expect(calls).toEqual([]);
     await port.startGateway?.();
-    expect(port.getGatewaySnapshot?.()).toEqual({ status: "running", port: 4310 });
+    expect(port.getGatewaySnapshot?.()).toEqual({ status: "running", port: 4399 });
+    expect(configureGateway).toHaveBeenCalledWith({ gatewayHost: "127.0.0.1", gatewayPort: 4399 });
     await port.stopGateway?.();
     expect(port.getGatewaySnapshot?.()).toEqual({ status: "stopped" });
     expect(calls).toEqual(["gateway/start", "rooms/list", "gateway/stop", "rooms/list"]);
+  });
+
+  it("does not let a settings read restore the old gateway port after startup", async () => {
+    let browserGatewayPort = 4310;
+    const configureGateway = vi.fn(({ gatewayPort }: { gatewayPort: number }) => { browserGatewayPort = gatewayPort; });
+    const shareHostRoom = vi.fn(async () => { expect(browserGatewayPort).toBe(4399); });
+    const base = {
+      getSnapshot: () => {
+        configureGateway({ gatewayPort: 4310 });
+        return { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback" as const, advertisedEndpoint: "" };
+      },
+      save: vi.fn(),
+      configureGateway,
+      shareHostRoom,
+    };
+    const port = createDshGatewayControlPort(base, {
+      call: vi.fn(async (_channel: string, endpoint: string) => endpoint === "gateway/start"
+        ? { ok: true, value: { status: "running", port: 4399 } }
+        : { ok: true, value: { rooms: [] } }),
+    });
+
+    await port.startGateway?.();
+    port.getSnapshot();
+    await port.shareHostRoom?.({ roomId: "room-1", hostSessionId: "session-1", title: "Release" });
+
+    expect(shareHostRoom).toHaveBeenCalledOnce();
+    expect(browserGatewayPort).toBe(4399);
+    expect(configureGateway).toHaveBeenLastCalledWith({ gatewayHost: "127.0.0.1", gatewayPort: 4399 });
   });
 
   it("refreshes Owned room sharing state after Host share and stop actions", async () => {

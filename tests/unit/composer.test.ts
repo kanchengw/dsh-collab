@@ -45,6 +45,14 @@ describe("collab composer mentions", () => {
     ], "member-owner", 2)).toEqual({ personal: 1, total: 1 });
   });
 
+  it("counts assignments, Task participation and Decision activity as personal reminders", () => {
+    expect(projectCollabUnread([
+      { eventId: "task-created", roomId: "room-1", seq: 1, type: "task.created", createdAt: 1, actor: { memberId: "member-alice", principalId: "alice" }, payload: { taskId: "task-1", participantIds: ["member-owner"], createdBy: "member-alice" } },
+      { eventId: "task-assigned", roomId: "room-1", seq: 2, type: "task.assigned", createdAt: 2, actor: { memberId: "member-alice", principalId: "alice" }, payload: { taskId: "task-1", assigneeId: "member-owner" } },
+      { eventId: "decision", roomId: "room-1", seq: 3, type: "decision.proposed", createdAt: 3, actor: { memberId: "member-alice", principalId: "alice" }, payload: { decisionId: "decision-1", scope: "room" } },
+      { eventId: "task-status", roomId: "room-1", seq: 4, type: "task.status-changed", createdAt: 4, actor: { memberId: "member-bob", principalId: "bob" }, payload: { taskId: "task-1", from: "open", to: "doing" } },
+    ], "member-owner")).toEqual({ personal: 4, total: 4 });
+  });
   it("keeps resolved room and Agent submissions distinct on the wire", () => {
 
     expect(createComposerSubmission({ messageId: "m-1", roomId: "room-1", authorMemberId: "member-1", text: "ask @Alice", target: "room" })).toMatchObject({

@@ -509,6 +509,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
   private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
   private disposed = false;
   private manuallyDisconnected = false;
+  private hasEstablishedConnection = false;
   private participantRef: JoinedRoomRef | undefined;
   private readonly pendingCommandIds = new Map<string, string>();
   private readonly pendingJoins = new Map<string, { memberId: string; credential: string }>();
@@ -806,7 +807,46 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     return { invitation: encodeCollabInvitation({ protocol: "dsh-collab.invitation.v2", ...common, network }) };
   }
 
-  async send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[] }): Promise<void> {
+  async createTask(roomId: string, input: { title: string; description?: string }): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks`, {
+      clientRequestId: randomId("task"),
+      title: input.title,
+      ...(input.description ? { description: input.description } : {}),
+    }, true);
+  }
+
+  async claimTask(roomId: string, taskId: string): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}, true);
+  }
+
+  async unassignTask(roomId: string, taskId: string): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/unassign`, {}, true);
+  }
+
+  async setTaskStatus(roomId: string, taskId: string, status: string): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/status`, { status }, true);
+  }
+
+  async addTaskParticipant(roomId: string, taskId: string, memberId: string): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/participants`, { memberId }, true);
+  }
+
+  async proposeDecision(roomId: string, input: { scope: string; conclusion: string; sourceMessageIds: string[] }): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/decisions`, { clientRequestId: randomId("decision"), ...input }, true);
+  }
+
+  async acceptDecision(roomId: string, decisionId: string): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/decisions/${encodeURIComponent(decisionId)}/accept`, {}, true);
+  }
+
+  async send(input: { text: string; target: ComposerTarget; contextRefs?: string[]; mentions?: string[]; sourceMessageId?: string; scope?: string }): Promise<void> {
     if (!this.token) throw new Error("join or bootstrap a collaboration room first");
     const pendingKey = JSON.stringify({ base: this.base, roomId: this.roomId, text: input.text, target: input.target, contextRefs: input.contextRefs, mentions: input.mentions });
     const clientMessageId = this.pendingMessageIds.get(pendingKey) ?? randomId("message");
@@ -818,6 +858,8 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
         target: input.target,
         ...(input.contextRefs && input.contextRefs.length > 0 ? { contextRefs: [...input.contextRefs] } : {}),
         ...(input.mentions && input.mentions.length > 0 && input.target === "room" ? { mentions: [...input.mentions] } : {}),
+        ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+        ...(input.scope ? { scope: input.scope } : {}),
       }, true);
       this.pendingMessageIds.delete(pendingKey);
     } catch (error) {
@@ -1034,8 +1076,9 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     this.roomId = input.roomId;
     this.participantRef = input.participantRef;
     this.token = input.data.roomToken;
+    const preservedLastReadSeq = this.hasEstablishedConnection && this.snapshot.roomId === input.roomId ? Math.min(this.lastReadSeq, lastEventSeq) : lastEventSeq;
     this.lastEventSeq = lastEventSeq;
-    this.lastReadSeq = lastEventSeq;
+    this.lastReadSeq = preservedLastReadSeq;
     this.events.clear();
     for (const [eventId, event] of events) this.events.set(eventId, event);
     this.activeAgentOutputs.clear();
@@ -1059,6 +1102,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       lastReadSeq: this.lastReadSeq,
     };
     this.manuallyDisconnected = false;
+    this.hasEstablishedConnection = true;
     this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
     socket.onmessage = (event) => { if (this.socket !== socket) return; this.heartbeatAcknowledged = true; this.applyFrame(event.data); };
     socket.onclose = () => {

@@ -55,6 +55,27 @@ describe("host runtime factory", () => {
     await restored.dispose();
   });
 
+  it("persists runtime Decision events into the Room ledger and restores them", async () => {
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+    };
+    const first = createDshCollabHostRuntime(options);
+    first.decisionStore.propose({
+      decisionId: "decision-1", roomId: "room-1", scope: "room", conclusion: "Keep the ledger authoritative.",
+      sourceMessageIds: ["message-1"], actor: { memberId: "member-host", principalId: "host" }, eventId: "decision-proposed", now: 1,
+    });
+    first.decisionStore.accept({ decisionId: "decision-1", actor: { memberId: "member-host", principalId: "host" }, eventId: "decision-accepted", now: 2 });
+    expect(first.ledger.readAfter("room-1", 0).map((event) => event.type)).toEqual(["decision.proposed", "decision.accepted"]);
+    const snapshot = first.snapshot();
+    expect(snapshot.decisions?.events).toHaveLength(2);
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    expect(restored.decisionStore.get("decision-1")).toMatchObject({ status: "accepted", acceptedBy: "member-host" });
+    await restored.dispose();
+  });
+
   it("does not mirror Task milestones into the TaskStore on Host restore", async () => {
     const options = {
       roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",

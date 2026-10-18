@@ -19,6 +19,16 @@ function proposal(overrides: Record<string, unknown> = {}) {
 }
 
 describe("DecisionStore", () => {
+  it("emits decision events through the host persistence seam", () => {
+    const emitted: DecisionEvent[] = [];
+    const store = new DecisionStore([], { eventSink: (event) => emitted.push(event) });
+
+    store.propose(proposal());
+    store.accept({ decisionId: "decision-1", actor: alice, eventId: "event-accepted", now: 110 });
+
+    expect(emitted).toEqual(store.events("room-1"));
+  });
+
   it("marks one message as a proposed room decision", () => {
     const store = new DecisionStore();
     const decision = store.propose(proposal());
@@ -69,7 +79,7 @@ describe("DecisionStore", () => {
     store.propose(proposal());
     expect(() => store.supersede({ decisionId: "decision-1", actor: alice, eventId: "event-superseded", now: 110 })).toThrow(/superseded/i);
     store.accept({ decisionId: "decision-1", actor: alice, eventId: "event-accepted", now: 120 });
-    expect(() => store.accept({ decisionId: "decision-1", actor: alice, eventId: "event-accepted-again", now: 130 })).toThrow(/accepted/i);
+    expect(store.accept({ decisionId: "decision-1", actor: alice, eventId: "event-accepted-again", now: 130 })).toMatchObject({ status: "accepted", decisionId: "decision-1" });
   });
 
   it("reduces out-of-order duplicate events deterministically and restores snapshots", () => {

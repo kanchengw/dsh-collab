@@ -27,6 +27,7 @@ import { CollabError } from "./errors.js";
 import type { DshRepositorySubprocess } from "./repository-inspector.js";
 import type { RoomEvent } from "./types.js";
 import { TaskStore, type TaskStoreSnapshot } from "./tasks.js";
+import { DecisionStore, type DecisionStoreSnapshot } from "./decisions.js";
 
 export interface DshCollabHostRuntimeOptions {
   roomId?: string;
@@ -61,6 +62,7 @@ export interface DshCollabHostRuntimeOptions {
   commitCriticalState?: () => Promise<void>;
   snapshot?: DshCollabHostRuntimeSnapshot;
   taskStore?: TaskStore;
+  decisionStore?: DecisionStore;
   roomContextDelivery?: { onCommitted(event: RoomEvent, ledger: EventLedger): void };
 }
 
@@ -71,6 +73,7 @@ export interface DshCollabHostRuntimeSnapshot extends CollabRuntimeSnapshot {
   changeSetReviews?: ChangeSetReviewServiceSnapshot;
   changeSetApply?: ChangeSetApplyPreflightServiceSnapshot;
   tasks?: TaskStoreSnapshot;
+  decisions?: DecisionStoreSnapshot;
 }
 
 export interface DshCollabHostRuntime {
@@ -92,6 +95,7 @@ export interface DshCollabHostRuntime {
   readonly reviewPoints: ReviewPointService;
   readonly reviews: ReviewService;
   readonly taskStore: TaskStore;
+  readonly decisionStore: DecisionStore;
   snapshot(): DshCollabHostRuntimeSnapshot;
   commitCriticalState(): Promise<void>;
   recoverPendingIntegrations(): Promise<void>;
@@ -149,6 +153,32 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   for (const event of taskStore.events()) {
     ledger.append({
       eventId: `task:${event.eventId}`,
+      roomId: event.roomId,
+      type: event.type,
+      actor: event.actor,
+      createdAt: event.createdAt,
+      payload: event.payload,
+    });
+  }
+  const ledgerDecisionStore = DecisionStore.fromRoomEvents(ledger.snapshot().rooms.flatMap((room) => room.events));
+  const initialDecisionEvents = [...(options.decisionStore?.events() ?? []), ...ledgerDecisionStore.events()];
+  const uniqueDecisionEvents = [...new Map(initialDecisionEvents.map((event) => [event.eventId, event])).values()];
+  const decisionStore = snapshot?.decisions
+    ? DecisionStore.fromSnapshot(snapshot.decisions)
+    : new DecisionStore(uniqueDecisionEvents);
+  decisionStore.setEventSink((event) => {
+    ledger.append({
+      eventId: `decision:${event.eventId}`,
+      roomId: event.roomId,
+      type: event.type,
+      actor: event.actor,
+      createdAt: event.createdAt,
+      payload: event.payload,
+    });
+  });
+  for (const event of decisionStore.events()) {
+    ledger.append({
+      eventId: `decision:${event.eventId}`,
       roomId: event.roomId,
       type: event.type,
       actor: event.actor,
@@ -230,6 +260,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
         journals: integrationJournals,
         workspace: canonicalWorkspace,
         reviews: changeSetReviews,
+        tasks: taskStore,
         versions: workspaceVersions,
         snapshots: {
           capture: async (input) => await workspace.captureLatest({
@@ -294,6 +325,8 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     ...(changeSetIntegration ? { changeSetIntegration } : {}),
     ...(options.workspaceSnapshots ? { reviewPoints, reviews } : {}),
     ...(options.commitCriticalState ? { commitCriticalState: options.commitCriticalState } : {}),
+    taskStore,
+    decisionStore,
   });
   if (snapshot) {
     gateway.dispatcher.restore(snapshot.dispatcher);
@@ -333,7 +366,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
   });
   http.server.on("upgrade", upgrade.handleUpgrade);
   return {
-    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, taskStore, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), ...(changeSetApply ? { changeSetApply } : {}), ...(changeSetIntegration ? { changeSetIntegration } : {}), reviewPoints, reviews,
+    rooms, ledger, gateway, approvals, hub, upgrade, http, activeRooms, workspace, workUpdates, taskStore, decisionStore, ...(workspaceVersions ? { workspaceVersions } : {}), ...(changeSets ? { changeSets } : {}), ...(changeSetReviews ? { changeSetReviews } : {}), ...(changeSetApply ? { changeSetApply } : {}), ...(changeSetIntegration ? { changeSetIntegration } : {}), reviewPoints, reviews,
     snapshot: () => ({
       ...collabRuntime.snapshot(),
       resumes: resumes.snapshot(),
@@ -342,6 +375,7 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
       ...(changeSetReviews ? { changeSetReviews: changeSetReviews.snapshot() } : {}),
       ...(changeSetApply ? { changeSetApply: changeSetApply.snapshot() } : {}),
       tasks: taskStore.snapshot(),
+      decisions: decisionStore.snapshot(),
     }),
     commitCriticalState: () => ledger.commit(options.commitCriticalState),
     recoverPendingIntegrations: async () => {

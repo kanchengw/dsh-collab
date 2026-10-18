@@ -437,7 +437,7 @@ describe("Collab Rooms navigation", () => {
   it("reconnects the browser projection before opening an Owned room that is already shared", async () => {
     const activePort = port();
     activePort.bootstrap = vi.fn(async () => {});
-    const room = { roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true };
+    const room = { roomId: "room-owned", hostSessionId: "session-owned", title: "Release planning", sharing: true, workspacePath: "C:\\rooms\\release\\workspace" };
 
     await openDshCollabOwnedRoom(activePort, room);
 
@@ -447,6 +447,7 @@ describe("Collab Rooms navigation", () => {
       roomId: "room-owned",
       hostSessionId: "session-owned",
       roomTitle: "Release planning",
+      workspacePath: "C:\\rooms\\release\\workspace",
     });
     closeDshCollabRoom();
   });

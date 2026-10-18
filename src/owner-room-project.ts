@@ -38,6 +38,7 @@ interface OwnerRoomProjectBootstrap {
     workspace: { workspacePath: string };
   }>;
   complete(input: { roomId: string; sessionId: string }): Promise<unknown>;
+  rebindHostPrimarySession?(input: { roomId: string; fromSessionId: string; toSessionId: string }): Promise<unknown>;
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -135,7 +136,16 @@ export class OwnerRoomProjectService {
       throw new Error("Host Primary Session does not belong to the Room Project workspace");
     }
 
-    await this.options.bootstrap.complete({ roomId, sessionId: hostPrimarySessionId });
+    if (project.hostPrimarySessionId && project.hostPrimarySessionId !== hostPrimarySessionId) {
+      if (!this.options.bootstrap.rebindHostPrimarySession) throw new Error("Room Project Host Session rebinding is unavailable");
+      await this.options.bootstrap.rebindHostPrimarySession({
+        roomId,
+        fromSessionId: project.hostPrimarySessionId,
+        toSessionId: hostPrimarySessionId,
+      });
+    } else {
+      await this.options.bootstrap.complete({ roomId, sessionId: hostPrimarySessionId });
+    }
     this.options.rooms.rebindHostSession({
       roomId,
       hostId: this.options.hostId,

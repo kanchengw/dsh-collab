@@ -35,7 +35,7 @@ describe("TaskStore", () => {
       title: "Ship the task model",
       status: "open",
       blocked: false,
-      assigneeId: undefined,
+      assigneeId: alice.memberId,
       participantIds: [alice.memberId],
       createdBy: alice.memberId,
       createdAt: 100,
@@ -78,6 +78,18 @@ describe("TaskStore", () => {
     ]);
   });
 
+  it("uses the creator as the default assignee and protects terminal transitions", () => {
+    const store = new TaskStore();
+    store.create(createdInput());
+
+    expect(() => store.setStatus({ taskId: "task-1", status: "done", actor: alice, eventId: "event-done-direct", now: 110 }))
+      .toThrow(/merge|completion|status/i);
+    store.setStatus({ taskId: "task-1", status: "doing", actor: alice, eventId: "event-doing", now: 115 });
+    expect(store.complete({ taskId: "task-1", actor: alice, eventId: "event-complete", now: 120 })).toMatchObject({
+      status: "done",
+      completedBy: alice.memberId,
+    });
+  });
   it("binds one assignee and automatically adds participants for collaboration activity", () => {
     const store = new TaskStore();
     store.create(createdInput());
