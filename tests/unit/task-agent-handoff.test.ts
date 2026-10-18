@@ -44,6 +44,7 @@ function setup() {
     resolve: () => ({
       tasks,
       contextBinding,
+      isActiveMember: () => true,
       context: new LedgerRoomContextReader({ ledger }),
       milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: (memberId) => tasks.principalForMember(memberId) }),
     }),
