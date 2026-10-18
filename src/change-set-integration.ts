@@ -124,8 +124,8 @@ export class ChangeSetIntegrationService {
     const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
     if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can apply a ChangeSet");
     return await this.runWithRoomIntegrationLock(input.roomId, async () => {
-      const task = await this.resolveMergeTask(input);
       const existing = this.options.reviews.getApplication(input.roomId, input.changeSetId);
+      const task = await this.resolveMergeTask(input, Boolean(existing));
       if (existing) return await this.finishDurableApplication(existing, input.principalId, task);
 
       const prepared = await this.options.reviews.prepareApplication({
@@ -240,7 +240,10 @@ export class ChangeSetIntegrationService {
     return { outcome: "applied", application: structuredClone(application), workspaceVersion: structuredClone(record) };
   }
 
-  private async resolveMergeTask(input: { roomId: string; principalId: string; changeSetId: string; taskId?: string; direct?: boolean }): Promise<CollaborationTask | undefined> {
+  private async resolveMergeTask(
+    input: { roomId: string; principalId: string; changeSetId: string; taskId?: string; direct?: boolean },
+    allowCompletedApplicationRetry = false,
+  ): Promise<CollaborationTask | undefined> {
     if (!this.options.tasks) return undefined;
     const candidates = input.taskId
       ? (() => {
@@ -255,8 +258,12 @@ export class ChangeSetIntegrationService {
       return undefined;
     }
     if (task.roomId !== input.roomId || !task.changeSetIds.includes(input.changeSetId)) throw new CollabError("ACTION_FORBIDDEN", "Task is not linked to this ChangeSet");
-    if (!input.direct && task.status !== "in-review" && task.status !== "done") throw new CollabError("REQUEST_STATE", "Code Task must be in-review before it can be merged");
-    if (!input.direct && task.status !== "done" && this.options.reviews.getReview) {
+    if (task.status === "cancelled") throw new CollabError("REQUEST_STATE", "Cancelled Task cannot be merged");
+    if (!input.direct && task.status !== "in-review" && !(allowCompletedApplicationRetry && task.status === "done")) {
+      throw new CollabError("REQUEST_STATE", "Code Task must be in-review before it can be merged");
+    }
+    if (!input.direct && task.status !== "done") {
+      if (!this.options.reviews.getReview) throw new CollabError("REQUEST_STATE", "ChangeSet review capability is unavailable");
       const review = await this.options.reviews.getReview({ roomId: input.roomId, principalId: input.principalId, changeSetId: input.changeSetId });
       if (review.status !== "approved" || review.requiredReviewerId !== task.assigneeId) {
         throw new CollabError("REQUEST_STATE", "Task responsibility review must be approved before merge");

@@ -132,6 +132,16 @@ async function setup(input: {
   const ledger = new EventLedger();
   const reviews = {
     getApplication: (roomId: string, id: string) => applications.get(`${roomId}\0${id}`),
+    getReview: vi.fn(async ({ roomId, changeSetId: id }: { roomId: string; principalId: string; changeSetId: string }) => ({
+      version: 1 as const,
+      roomId,
+      changeSetId: id,
+      authorId: "member-author",
+      status: "approved" as const,
+      requiredReviewerId: input.taskStore?.findByChangeSet(roomId, id)[0]?.assigneeId,
+      assignmentCount: 1,
+      findingCount: 0,
+    })),
     prepareApplication: vi.fn(async ({ roomId, principalId, changeSetId: id }: { roomId: string; principalId: string; changeSetId: string }) => {
       const member = rooms.authorize(roomId, principalId, "read");
       if (member.role !== "host") throw new Error("not owner");
@@ -173,7 +183,7 @@ async function setup(input: {
   };
   if (input.persist === false) delete (serviceOptions as { commitCriticalState?: () => Promise<void> }).commitCriticalState;
   const service = new ChangeSetIntegrationService(serviceOptions);
-  return { applications, capture, commit, create, journals: new IntegrationJournalStore(root), ledger, preflight, published, records, rooms, service, workspace };
+  return { applications, capture, commit, create, journals: new IntegrationJournalStore(root), ledger, preflight, published, records, rooms, service, serviceOptions, workspace };
 }
 
 describe("ChangeSet apply integration", () => {
@@ -182,8 +192,9 @@ describe("ChangeSet apply integration", () => {
     const member = { memberId: "member-author", principalId: "principal-author" };
     tasks.create({ taskId: "task-1", roomId: "room-1", title: "Ship change", actor: member, eventId: "task-created-u12", now: 1 });
     tasks.linkChangeSet({ taskId: "task-1", changeSetId, actor: member, eventId: "task-linked-u12", now: 2 });
-    tasks.setStatus({ taskId: "task-1", status: "doing", actor: member, eventId: "task-doing-u12", now: 3 });
-    tasks.setStatus({ taskId: "task-1", status: "in-review", actor: member, eventId: "task-review-u12", now: 4 });
+    tasks.assign({ taskId: "task-1", assigneeId: member.memberId, actor: member, eventId: "task-assigned-u12", now: 3 });
+    tasks.setStatus({ taskId: "task-1", status: "doing", actor: member, eventId: "task-doing-u12", now: 4 });
+    tasks.setStatus({ taskId: "task-1", status: "in-review", actor: member, eventId: "task-review-u12", now: 5 });
     const state = await setup({ taskStore: tasks });
 
     const result = await state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-1", clientRequestId: "apply-task-1" });
@@ -205,6 +216,49 @@ describe("ChangeSet apply integration", () => {
     const direct = await state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-direct", direct: true, clientRequestId: "apply-direct" });
     expect(direct).toMatchObject({ outcome: "applied" });
     expect(tasks.get("task-direct").status).toBe("done");
+  });
+
+  it("rejects a completed Task when no durable application exists", async () => {
+    const tasks = new TaskStore();
+    const member = { memberId: "member-author", principalId: "principal-author" };
+    tasks.create({ taskId: "task-done", roomId: "room-1", title: "Already done", actor: member, eventId: "task-created-done", now: 1 });
+    tasks.linkChangeSet({ taskId: "task-done", changeSetId, actor: member, eventId: "task-linked-done", now: 2 });
+    tasks.setStatus({ taskId: "task-done", status: "doing", actor: member, eventId: "task-doing-done", now: 3 });
+    tasks.complete({ taskId: "task-done", actor: member, eventId: "task-completed-done", now: 4 });
+    const state = await setup({ taskStore: tasks });
+
+    await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-done", clientRequestId: "apply-done" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    expect(state.workspace.mutations).toBe(0);
+  });
+
+  it("rejects a cancelled Task before a direct merge mutates the workspace", async () => {
+    const tasks = new TaskStore();
+    const member = { memberId: "member-author", principalId: "principal-author" };
+    tasks.create({ taskId: "task-cancelled", roomId: "room-1", title: "Cancelled", actor: member, eventId: "task-created-cancelled", now: 1 });
+    tasks.linkChangeSet({ taskId: "task-cancelled", changeSetId, actor: member, eventId: "task-linked-cancelled", now: 2 });
+    tasks.cancel({ taskId: "task-cancelled", actor: member, eventId: "task-cancelled", now: 3 });
+    const state = await setup({ taskStore: tasks });
+
+    await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-cancelled", direct: true, clientRequestId: "apply-cancelled" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    expect(state.workspace.mutations).toBe(0);
+  });
+
+  it("rejects a reviewed merge when the review capability is unavailable", async () => {
+    const tasks = new TaskStore();
+    const member = { memberId: "member-author", principalId: "principal-author" };
+    tasks.create({ taskId: "task-no-review", roomId: "room-1", title: "No review service", actor: member, eventId: "task-created-no-review", now: 1 });
+    tasks.linkChangeSet({ taskId: "task-no-review", changeSetId, actor: member, eventId: "task-linked-no-review", now: 2 });
+    tasks.setStatus({ taskId: "task-no-review", status: "doing", actor: member, eventId: "task-doing-no-review", now: 3 });
+    tasks.setStatus({ taskId: "task-no-review", status: "in-review", actor: member, eventId: "task-review-no-review", now: 4 });
+    const state = await setup({ taskStore: tasks });
+    delete (state.serviceOptions.reviews as { getReview?: unknown }).getReview;
+    const service = new ChangeSetIntegrationService(state.serviceOptions);
+
+    await expect(service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-no-review", clientRequestId: "apply-no-review" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    expect(state.workspace.mutations).toBe(0);
   });
 
   it("refuses to run without a durable whole-runtime persistence barrier", async () => {
