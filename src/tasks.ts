@@ -287,6 +287,22 @@ export class TaskStore {
     return copy(task as CollaborationTask);
   }
 
+  findByChangeSet(roomId: string, changeSetId: string): CollaborationTask[] {
+    return reduceTaskEvents(this.allEvents).tasks
+      .filter((task) => task.roomId === roomId && task.changeSetIds.includes(changeSetId))
+      .map(copy);
+  }
+
+  completeLinkedChangeSet(input: { roomId: string; changeSetId: string; actor: TaskMember; eventId: string; now?: number }): CollaborationTask[] {
+    const linked = this.findByChangeSet(input.roomId, input.changeSetId).filter((task) => task.status === "in-review");
+    return linked.map((task) => this.complete({
+      taskId: task.taskId,
+      actor: input.actor,
+      eventId: linked.length === 1 ? input.eventId : `${input.eventId}:${task.taskId}`,
+      now: input.now,
+    }));
+  }
+
   principalForMember(memberId: string): string | undefined {
     for (const event of [...this.allEvents].sort(eventSort).reverse()) {
       if (event.actor.memberId === memberId) return event.actor.principalId;

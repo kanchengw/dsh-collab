@@ -984,11 +984,15 @@ export class CollabGateway {
     }
     if (request.method === "POST" && changeSetId && tail.length === 2 && tail[1] === "apply" && this.options.changeSetIntegration) {
       const body = objectBody(request.body);
-      allowedFields(body, ["clientRequestId"]);
+      allowedFields(body, ["clientRequestId", "taskId", "mode"]);
+      if (body.mode !== undefined && body.mode !== "reviewed" && body.mode !== "direct") throw invalidInput("mode must be reviewed or direct");
+      if (body.mode === "direct" && body.taskId === undefined) throw invalidInput("taskId is required for direct Owner merge");
       const result = await this.options.changeSetIntegration.apply({
         roomId,
         principalId: claims.principalId,
         changeSetId,
+        ...(body.taskId === undefined ? {} : { taskId: requiredText(body.taskId, "taskId") }),
+        ...(body.mode === "direct" ? { direct: true } : {}),
         clientRequestId: requestIdField(body, "clientRequestId"),
       });
       if (result.outcome === "conflicted") {

@@ -9,6 +9,9 @@ import { CollabError, invalidInput } from "./errors.js";
 import type { EventLedger } from "./events.js";
 import type { IntegrationJournalStore, IntegrationJournalWorkspace } from "./integration-journal.js";
 import type { RoomStore } from "./room.js";
+import type { CollaborationTask } from "./collaboration-types.js";
+import type { ChangeSetReview } from "./change-set-reviews.js";
+import type { TaskStore } from "./tasks.js";
 import type { WorkspaceVersionRecord } from "./workspace-versions.js";
 
 export interface ChangeSetApplication {
@@ -30,7 +33,8 @@ export interface PreparedChangeSetApplication {
 
 export interface ChangeSetIntegrationReviewPort {
   getApplication(roomId: string, changeSetId: string): ChangeSetApplication | undefined;
-  prepareApplication(input: { roomId: string; principalId: string; changeSetId: string }): Promise<PreparedChangeSetApplication>;
+  getReview?(input: { roomId: string; principalId: string; changeSetId: string }): Promise<ChangeSetReview>;
+  prepareApplication(input: { roomId: string; principalId: string; changeSetId: string; allowDirectOwnerMerge?: boolean }): Promise<PreparedChangeSetApplication>;
 }
 
 export interface ChangeSetIntegrationWorkspace extends ChangeSetApplyWorkspaceReader, IntegrationJournalWorkspace {}
@@ -69,6 +73,7 @@ export interface ChangeSetIntegrationServiceOptions {
   reviews: ChangeSetIntegrationReviewPort;
   versions: ChangeSetIntegrationVersionPort;
   snapshots: ChangeSetIntegrationSnapshotPort;
+  tasks?: TaskStore;
   commitCriticalState: () => Promise<void>;
 }
 
@@ -111,23 +116,31 @@ export class ChangeSetIntegrationService {
     roomId: string;
     principalId: string;
     changeSetId: string;
+    taskId?: string;
+    direct?: boolean;
     clientRequestId: string;
   }): Promise<ChangeSetIntegrationResult> {
     requiredRequestId(input.clientRequestId);
     const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
     if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can apply a ChangeSet");
     return await this.runWithRoomIntegrationLock(input.roomId, async () => {
+      const task = await this.resolveMergeTask(input);
       const existing = this.options.reviews.getApplication(input.roomId, input.changeSetId);
-      if (existing) return await this.finishDurableApplication(existing, input.principalId);
+      if (existing) return await this.finishDurableApplication(existing, input.principalId, task);
 
-      const prepared = await this.options.reviews.prepareApplication(input);
-      if (prepared.existing) return await this.finishDurableApplication(prepared.existing, input.principalId);
+      const prepared = await this.options.reviews.prepareApplication({
+        roomId: input.roomId,
+        principalId: input.principalId,
+        changeSetId: input.changeSetId,
+        ...(input.direct ? { allowDirectOwnerMerge: true } : {}),
+      });
+      if (prepared.existing) return await this.finishDurableApplication(prepared.existing, input.principalId, task);
       const preflight = await this.options.preflight.preflight(input);
       if (preflight.outcome === "conflicted") {
         await this.options.commitCriticalState();
         return { outcome: "conflicted", conflict: structuredClone(preflight.conflict) };
       }
-      return await this.execute(input, preflight.plan, prepared);
+      return await this.execute(input, preflight.plan, prepared, task);
     });
   }
 
@@ -159,9 +172,10 @@ export class ChangeSetIntegrationService {
   }
 
   private async execute(
-    input: { roomId: string; principalId: string; changeSetId: string },
+    input: { roomId: string; principalId: string; changeSetId: string; direct?: boolean },
     plan: ChangeSetApplyPlan,
     prepared: PreparedChangeSetApplication,
+    task?: CollaborationTask,
   ): Promise<ChangeSetIntegrationResult> {
     const latest = this.options.versions.latest(input.roomId);
     if (!latest || latest.version.workspaceVersionId !== plan.baseWorkspaceVersionId) {
@@ -198,6 +212,7 @@ export class ChangeSetIntegrationService {
         application = prepared.commit(published.record.version.workspaceVersionId, journal.integrationId);
       }
       this.appendApplicationEvent(application, input.principalId);
+      if (task) this.completeTask(task, input.principalId, application, input.direct === true);
       await this.options.commitCriticalState();
       await this.options.journals.complete(journal.integrationId);
       return { outcome: "applied", application: structuredClone(application), workspaceVersion: structuredClone(published.record) };
@@ -213,15 +228,59 @@ export class ChangeSetIntegrationService {
     }
   }
 
-  private async finishDurableApplication(application: ChangeSetApplication, principalId: string): Promise<ChangeSetIntegrationResult> {
+  private async finishDurableApplication(application: ChangeSetApplication, principalId: string, task?: CollaborationTask): Promise<ChangeSetIntegrationResult> {
     const record = this.options.versions.get(application.roomId, application.workspaceVersionId);
     if (!record) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application Workspace Version does not exist");
     this.appendApplicationEvent(application, principalId);
+    if (task) this.completeTask(task, principalId, application, false);
     await this.options.commitCriticalState();
     if (await this.options.journals.load(application.integrationId)) {
       await this.options.journals.complete(application.integrationId);
     }
     return { outcome: "applied", application: structuredClone(application), workspaceVersion: structuredClone(record) };
+  }
+
+  private async resolveMergeTask(input: { roomId: string; principalId: string; changeSetId: string; taskId?: string; direct?: boolean }): Promise<CollaborationTask | undefined> {
+    if (!this.options.tasks) return undefined;
+    const candidates = input.taskId
+      ? (() => {
+        const task = this.options.tasks!.get(input.taskId, false);
+        return task ? [task] : [];
+      })()
+      : this.options.tasks.findByChangeSet(input.roomId, input.changeSetId);
+    if (candidates.length > 1) throw new CollabError("REQUEST_STATE", "ChangeSet is linked to multiple Tasks; taskId is required");
+    const task = candidates[0];
+    if (!task) {
+      if (input.taskId) throw new CollabError("REQUEST_NOT_FOUND", "Task was not found", { taskId: input.taskId });
+      return undefined;
+    }
+    if (task.roomId !== input.roomId || !task.changeSetIds.includes(input.changeSetId)) throw new CollabError("ACTION_FORBIDDEN", "Task is not linked to this ChangeSet");
+    if (!input.direct && task.status !== "in-review" && task.status !== "done") throw new CollabError("REQUEST_STATE", "Code Task must be in-review before it can be merged");
+    if (!input.direct && task.status !== "done" && this.options.reviews.getReview) {
+      const review = await this.options.reviews.getReview({ roomId: input.roomId, principalId: input.principalId, changeSetId: input.changeSetId });
+      if (review.status !== "approved" || review.requiredReviewerId !== task.assigneeId) {
+        throw new CollabError("REQUEST_STATE", "Task responsibility review must be approved before merge");
+      }
+    }
+    return task;
+  }
+
+  private completeTask(task: CollaborationTask, principalId: string, application: ChangeSetApplication, direct: boolean): void {
+    if (!this.options.tasks || task.status === "done") return;
+    const actor = { memberId: application.appliedBy, principalId };
+    let current = this.options.tasks.get(task.taskId);
+    if (direct && current.status === "open") {
+      current = this.options.tasks.setStatus({ taskId: task.taskId, status: "doing", actor, eventId: `task-direct-doing:${application.applicationId}`, now: application.createdAt });
+    }
+    if (direct && current.status === "doing") {
+      current = this.options.tasks.setStatus({ taskId: task.taskId, status: "in-review", actor, eventId: `task-direct-review:${application.applicationId}`, now: application.createdAt });
+    }
+    this.options.tasks.complete({
+      taskId: task.taskId,
+      actor,
+      eventId: `task-completed:${application.applicationId}`,
+      now: application.createdAt,
+    });
   }
 
   private appendApplicationEvent(application: ChangeSetApplication, principalId: string): void {

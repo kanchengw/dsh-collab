@@ -171,7 +171,10 @@ export class DshWorkspaceControl {
         case "workspace/reviews/decide": lease = await this.reviewAction(request, transport, "POST", "decisions", {
           outcome: request.action.outcome, ...(request.action.note ? { note: text(request.action.note, "note") } : {}),
         }, signal); break;
-        case "workspace/reviews/apply": lease = await this.reviewAction(request, transport, "POST", "apply", {}, signal); break;
+        case "workspace/reviews/apply": lease = await this.reviewAction(request, transport, "POST", "apply", {
+          ...(request.action.taskId === undefined ? {} : { taskId: text(request.action.taskId, "taskId") }),
+          ...(request.action.mode === undefined ? {} : { mode: request.action.mode }),
+        }, signal); break;
         default: throw new Error(`Unknown dsh-collab workspace endpoint: ${endpoint}`);
       }
       const projection = await this.project(request, project, transport, signal);

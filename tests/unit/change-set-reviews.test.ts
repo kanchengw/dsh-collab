@@ -271,6 +271,19 @@ describe("ChangeSetReviewService", () => {
     expect(() => ChangeSetReviewService.fromSnapshot({ rooms, changeSets, ledger }, damaged)).toThrow(/application/i);
   });
 
+  it("allows an Owner to explicitly apply a submitted ChangeSet without reviewer approval", async () => {
+    const { service } = setup();
+    await service.assignReviewer({
+      roomId: "room-1", principalId: "principal-author", changeSetId: "a".repeat(64),
+      reviewerId: "member-reviewer", clientRequestId: "assign-direct",
+    });
+
+    const prepared = await service.prepareApplication({
+      roomId: "room-1", principalId: "principal-host", changeSetId: "a".repeat(64), allowDirectOwnerMerge: true,
+    });
+
+    expect(prepared.existing).toBeUndefined();
+  });
   it("makes Finding request IDs idempotent, rejects mutations, and restores append-only history", async () => {
     const { changeSets, ledger, rooms, service } = setup();
     const input = {

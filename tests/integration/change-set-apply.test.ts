@@ -21,6 +21,7 @@ import type { ChangeSetStagingService } from "../../src/change-set-staging.js";
 import type { WorkspaceVersionRecord } from "../../src/workspace-versions.js";
 import { WorkspaceService } from "../../src/workspace-service.js";
 import { WorkspaceSharingRegistry } from "../../src/workspace-sharing.js";
+import { TaskStore } from "../../src/tasks.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -108,6 +109,7 @@ async function setup(input: {
   commit?: () => Promise<void>;
   persist?: boolean;
   workspace?: MemoryWorkspace;
+  taskStore?: TaskStore;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "dsh-collab-apply-"));
   roots.push(root);
@@ -167,6 +169,7 @@ async function setup(input: {
     },
     snapshots: { capture },
     commitCriticalState: commit,
+    ...(input.taskStore ? { tasks: input.taskStore } : {}),
   };
   if (input.persist === false) delete (serviceOptions as { commitCriticalState?: () => Promise<void> }).commitCriticalState;
   const service = new ChangeSetIntegrationService(serviceOptions);
@@ -174,6 +177,36 @@ async function setup(input: {
 }
 
 describe("ChangeSet apply integration", () => {
+  it("requires an in-review Task linked to the ChangeSet and marks it done after the Owner merge", async () => {
+    const tasks = new TaskStore();
+    const member = { memberId: "member-author", principalId: "principal-author" };
+    tasks.create({ taskId: "task-1", roomId: "room-1", title: "Ship change", actor: member, eventId: "task-created-u12", now: 1 });
+    tasks.linkChangeSet({ taskId: "task-1", changeSetId, actor: member, eventId: "task-linked-u12", now: 2 });
+    tasks.setStatus({ taskId: "task-1", status: "doing", actor: member, eventId: "task-doing-u12", now: 3 });
+    tasks.setStatus({ taskId: "task-1", status: "in-review", actor: member, eventId: "task-review-u12", now: 4 });
+    const state = await setup({ taskStore: tasks });
+
+    const result = await state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-1", clientRequestId: "apply-task-1" });
+
+    expect(result).toMatchObject({ outcome: "applied" });
+    expect(tasks.get("task-1").status).toBe("done");
+    expect(tasks.get("task-1").changeSetIds).toContain(changeSetId);
+  });
+
+  it("allows an explicit direct Owner merge while rejecting a non-review Task", async () => {
+    const tasks = new TaskStore();
+    const member = { memberId: "member-author", principalId: "principal-author" };
+    tasks.create({ taskId: "task-direct", roomId: "room-1", title: "Direct merge", actor: member, eventId: "task-created-direct", now: 1 });
+    tasks.linkChangeSet({ taskId: "task-direct", changeSetId, actor: member, eventId: "task-linked-direct", now: 2 });
+    const state = await setup({ taskStore: tasks });
+
+    await expect(state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-direct", clientRequestId: "apply-direct-rejected" }))
+      .rejects.toMatchObject({ code: "REQUEST_STATE" });
+    const direct = await state.service.apply({ roomId: "room-1", principalId: "principal-host", changeSetId, taskId: "task-direct", direct: true, clientRequestId: "apply-direct" });
+    expect(direct).toMatchObject({ outcome: "applied" });
+    expect(tasks.get("task-direct").status).toBe("done");
+  });
+
   it("refuses to run without a durable whole-runtime persistence barrier", async () => {
     await expect(setup({ persist: false })).rejects.toThrow(/persistence/i);
   });

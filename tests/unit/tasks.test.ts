@@ -124,6 +124,21 @@ describe("TaskStore", () => {
     expect(cancelled.events("room-1").at(-1)).toMatchObject({ type: "task.status-changed" });
   });
 
+  it("completes only in-review Tasks linked to the merged ChangeSet", () => {
+    const store = new TaskStore();
+    store.create(createdInput());
+    store.linkChangeSet({ taskId: "task-1", changeSetId: "change-1", actor: alice, eventId: "event-change", now: 105 });
+    store.setStatus({ taskId: "task-1", status: "doing", actor: alice, eventId: "event-doing", now: 110 });
+    store.setStatus({ taskId: "task-1", status: "in-review", actor: alice, eventId: "event-review", now: 120 });
+
+    expect(store.completeLinkedChangeSet({
+      roomId: "room-1",
+      changeSetId: "change-1",
+      actor: alice,
+      eventId: "event-merge",
+      now: 130,
+    })).toMatchObject([{ taskId: "task-1", status: "done", completedBy: alice.memberId, completedAt: 130 }]);
+  });
   it("reduces out-of-order events deterministically and ignores duplicate event ids", () => {
     const created: TaskEvent = {
       eventId: "event-created",

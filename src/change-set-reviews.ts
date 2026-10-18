@@ -622,21 +622,28 @@ export class ChangeSetReviewService {
     roomId: string;
     principalId: string;
     changeSetId: string;
+    allowDirectOwnerMerge?: boolean;
   }): Promise<PreparedChangeSetApplication> {
     const actor = this.options.rooms.authorize(input.roomId, input.principalId, "read");
     if (actor.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Owner can apply a ChangeSet");
     const changeSet = await this.requireChangeSet(input.roomId, input.changeSetId);
     const record = this.records.get(key(input.roomId, input.changeSetId));
-    if (!record) throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
-    this.assertRecord(record, changeSet);
-    if (record.application) return { existing: structuredClone(record.application), commit: () => structuredClone(record.application!) };
-    const review = this.view(changeSet, record);
-    if (review.status !== "approved") throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
+    if (!record) {
+      if (!input.allowDirectOwnerMerge) throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
+      const created = this.createRecord(changeSet);
+      if (created.application) return { existing: structuredClone(created.application), commit: () => structuredClone(created.application!) };
+    }
+    const current = this.records.get(key(input.roomId, input.changeSetId));
+    if (!current) throw new CollabError("SNAPSHOT_INVALID", "ChangeSet Review record could not be created");
+    this.assertRecord(current, changeSet);
+    if (current.application) return { existing: structuredClone(current.application), commit: () => structuredClone(current.application!) };
+    const review = this.view(changeSet, current);
+    if (review.status !== "approved" && !input.allowDirectOwnerMerge) throw new CollabError("REQUEST_STATE", "ChangeSet must be approved before it can be applied");
     this.requireOpenRoom(input.roomId);
     const createdAt = this.timestamp();
     return {
       commit: (workspaceVersionId, integrationId) => {
-        if (record.application) return structuredClone(record.application);
+        if (current.application) return structuredClone(current.application);
         if (!HASH_PATTERN.test(workspaceVersionId) || !HASH_PATTERN.test(integrationId)) {
           throw new CollabError("SNAPSHOT_INVALID", "ChangeSet application identity is invalid");
         }
@@ -648,14 +655,14 @@ export class ChangeSetReviewService {
           integrationId,
           createdAt,
         });
-        record.application = application;
+        current.application = application;
         this.applicationsById.set(application.applicationId, application);
         return structuredClone(application);
       },
       rollback: (applicationId) => {
-        if (record.application?.applicationId !== applicationId) return;
+        if (current.application?.applicationId !== applicationId) return;
         this.applicationsById.delete(applicationId);
-        delete record.application;
+        delete current.application;
       },
     };
   }
