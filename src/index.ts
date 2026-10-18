@@ -417,17 +417,31 @@ function registerGatewayControl(
           ledger: current.runtime.ledger,
           tasks,
           principalForMember: (memberId, roomId) => {
-            if (roomId) {
-              try {
-                const member = current.runtime.rooms.listMembers(roomId).find((candidate) => candidate.memberId === memberId && candidate.status === "active");
-                if (member) return member.principalId;
-              } catch {
-                // The publisher still applies the TaskStore membership check below.
-              }
+            if (!roomId) return undefined;
+            try {
+              return current.runtime.rooms.listMembers(roomId).find((candidate) => candidate.memberId === memberId && candidate.status === "active")?.principalId;
+            } catch {
+              return undefined;
             }
-            return tasks.principalForMember(memberId);
           },
-          boundSession: (_roomId, _memberId, boundSessionId) => nativeRoomContextBindings.get(boundSessionId)?.sessionId === boundSessionId,
+          boundSession: (roomId, memberId, boundSessionId) => {
+            if (nativeRoomContextBindings.get(boundSessionId)?.sessionId !== boundSessionId) return false;
+            const agent = context.agents.get(boundSessionId);
+            const cwd = agent?.session?.header?.cwd;
+            if (!cwd) return false;
+            let project;
+            try {
+              project = roomProjects.getByWorkspacePath(cwd);
+            } catch {
+              return false;
+            }
+            if (!project || project.roomId !== roomId || project.memberId !== memberId) return false;
+            try {
+              return current.runtime.rooms.listMembers(roomId).some((candidate) => candidate.memberId === memberId && candidate.status === "active");
+            } catch {
+              return false;
+            }
+          },
         }),
       };
     },

@@ -44,6 +44,25 @@ describe("TaskStore", () => {
     expect(store.events("room-1").map((event) => [event.seq, event.type])).toEqual([[1, "task.created"]]);
   });
 
+
+  it("emits task events to the host persistence seam and restores task events from the Room ledger", () => {
+    const emitted: TaskEvent[] = [];
+    const store = new TaskStore([], { eventSink: (event) => emitted.push(event) });
+    store.create(createdInput());
+
+    expect(emitted).toEqual(store.events("room-1"));
+    const ledgerEvents = emitted.map((event) => ({
+      eventId: `task:${event.eventId}`,
+      roomId: event.roomId,
+      seq: event.seq,
+      type: event.type,
+      actor: event.actor,
+      createdAt: event.createdAt,
+      payload: event.payload,
+    }));
+    expect(TaskStore.fromRoomEvents(ledgerEvents).get("task-1")).toMatchObject({ title: "Ship the task model" });
+  });
+
   it("allows only the documented forward status transitions", () => {
     const store = new TaskStore();
     store.create(createdInput());

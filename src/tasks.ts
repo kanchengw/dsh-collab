@@ -1,4 +1,5 @@
 import { CollabError, invalidInput } from "./errors.js";
+import type { RoomEvent } from "./types.js";
 import type {
   CollaborationTask,
   TaskEvent,
@@ -152,10 +153,36 @@ export function reduceTaskEvents(input: readonly TaskEvent[]): ReducedTasks {
 
 export class TaskStore {
   private readonly allEvents: TaskEvent[];
+  private eventSink?: (event: TaskEvent) => void;
 
-  constructor(events: readonly TaskEvent[] = []) {
+  constructor(events: readonly TaskEvent[] = [], options?: { eventSink?: (event: TaskEvent) => void }) {
     this.allEvents = events.map(copy);
+    this.eventSink = options?.eventSink;
     reduceTaskEvents(this.allEvents);
+  }
+
+  static fromRoomEvents(events: readonly RoomEvent[]): TaskStore {
+    const taskSeq = new Map<string, number>();
+    const taskEvents: TaskEvent[] = [];
+    for (const event of events) {
+      if (!event.type.startsWith("task.")) continue;
+      const seq = (taskSeq.get(event.roomId) ?? 0) + 1;
+      taskSeq.set(event.roomId, seq);
+      taskEvents.push({
+        eventId: event.eventId.startsWith("task:") ? event.eventId.slice("task:".length) : event.eventId,
+        roomId: event.roomId,
+        seq,
+        type: event.type as TaskEvent["type"],
+        actor: event.actor,
+        createdAt: event.createdAt,
+        payload: event.payload as TaskEvent["payload"],
+      });
+    }
+    return new TaskStore(taskEvents);
+  }
+
+  setEventSink(eventSink: ((event: TaskEvent) => void) | undefined): void {
+    this.eventSink = eventSink;
   }
 
   create(input: CreateTaskInput): CollaborationTask {
@@ -285,6 +312,16 @@ export class TaskStore {
       throw new CollabError("EVENT_CONFLICT", "event conflict");
     }
     const roomEvents = this.allEvents.filter((event) => event.roomId === input.roomId);
-    this.allEvents.push({ eventId: requiredText(input.eventId, "eventId"), roomId: input.roomId, seq: roomEvents.length + 1, type: input.type, actor: normalizeMember(input.actor), createdAt: input.createdAt ?? Date.now(), payload: copy(input.payload) });
+    const event: TaskEvent = {
+      eventId: requiredText(input.eventId, "eventId"),
+      roomId: input.roomId,
+      seq: roomEvents.length + 1,
+      type: input.type,
+      actor: normalizeMember(input.actor),
+      createdAt: input.createdAt ?? Date.now(),
+      payload: copy(input.payload),
+    };
+    this.eventSink?.(copy(event));
+    this.allEvents.push(event);
   }
 }

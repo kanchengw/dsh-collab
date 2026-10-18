@@ -353,6 +353,10 @@ export class LedgerTaskMilestonePublisher implements CollabTaskMilestonePublishe
     if (!principalId || (this.options.boundSession && !this.options.boundSession(input.roomId, input.memberId, input.sourceSessionId))) {
       throw new CollabError("ACTION_FORBIDDEN", "Task milestone Session is not bound to the requested Room member", { roomId: input.roomId, memberId: input.memberId, sessionId: input.sourceSessionId });
     }
+    const summary = input.summary === undefined ? undefined : input.summary.trim();
+    const changeSetId = input.changeSetId === undefined ? undefined : input.changeSetId.trim();
+    if (summary === "") throw invalidInput("summary must not be blank", { field: "summary" });
+    if (changeSetId === "") throw invalidInput("changeSetId must not be blank", { field: "changeSetId" });
     const createdAt = this.options.now?.() ?? Date.now();
     const payload = {
       roomId: input.roomId,
@@ -459,9 +463,9 @@ export function bindCollabTaskAgentTools(input: {
       const args = exactObject(rawArgs, ["taskId", "kind", "summary", "changeSetId"]);
       if (typeof args.taskId !== "string" || typeof args.kind !== "string" || !COLLAB_TASK_MILESTONE_KINDS.includes(args.kind as CollabTaskMilestoneKind)) throw invalidInput("Task milestone arguments are invalid");
       if (args.taskId !== input.taskId) throw new CollabError("ACTION_FORBIDDEN", "Task milestone is outside the bound Task", { boundTaskId: input.taskId, requestedTaskId: args.taskId });
-      if (args.summary !== undefined && typeof args.summary !== "string") throw invalidInput("summary must be a string");
-      if (args.changeSetId !== undefined && typeof args.changeSetId !== "string") throw invalidInput("changeSetId must be a string");
-      const milestone = await input.milestones.publish({ clientRequestId: idempotencyKey(input.sessionId, execution.callId), roomId: current.project.roomId, taskId: args.taskId, memberId: current.project.memberId, sourceSessionId: input.sessionId, kind: args.kind as CollabTaskMilestoneKind, ...(args.summary === undefined ? {} : { summary: args.summary }), ...(args.changeSetId === undefined ? {} : { changeSetId: args.changeSetId }) });
+      if (args.summary !== undefined && (typeof args.summary !== "string" || args.summary.trim() === "")) throw invalidInput("summary must not be blank", { field: "summary" });
+      if (args.changeSetId !== undefined && (typeof args.changeSetId !== "string" || args.changeSetId.trim() === "")) throw invalidInput("changeSetId must not be blank", { field: "changeSetId" });
+      const milestone = await input.milestones.publish({ clientRequestId: idempotencyKey(input.sessionId, execution.callId), roomId: current.project.roomId, taskId: args.taskId, memberId: current.project.memberId, sourceSessionId: input.sessionId, kind: args.kind as CollabTaskMilestoneKind, ...(args.summary === undefined ? {} : { summary: args.summary.trim() }), ...(args.changeSetId === undefined ? {} : { changeSetId: args.changeSetId.trim() }) });
       return { milestoneId: milestone.milestoneId, taskId: milestone.taskId, kind: milestone.kind };
     },
   });

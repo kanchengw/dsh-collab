@@ -130,7 +130,32 @@ export function createDshCollabHostRuntime(options: DshCollabHostRuntimeOptions)
     rooms.createRoom({ roomId: options.roomId, hostId: options.hostId, hostSessionId: options.hostSessionId, title: options.title, hostDisplayName: options.hostDisplayName, now: options.now?.() });
   }
   const ledger = snapshot ? EventLedger.fromSnapshot(snapshot.ledger) : new EventLedger();
-  const taskStore = snapshot?.tasks ? TaskStore.fromSnapshot(snapshot.tasks) : options.taskStore ?? new TaskStore();
+  const ledgerTaskStore = TaskStore.fromRoomEvents(ledger.snapshot().rooms.flatMap((room) => room.events));
+  const initialTaskEvents = [...(options.taskStore?.events() ?? []), ...ledgerTaskStore.events()];
+  const uniqueTaskEvents = [...new Map(initialTaskEvents.map((event) => [event.eventId, event])).values()];
+  const taskStore = snapshot?.tasks
+    ? TaskStore.fromSnapshot(snapshot.tasks)
+    : new TaskStore(uniqueTaskEvents);
+  taskStore.setEventSink((event) => {
+    ledger.append({
+      eventId: `task:${event.eventId}`,
+      roomId: event.roomId,
+      type: event.type,
+      actor: event.actor,
+      createdAt: event.createdAt,
+      payload: event.payload,
+    });
+  });
+  for (const event of taskStore.events()) {
+    ledger.append({
+      eventId: `task:${event.eventId}`,
+      roomId: event.roomId,
+      type: event.type,
+      actor: event.actor,
+      createdAt: event.createdAt,
+      payload: event.payload,
+    });
+  }
   const workUpdates = new WorkUpdateService({ rooms, ledger, now: options.now });
   const invites = new InviteStore(rooms, { tokenFactory: options.tokenFactory });
   const resumes = snapshot?.resumes

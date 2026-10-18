@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDshCollabHostRuntime } from "../../src/host-runtime.js";
 import { COLLAB_CAPABILITY_HEADER, SIDECAR_REVIEW_CAPABILITY, WORKSPACE_VERSION_CAPABILITY } from "../../src/protocol.js";
 import type { WorkspaceSnapshotPackage } from "../../src/collaboration-types.js";
+import { TaskStore } from "../../src/tasks.js";
 
 describe("host runtime factory", () => {
   it("allows saved rooms but rejects a second active room in one DSH runtime", async () => {
@@ -36,6 +37,22 @@ describe("host runtime factory", () => {
     expect(runtime.activeRooms.getActiveRoomId()).toBe("room-1");
     expect(runtime.rooms.getRoom("room-2").title).toBe("Room 2");
     await runtime.dispose();
+  });
+
+  it("persists runtime Task events into the Room ledger and restores them", async () => {
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+    };
+    const first = createDshCollabHostRuntime(options);
+    first.taskStore.create({ taskId: "task-1", roomId: "room-1", title: "Task", actor: { memberId: "member-host", principalId: "host" }, eventId: "task-created", now: 1 });
+    expect(first.ledger.readAfter("room-1", 0).map((event) => event.type)).toContain("task.created");
+    const snapshot = first.snapshot();
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    expect(restored.taskStore.get("task-1").title).toBe("Task");
+    await restored.dispose();
   });
 
   it("notifies the production Room Context delivery hook only after ledger commit", async () => {

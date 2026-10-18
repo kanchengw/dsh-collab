@@ -288,6 +288,22 @@ describe("CRD-U11 collab task agent tools", () => {
     await expect(publisher.publish({ ...request, memberId: "member-bob" })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
   });
 
+  it("rejects blank milestone fields before writing a durable event", async () => {
+    const ledger = new EventLedger();
+    const publisher = new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice" });
+    const request = { clientRequestId: "blank-milestone", roomId: "room-1", taskId: "task-1", memberId: "member-alice", sourceSessionId: "session-1", kind: "completed" as const };
+
+    await expect(publisher.publish({ ...request, summary: "   " })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(publisher.publish({ ...request, changeSetId: "   " })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(ledger.latestSeq("room-1")).toBe(0);
+  });
+
+  it("does not use a historical Task actor after current membership lookup fails", async () => {
+    const ledger = new EventLedger();
+    const publisher = new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => undefined });
+    await expect(publisher.publish({ clientRequestId: "stale-member", roomId: "room-1", taskId: "task-1", memberId: "member-alice", sourceSessionId: "session-1", kind: "completed" })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
+  });
+
   it("rejects forged milestone kinds while projecting Room Context", async () => {
     const ledger = new EventLedger();
     addEvent(ledger, { eventId: "task-created", type: "task.created", payload: { taskId: "task-1", title: "Task", participantIds: ["member-alice"], createdBy: "member-alice" } });
