@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composerTargetForGesture, composerTargetForText } from "../../src/ui.js";
+import { decodeOwnedRoomsResult } from "../../src/dsh-client.js";
 import { classifyMessage } from "../../src/messages.js";
 import { migrateRoomStoreSnapshot, RoomStore } from "../../src/room.js";
 
@@ -32,6 +33,13 @@ describe("CRD-U13 legacy collaboration cutover", () => {
     expect(room.hostId).toBe("principal-host");
     expect(room.hostSessionId).toBeUndefined();
     expect(rooms.listMembers("room-new")[0]).toMatchObject({ principalId: "principal-host", role: "host" });
+  });
+
+  it("decodes owned rooms without requiring a legacy Host Session", () => {
+    expect(decodeOwnedRoomsResult({ ok: true, value: { rooms: [{ roomId: "room-new", title: "New room", sharing: false }] } })).toEqual([
+      { roomId: "room-new", title: "New room", sharing: false },
+    ]);
+    expect(() => decodeOwnedRoomsResult({ ok: true, value: { rooms: [{ roomId: "room-new", hostSessionId: "", title: "New room", sharing: false }] } })).toThrow("Invalid Owned room");
   });
 
   it("migrates legacy room snapshots by preserving the human host member", () => {

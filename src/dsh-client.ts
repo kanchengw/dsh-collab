@@ -730,7 +730,7 @@ function decodeGatewayRuntimeResult(result: unknown): DshCollabGatewayRuntimeSna
   throw new Error("Invalid Host Gateway state");
 }
 
-function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
+export function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
   if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid Owned rooms response");
   const envelope = result as { ok?: unknown; value?: { rooms?: unknown }; error?: { message?: unknown } };
   if (envelope.ok !== true) throw new Error(typeof envelope.error?.message === "string" ? envelope.error.message : "Unable to list Owned rooms");
@@ -738,13 +738,15 @@ function decodeOwnedRoomsResult(result: unknown): DshCollabOwnedRoom[] {
   return envelope.value.rooms.map((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Owned room");
     const room = value as Record<string, unknown>;
-    if ([room.roomId, room.hostSessionId, room.title].some((field) => typeof field !== "string" || field.trim() === "") || typeof room.sharing !== "boolean") throw new Error("Invalid Owned room");
+    if (typeof room.roomId !== "string" || room.roomId.trim() === ""
+      || (room.hostSessionId !== undefined && (typeof room.hostSessionId !== "string" || room.hostSessionId.trim() === ""))
+      || typeof room.title !== "string" || room.title.trim() === "" || typeof room.sharing !== "boolean") throw new Error("Invalid Owned room");
     if (room.workspacePath !== undefined && (typeof room.workspacePath !== "string" || room.workspacePath.trim() === "")) throw new Error("Invalid Owned room workspace path");
     if (room.sourcePath !== undefined && (typeof room.sourcePath !== "string" || room.sourcePath.trim() === "")) throw new Error("Invalid Owned room source path");
     if (room.nativeWorkspaceId !== undefined && (typeof room.nativeWorkspaceId !== "string" || room.nativeWorkspaceId.trim() === "")) throw new Error("Invalid Owned room Native Workspace ID");
     return {
       roomId: room.roomId as string,
-      hostSessionId: room.hostSessionId as string,
+      ...(typeof room.hostSessionId === "string" ? { hostSessionId: room.hostSessionId } : {}),
       title: room.title as string,
       sharing: room.sharing,
       ...(typeof room.workspacePath === "string" ? { workspacePath: room.workspacePath } : {}),
