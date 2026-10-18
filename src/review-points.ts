@@ -245,6 +245,7 @@ export class ReviewPointService {
     const member = this.options.rooms.authorize(input.roomId, input.principalId, "read");
     if (member.role !== "host") throw new CollabError("ACTION_FORBIDDEN", "only the Host can create a Review Point");
     const room = this.options.rooms.getRoom(input.roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Review Point creation requires a Host Session");
     const clientRequestId = requiredText(input.clientRequestId, "clientRequestId", 128);
     const captured = validateSnapshotForRoom(input.snapshot, room.roomId, room.hostSessionId);
     if (!captured.headOid) throw invalidInput("Review Point requires a Git HEAD");

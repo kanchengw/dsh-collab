@@ -62,7 +62,7 @@ export class RoomStore {
     const room: Room = {
       roomId,
       hostId,
-      hostSessionId: requiredText(input.hostSessionId, "hostSessionId"),
+      ...(input.hostSessionId === undefined ? {} : { hostSessionId: requiredText(input.hostSessionId, "hostSessionId") }),
       title: requiredText(input.title, "title"),
       state: "open",
       revision: 1,
@@ -92,9 +92,9 @@ export class RoomStore {
     const existing = this.rooms.get(roomId);
     if (!existing) return this.createRoom(input);
     const hostId = requiredText(input.hostId, "hostId");
-    const hostSessionId = requiredText(input.hostSessionId, "hostSessionId");
-    if (existing.room.hostId !== hostId || existing.room.hostSessionId !== hostSessionId) {
-      throw new CollabError("ACTION_FORBIDDEN", "room is bound to a different Host session", { roomId });
+    const hostSessionId = input.hostSessionId === undefined ? undefined : requiredText(input.hostSessionId, "hostSessionId");
+    if (existing.room.hostId !== hostId || (hostSessionId !== undefined && existing.room.hostSessionId !== hostSessionId)) {
+      throw new CollabError("ACTION_FORBIDDEN", "room is owned by a different Host", { roomId });
     }
     const title = requiredText(input.title, "title");
     if (existing.room.title !== title) {

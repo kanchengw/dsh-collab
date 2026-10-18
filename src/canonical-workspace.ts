@@ -58,6 +58,7 @@ export class DshCanonicalWorkspace implements ChangeSetIntegrationWorkspace {
       throw new CollabError("SNAPSHOT_INVALID", "ChangeSet patch is not UTF-8 text");
     }
     const room = this.options.rooms.getRoom(roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Canonical workspace requires a legacy Host Session");
     const cwd = this.options.sessions.workspacePath?.(room.hostSessionId);
     if (!cwd) throw new CollabError("ACTION_FORBIDDEN", "Host session does not expose a canonical workspace path");
     const discovery = createDshRepositoryCommandPort({ subprocess: this.options.subprocess, cwd });
@@ -117,6 +118,7 @@ export class DshCanonicalWorkspace implements ChangeSetIntegrationWorkspace {
   private async resolveContained(roomId: string, path: string): Promise<{ target: DshFsTarget; cwd: string }> {
     if (!isSafePath(path)) throw new CollabError("SNAPSHOT_INVALID", `canonical workspace path is unsafe: ${path}`);
     const room = this.options.rooms.getRoom(roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Canonical workspace requires a legacy Host Session");
     const cwd = this.options.sessions.workspacePath?.(room.hostSessionId);
     if (!cwd) throw new CollabError("ACTION_FORBIDDEN", "Host session does not expose a canonical workspace path");
     const [root, target] = await Promise.all([

@@ -88,6 +88,7 @@ export class ApprovalStore {
     }
 
     const room = this.options.rooms.getRoom(roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Approval execution requires a legacy Host Session");
     const view: ApprovalView = {
       approvalId,
       roomId,

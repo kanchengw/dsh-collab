@@ -347,6 +347,7 @@ function registerGatewayControl(
           local: (roomId) => {
             if (!mounted?.workspaceSnapshots) return undefined;
             const room = mounted.runtime.rooms.getRoom(roomId);
+            if (!room.hostSessionId) return undefined;
             return {
               provider: mounted.workspaceSnapshots,
               hostSessionId: room.hostSessionId,
@@ -574,12 +575,12 @@ function registerGatewayControl(
       starting = undefined;
     }
   };
-  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId: string; title: string; sharing: boolean; workspacePath?: string; sourcePath?: string; nativeWorkspaceId?: string }> => {
+  const listOwnedRooms = (): Array<{ roomId: string; hostSessionId?: string; title: string; sharing: boolean; workspacePath?: string; sourcePath?: string; nativeWorkspaceId?: string }> => {
     const rooms = mounted?.runtime.rooms.snapshot()
       ?? (config.stateFile === false ? undefined : new HostSnapshotFile(config.stateFile ?? resolveDefaultCollabStateFile()).loadSync()?.rooms);
     return (rooms?.rooms ?? []).filter(({ room }) => {
       const project = roomProjects.get(room.roomId);
-      return !project || project.hostPrimarySessionId === room.hostSessionId;
+      return !project || room.hostSessionId === undefined || project.hostPrimarySessionId === room.hostSessionId;
     }).map(({ room }) => {
       const project = roomProjects.get(room.roomId);
       return {
@@ -626,6 +627,7 @@ function registerGatewayControl(
     const roomId = (input.roomId as string).trim();
     if (roomId === "" || !mounted.runtime.activeRooms.isActive(roomId)) throw new Error("Owned room is not being shared");
     const room = mounted.runtime.rooms.getRoom(roomId);
+    if (!room.hostSessionId) throw new Error("Host Session is unavailable for legacy repository inspection");
     const cwd = context.agents.get(room.hostSessionId)?.session?.header?.cwd;
     if (!cwd) throw new Error("Host session does not expose a workspace path");
     return { inspector: new RepositoryInspector(createDshRepositoryCommandPort({ subprocess: context.subprocess, cwd })), input };

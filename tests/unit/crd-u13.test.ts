@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { composerTargetForGesture, composerTargetForText } from "../../src/ui.js";
 import { classifyMessage } from "../../src/messages.js";
-import { migrateRoomStoreSnapshot } from "../../src/room.js";
+import { migrateRoomStoreSnapshot, RoomStore } from "../../src/room.js";
 
 describe("CRD-U13 legacy collaboration cutover", () => {
   it("routes every composer submission to the human General room", () => {
@@ -24,6 +24,14 @@ describe("CRD-U13 legacy collaboration cutover", () => {
       text: "interrupt",
       target: "dsh-steer",
     })).toThrow(/retired|removed|human|room/i);
+  });
+
+  it("creates a new room from the human owner without a Host Primary Session", () => {
+    const rooms = new RoomStore();
+    const room = rooms.createRoom({ roomId: "room-new", hostId: "principal-host", title: "New room", hostDisplayName: "Host" });
+    expect(room.hostId).toBe("principal-host");
+    expect(room.hostSessionId).toBeUndefined();
+    expect(rooms.listMembers("room-new")[0]).toMatchObject({ principalId: "principal-host", role: "host" });
   });
 
   it("migrates legacy room snapshots by preserving the human host member", () => {

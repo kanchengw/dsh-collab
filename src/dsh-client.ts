@@ -340,7 +340,7 @@ export type DshCollabGatewayRuntimeSnapshot =
 
 export interface DshCollabOwnedRoom {
   roomId: string;
-  hostSessionId: string;
+  hostSessionId?: string;
   title: string;
   sharing: boolean;
   workspacePath?: string;
@@ -411,13 +411,13 @@ export interface DshCollabSettingsPort {
 export function resolveDshCollabRoomSelection(sessionId: string, settings: DshCollabSettingsPort | undefined, snapshot: DshCollabClientSnapshot, cwd?: string): DshCollabRoomSelection | undefined {
   const owned = snapshot.role === "host" && settings?.getOwnedRooms?.().find((room) => {
     if (room.roomId !== snapshot.roomId) return false;
-    if (room.workspacePath === undefined) return room.hostSessionId === sessionId;
+    if (room.workspacePath === undefined) return room.hostSessionId === undefined || room.hostSessionId === sessionId;
     return cwd !== undefined && comparableWorkspacePath(room.workspacePath) === comparableWorkspacePath(cwd);
   });
   if (owned) return {
     kind: "owned",
     roomId: owned.roomId,
-    hostSessionId: owned.hostSessionId,
+    ...(owned.hostSessionId ? { hostSessionId: owned.hostSessionId } : {}),
     roomTitle: owned.title,
     ...(owned.workspacePath ? { workspacePath: owned.workspacePath } : {}),
   };

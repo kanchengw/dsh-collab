@@ -71,6 +71,7 @@ export class AgentDispatcher {
     }
 
     const room = this.options.rooms.getRoom(message.roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "legacy Agent routing requires a Host Session");
     const record: QueueRecord = {
       requestId,
       roomId: message.roomId,

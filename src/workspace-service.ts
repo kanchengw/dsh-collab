@@ -81,6 +81,7 @@ export class WorkspaceService {
     this.requireWorkspaceRead(input);
     const provider = this.requireSnapshots();
     const room = this.options.rooms.getRoom(input.roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Workspace Snapshot capture requires a Host Session");
     const snapshotId = createHash("sha256").update(`${input.roomId}\0${input.principalId}\0${input.purpose}\0${input.clientRequestId}`).digest("hex");
     const existing = await provider.load(snapshotId);
     if (existing) return this.assertRoomSnapshot(existing, room.roomId, room.hostSessionId);
@@ -115,7 +116,9 @@ export class WorkspaceService {
   async captureReviewDiffs(input: { roomId: string; principalId: string; snapshot: WorkspaceSnapshotPackage; files: readonly { path: string; previousPath?: string; status: "added" | "modified" | "deleted" | "renamed" }[] }): Promise<ReviewPointDiff[]> {
     this.requireWorkspaceRead(input);
     const provider = this.requireSnapshots();
-    const snapshot = this.assertRoomSnapshot(input.snapshot, input.roomId, this.options.rooms.getRoom(input.roomId).hostSessionId);
+    const room = this.options.rooms.getRoom(input.roomId);
+    if (!room.hostSessionId) throw new CollabError("ACTION_FORBIDDEN", "Review diff capture requires a Host Session");
+    const snapshot = this.assertRoomSnapshot(input.snapshot, input.roomId, room.hostSessionId);
     if (!provider.captureReviewDiffs) throw new CollabError("SNAPSHOT_NOT_FOUND", "Review Point diff capture is unavailable");
     try {
       return await provider.captureReviewDiffs({ snapshot, files: input.files });

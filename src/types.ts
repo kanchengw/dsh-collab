@@ -17,7 +17,8 @@ export type CollabAction =
 export interface Room {
   roomId: string;
   hostId: string;
-  hostSessionId: string;
+  /** Legacy Host Primary Session binding retained only for snapshot/Agent compatibility. */
+  hostSessionId?: string;
   title: string;
   state: RoomState;
   revision: number;
@@ -140,7 +141,8 @@ export interface AgentOutputFrame {
 export interface CreateRoomInput {
   roomId: string;
   hostId: string;
-  hostSessionId: string;
+  /** Optional legacy binding; new rooms are owned by the human hostId only. */
+  hostSessionId?: string;
   title: string;
   hostDisplayName: string;
   now?: number;

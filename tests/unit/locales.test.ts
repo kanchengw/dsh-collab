@@ -42,6 +42,13 @@ describe("dsh-collab locale dictionaries", () => {
     expect(zh["room.resourceLimited"]).toContain("稍后重试");
   });
 
+  it("does not advertise the retired @agent entry point", () => {
+    expect(zh["composer.placeholder"]).not.toContain("@agent");
+    expect(en["composer.placeholder"]).not.toContain("@agent");
+    expect(zh["composer.routeHint"]).not.toContain("@agent");
+    expect(en["composer.routeHint"]).not.toContain("@agent");
+  });
+
   it("registers its dictionaries and declares the locale namespace on every DSH slot", () => {
     const registrations: Array<{ options: Record<string, unknown>; component: (props: Record<string, unknown>) => ReactNode }> = [];
     const registerLocale = vi.fn(() => () => {});

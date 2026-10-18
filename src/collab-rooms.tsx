@@ -14,7 +14,7 @@ const roomSelectionsBySession = new Map<string, DshCollabRoomSelection>();
 const roomSelectionListeners = new Set<() => void>();
 
 export type DshCollabRoomSelection =
-  | { kind: "owned"; roomId: string; hostSessionId: string; roomTitle: string; workspacePath?: string }
+  | { kind: "owned"; roomId: string; hostSessionId?: string; roomTitle: string; workspacePath?: string }
   | { kind: "joined"; roomId: string; gatewayEndpoint: string; roomTitle: string; hostDisplayName?: string; workspacePath?: string; localSessionId?: string };
 
 export interface DshCollabJoinedRoomOpenInput {
@@ -35,7 +35,7 @@ export function getDshCollabRoomSelection(sessionId?: string): DshCollabRoomSele
 }
 
 export function openDshCollabRoom(selection: DshCollabRoomSelection, panelHost?: CollabPanelHost, target?: CollabPanelOpenTarget): void {
-  const destination = selection.kind === "owned" ? target ?? { sessionId: selection.hostSessionId } : target;
+  const destination = selection.kind === "owned" ? target ?? (selection.hostSessionId ? { sessionId: selection.hostSessionId } : undefined) : target;
   const nextSelection = selection.kind === "joined" && destination
     ? { ...selection, localSessionId: destination.sessionId }
     : selection;
@@ -55,7 +55,7 @@ export async function openDshCollabOwnedRoom(port: DshCollabSettingsPort, room: 
     if (!port.bootstrap) throw new Error("Owned room connection is unavailable");
     await port.bootstrap(room.roomId);
   }
-  openDshCollabRoom({ kind: "owned", roomId: room.roomId, hostSessionId, roomTitle: room.title, ...(room.workspacePath ? { workspacePath: room.workspacePath } : {}) }, panelHost);
+  openDshCollabRoom({ kind: "owned", roomId: room.roomId, ...(hostSessionId ? { hostSessionId } : {}), roomTitle: room.title, ...(room.workspacePath ? { workspacePath: room.workspacePath } : {}) }, panelHost);
 }
 
 export async function shareDshCollabOwnedRoom(port: DshCollabSettingsPort, input: { roomId: string; hostSessionId: string; title: string }): Promise<void> {
@@ -85,6 +85,7 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
   const runtimeEndpointMissing = runtimeGateway?.status === "running" && !runtimeGateway.advertisedEndpoint;
   const ownedRoom = port.getOwnedRooms?.().find((room) => room.roomId === roomId);
   if (runtimeGateway?.status !== "running" && ownedRoom && port.shareHostRoom) {
+    if (!ownedRoom.hostSessionId) throw new Error("This room has no legacy Host Session to share");
     await shareDshCollabOwnedRoom(port, {
       roomId: ownedRoom.roomId,
       hostSessionId: ownedRoom.hostSessionId,
@@ -96,6 +97,7 @@ export async function createDshCollabInvitation(port: DshCollabSettingsPort, roo
     runtimeGateway = await port.refreshGateway();
   }
   if (privateNetwork && runtimeGateway?.status === "running" && !runtimeGateway.advertisedEndpoint && ownedRoom && port.shareHostRoom) {
+    if (!ownedRoom.hostSessionId) throw new Error("This room has no legacy Host Session to share");
     await shareDshCollabOwnedRoom(port, {
       roomId: ownedRoom.roomId,
       hostSessionId: ownedRoom.hostSessionId,
@@ -315,6 +317,7 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
   };
   const startSharing = async (room: DshCollabOwnedRoom): Promise<void> => {
     if (!port?.shareHostRoom) throw new Error(t("owned.unavailable"));
+    if (!room.hostSessionId) throw new Error("This room has no legacy Host Session to share");
     await shareDshCollabOwnedRoom(port, { roomId: room.roomId, hostSessionId: room.hostSessionId, title: room.title });
   };
   const chooseWorkspaceDirectory = async (): Promise<void> => {
