@@ -37,6 +37,7 @@ interface ReducedTasks {
 }
 
 const STATUS_ORDER: TaskStatus[] = ["open", "doing", "in-review", "done"];
+const TASK_EVENT_TYPES: readonly TaskEventType[] = ["task.created", "task.updated", "task.assigned", "task.status-changed", "task.completed"];
 
 function copy<T>(value: T): T {
   return structuredClone(value);
@@ -158,6 +159,7 @@ export class TaskStore {
   constructor(events: readonly TaskEvent[] = [], options?: { eventSink?: (event: TaskEvent) => void }) {
     this.allEvents = events.map(copy);
     this.eventSink = options?.eventSink;
+    if (this.allEvents.some((event) => !TASK_EVENT_TYPES.includes(event.type))) throw invalidInput("Task snapshot contains an unsupported event type");
     reduceTaskEvents(this.allEvents);
   }
 
@@ -165,7 +167,7 @@ export class TaskStore {
     const taskSeq = new Map<string, number>();
     const taskEvents: TaskEvent[] = [];
     for (const event of events) {
-      if (!event.type.startsWith("task.")) continue;
+      if (!TASK_EVENT_TYPES.includes(event.type as TaskEventType)) continue;
       const seq = (taskSeq.get(event.roomId) ?? 0) + 1;
       taskSeq.set(event.roomId, seq);
       taskEvents.push({

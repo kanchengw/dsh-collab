@@ -412,6 +412,13 @@ function registerGatewayControl(
       return {
         tasks,
         contextBinding,
+        isActiveMember: (roomId, memberId) => {
+          try {
+            return current.runtime.rooms.listMembers(roomId).some((candidate) => candidate.memberId === memberId && candidate.status === "active");
+          } catch {
+            return false;
+          }
+        },
         context: new LedgerRoomContextReader({ ledger: current.runtime.ledger }),
         milestones: new LedgerTaskMilestonePublisher({
           ledger: current.runtime.ledger,

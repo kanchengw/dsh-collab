@@ -410,6 +410,7 @@ export function bindCollabTaskAgentTools(input: {
   taskId: string;
   tasks: TaskStore;
   contextBinding: DshNativeAgentContextBinding;
+  isActiveMember: (roomId: string, memberId: string) => boolean;
   context: CollabRoomContextReader;
   milestones: CollabTaskMilestonePublisher;
 }): CollabTaskAgentToolsBinding {
@@ -418,6 +419,7 @@ export function bindCollabTaskAgentTools(input: {
   if (input.contextBinding.sessionId !== input.sessionId) throw new CollabError("ACTION_FORBIDDEN", "Native Agent context binding belongs to another Session", { sessionId: input.sessionId });
   const project = roomProjectForCwd(input.projects, agent.session?.header?.cwd);
   if (!project) throw new CollabError("ACTION_FORBIDDEN", "Session is not in a Collab Room Project", { sessionId: input.sessionId });
+  if (!input.isActiveMember(project.roomId, project.memberId)) throw new CollabError("ACTION_FORBIDDEN", "Current Room member is no longer active", { roomId: project.roomId, memberId: project.memberId });
   const boundTask = input.tasks.get(input.taskId, false);
   if (!boundTask) throw new CollabError("REQUEST_NOT_FOUND", "Task was not found", { taskId: input.taskId });
   validateTaskAgentBinding(boundTask, project, input.taskId);
@@ -429,6 +431,7 @@ export function bindCollabTaskAgentTools(input: {
     if (currentAgent !== agent) throw new CollabError("ACTION_FORBIDDEN", "Task Agent Session is no longer live", { sessionId: input.sessionId });
     const current = currentProject(input.projects, currentAgent, project);
     if (input.contextBinding.sessionId !== input.sessionId) throw new CollabError("ACTION_FORBIDDEN", "Native Agent context binding belongs to another Session", { sessionId: input.sessionId });
+    if (!input.isActiveMember(current.roomId, current.memberId)) throw new CollabError("ACTION_FORBIDDEN", "Current Room member is no longer active", { roomId: current.roomId, memberId: current.memberId });
     validateTaskAgentBinding(task, current, input.taskId);
     return { agent: currentAgent, project: current, task };
   };

@@ -125,6 +125,7 @@ describe("CRD-U11 collab task agent tools", () => {
       taskId: "task-1",
       tasks: tasksFor(),
       contextBinding: contextBinding(),
+      isActiveMember: () => true,
       context: new LedgerRoomContextReader({ ledger }),
       milestones,
     });
@@ -139,7 +140,7 @@ describe("CRD-U11 collab task agent tools", () => {
     const linked = agent();
     const deliver = vi.fn((_input: { deliveryId: string; text: string }) => ({ deliveryId: "task-context", messageId: "message-context", state: "injected" as const }));
     const ledger = new EventLedger();
-    bindCollabTaskAgentTools({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", taskId: "task-1", tasks: tasksFor(), contextBinding: contextBinding(deliver), context: new LedgerRoomContextReader({ ledger }), milestones: new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice" }) });
+    bindCollabTaskAgentTools({ agents: new Map([["session-1", linked.value]]), projects: roomProjects(), sessionId: "session-1", taskId: "task-1", tasks: tasksFor(), contextBinding: contextBinding(deliver), isActiveMember: () => true, context: new LedgerRoomContextReader({ ledger }), milestones: new LedgerTaskMilestonePublisher({ ledger, tasks: tasksFor(), principalForMember: () => "alice" }) });
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: "task-context:room-1:task-1:session-1", text: expect.stringContaining("dsh-collab.task-context") }));
     const delivery = deliver.mock.calls[0]?.[0] as { text: string } | undefined;
     expect(delivery).toBeDefined();
@@ -153,6 +154,7 @@ describe("CRD-U11 collab task agent tools", () => {
       projects: roomProjects(),
       sessionId: "session-1",
       contextBinding: contextBinding(),
+      isActiveMember: () => true,
       context: new LedgerRoomContextReader({ ledger: new EventLedger() }),
       milestones: new LedgerTaskMilestonePublisher({ ledger: new EventLedger(), tasks: tasksFor(), principalForMember: () => "alice" }),
     };
@@ -166,6 +168,7 @@ describe("CRD-U11 collab task agent tools", () => {
     const linked = agent();
     const ledger = new EventLedger();
     const tasks = tasksFor();
+    let active = true;
     const binding = bindCollabTaskAgentTools({
       agents: new Map([["session-1", linked.value]]),
       projects: roomProjects(),
@@ -173,6 +176,7 @@ describe("CRD-U11 collab task agent tools", () => {
       taskId: "task-1",
       tasks,
       contextBinding: contextBinding(),
+      isActiveMember: () => active,
       context: new LedgerRoomContextReader({ ledger }),
       milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
     });
@@ -181,6 +185,7 @@ describe("CRD-U11 collab task agent tools", () => {
     await expect(milestoneDefinition.execute({ taskId: "task-2", kind: "completed" }, { callId: "cross-task", signal: new AbortController().signal })).rejects.toMatchObject({ code: "ACTION_FORBIDDEN" });
     tasks.addParticipant({ taskId: "task-1", memberId: "member-bob", actor: actor(), eventId: "task-reassigned-member", now: 102 });
     tasks.assign({ taskId: "task-1", assigneeId: "member-bob", actor: actor(), eventId: "task-reassigned", now: 103 });
+    active = false;
     const contextDefinition = vi.mocked(linked.value.ctx.tools.register).mock.calls[0]?.[0] as DshCollabToolDefinition;
     await expect(contextDefinition.execute({ cursor: 0 }, { callId: "call-1", signal: new AbortController().signal })).rejects.toThrow(/binding|member|assignee|task/i);
   });
@@ -207,6 +212,7 @@ describe("CRD-U11 collab task agent tools", () => {
       taskId: "task-1",
       tasks,
       contextBinding: contextBindingValue,
+      isActiveMember: () => true,
       context: new LedgerRoomContextReader({ ledger }),
       milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
     });
@@ -221,6 +227,7 @@ describe("CRD-U11 collab task agent tools", () => {
       taskId: "task-1",
       tasks,
       contextBinding: { ...contextBinding(), sessionId: "other-session" } as DshNativeAgentContextBinding,
+      isActiveMember: () => true,
       context: new LedgerRoomContextReader({ ledger }),
       milestones: new LedgerTaskMilestonePublisher({ ledger, tasks, principalForMember: () => "alice" }),
     })).toThrow(/session/i);

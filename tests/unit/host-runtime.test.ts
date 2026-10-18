@@ -55,6 +55,29 @@ describe("host runtime factory", () => {
     await restored.dispose();
   });
 
+  it("does not mirror Task milestones into the TaskStore on Host restore", async () => {
+    const options = {
+      roomId: "room-1", hostId: "host", hostSessionId: "session-1", title: "Room", hostDisplayName: "Host",
+      sessions: { owns: () => true, followup() {}, steer() {}, cancel() {} },
+    };
+    const first = createDshCollabHostRuntime(options);
+    first.ledger.append({
+      eventId: "milestone-1",
+      roomId: "room-1",
+      type: "task.milestone",
+      actor: { memberId: "member-host", principalId: "host" },
+      createdAt: 1,
+      payload: { roomId: "room-1", taskId: "task-1", memberId: "member-host", sourceSessionId: "session-1", milestone: "completed", summary: "done" },
+    });
+    const snapshot = first.snapshot();
+    await first.dispose();
+
+    const restored = createDshCollabHostRuntime({ ...options, snapshot });
+    expect(restored.ledger.readAfter("room-1", 0).filter((event) => event.type === "task.milestone")).toHaveLength(1);
+    expect(restored.taskStore.events("room-1")).toHaveLength(0);
+    await restored.dispose();
+  });
+
   it("notifies the production Room Context delivery hook only after ledger commit", async () => {
     const committed: Array<{ eventId: string; seq: number; committedSeq: number }> = [];
     const runtime = createDshCollabHostRuntime({

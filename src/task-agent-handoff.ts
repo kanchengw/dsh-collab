@@ -19,6 +19,7 @@ export interface TaskAgentHandoffRequest {
 export interface TaskAgentHandoffRuntimeSeams {
   tasks: TaskStore;
   contextBinding: DshNativeAgentContextBinding;
+  isActiveMember: (roomId: string, memberId: string) => boolean;
   context: CollabRoomContextReader;
   milestones: CollabTaskMilestonePublisher;
 }
@@ -42,6 +43,7 @@ export class TaskAgentHandoffService {
       taskId: input.taskId,
       tasks: seams.tasks,
       contextBinding: seams.contextBinding,
+      isActiveMember: seams.isActiveMember,
       context: seams.context,
       milestones: seams.milestones,
     });
