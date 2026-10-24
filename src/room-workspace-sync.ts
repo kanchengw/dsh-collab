@@ -51,7 +51,7 @@ async function assertBaselineIdentity(commands: RepositoryCommandPort, workspace
 
 async function amendBaseline(commands: RepositoryCommandPort, target: WorkspaceVersionRecord): Promise<void> {
   await requiredRun(commands, ["config", "--local", "collab.workspaceversion", target.version.workspaceVersionId]);
-  await requiredRun(commands, ["add", "--all"]);
+  await requiredRun(commands, ["-c", "core.autocrlf=false", "add", "--all"]);
   await requiredRun(commands, [
     "-c", "user.name=DSH Collab",
     "-c", "user.email=dsh-collab@localhost",
@@ -74,6 +74,7 @@ async function dirtyPaths(workspace: RoomWorkspace, subprocess: DshRepositorySub
 interface RoomWorkspaceSyncInput {
   roomId: string;
   target: WorkspaceVersionRecord;
+  knownVersions?: readonly WorkspaceVersionRecord[];
 }
 
 export class RoomWorkspaceSyncService {
@@ -114,11 +115,30 @@ export class RoomWorkspaceSyncService {
       if (JSON.stringify(target) !== JSON.stringify(current.record)) throw new Error("Current Workspace Version identity conflicts with its base manifest");
       return { status: "current", versionId: currentVersionId, workspace: current };
     }
-    if (target.version.parentVersionId !== currentVersionId) {
-      throw new Error("Target Workspace Version is not a direct successor of the current base");
+    const versions = new Map<string, WorkspaceVersionRecord>([
+      [currentVersionId, current.record],
+      ...(input.knownVersions ?? []).map((record) => [record.version.workspaceVersionId, validateWorkspaceVersionRecord(record)] as const),
+      [targetVersionId, target],
+    ]);
+    let cursor = target;
+    const visited = new Set<string>();
+    while (cursor.version.workspaceVersionId !== currentVersionId) {
+      if (visited.has(cursor.version.workspaceVersionId)) {
+        throw new Error("Target Workspace Version ancestry contains a cycle");
+      }
+      visited.add(cursor.version.workspaceVersionId);
+      const parentVersionId = cursor.version.parentVersionId;
+      if (!parentVersionId) {
+        throw new Error("Target Workspace Version is not based on the current workspace");
+      }
+      const parent = versions.get(parentVersionId);
+      if (!parent) {
+        throw new Error("Target Workspace Version ancestry is unavailable from the current base");
+      }
+      cursor = parent;
     }
 
-    await ensureRoomWorkspaceGitBaseline(current, this.options.subprocess);
+    await ensureRoomWorkspaceGitBaseline(current, this.options.subprocess, discardLocalChanges);
     const currentDirtyPaths = await dirtyPaths(current, this.options.subprocess);
     if (!discardLocalChanges && currentDirtyPaths.length > 0) {
       return {

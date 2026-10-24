@@ -27,6 +27,8 @@ function sha256(value: Uint8Array | string): string {
 
 interface VersionFixture {
   artifacts: WorkspaceSnapshotStore;
+  versions: WorkspaceVersionService;
+  save: (snapshotId: string, raw: Array<{ path: string; text: string }>, createdAt: number) => Promise<void>;
   current: WorkspaceVersionRecord;
   target: WorkspaceVersionRecord;
 }
@@ -84,7 +86,7 @@ async function versionFixture(): Promise<VersionFixture> {
     snapshotId: "version-2",
     parentVersionId: current.version.workspaceVersionId,
   })).record;
-  return { artifacts, current, target };
+  return { artifacts, versions, save, current, target };
 }
 
 async function materializedFixture(input: { workspaceRoot?: string } = {}): Promise<VersionFixture & { materializer: RoomWorkspaceMaterializer; workspaceRoot: string }> {
@@ -265,6 +267,23 @@ describe("RoomWorkspaceSyncService", () => {
     expect((await readdir(fixture.workspaceRoot)).some((name) => name.includes("sync"))).toBe(false);
   });
 
+  it("initializes the synthetic baseline before discarding dirty files from a fresh materialized workspace", async () => {
+    const fixture = await versionFixture();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "dsh-collab-sync-fresh-"));
+    roots.push(workspaceRoot);
+    const materializer = new RoomWorkspaceMaterializer({ root: workspaceRoot, artifacts: fixture.artifacts });
+    const workspace = await materializer.materialize({ roomId: "room-1", record: fixture.current });
+    const subprocess = localDshSubprocess();
+    await gitCommand(subprocess, workspace.workspacePath, ["init"]);
+    await gitCommand(subprocess, workspace.workspacePath, ["config", "core.autocrlf", "true"]);
+    await writeFile(join(workspace.workspacePath, "local.txt"), "discard me\n");
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: materializer, artifacts: fixture.artifacts, subprocess });
+
+    await expect(service.discardAndSync({ roomId: "room-1", target: fixture.target })).resolves.toMatchObject({ status: "advanced", versionId: "version-2" });
+    const opened = (await materializer.open("room-1"))!;
+    await expect(readFile(join(opened.workspacePath, "local.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("only discards local changes through the explicit discard operation", async () => {
     const fixture = await materializedFixture();
     const workspace = (await fixture.materializer.open("room-1"))!;
@@ -327,6 +346,27 @@ describe("RoomWorkspaceSyncService", () => {
     expect((await readdir(fixture.workspaceRoot)).some((name) => name.includes("sync"))).toBe(false);
   });
 
+  it("advances to a later published version when the room history contains the skipped parents", async () => {
+    const fixture = await materializedFixture();
+    await fixture.save("version-3", [{ path: "README.md", text: "three\n" }, { path: "src/next.ts", text: "export const value = 3;\n" }], 30);
+    const later = (await fixture.versions.create({
+      roomId: "room-1",
+      principalId: "owner",
+      snapshotId: "version-3",
+      parentVersionId: fixture.target.version.workspaceVersionId,
+    })).record;
+    const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess: localDshSubprocess() });
+
+    await expect(service.discardAndSync({
+      roomId: "room-1",
+      target: later,
+      knownVersions: [fixture.target, later],
+    })).resolves.toMatchObject({ status: "advanced", previousVersionId: "version-1", versionId: "version-3" });
+    const opened = (await fixture.materializer.open("room-1"))!;
+    expect(opened.record).toEqual(later);
+    expect(await readFile(join(opened.workspacePath, "README.md"), "utf8")).toBe("three\n");
+  });
+
   it("is idempotent for the current target and rejects non-linear or cross-room targets", async () => {
     const fixture = await materializedFixture();
     const service = new RoomWorkspaceSyncService({ roomWorkspaces: fixture.materializer, artifacts: fixture.artifacts, subprocess: localDshSubprocess() });
@@ -337,7 +377,7 @@ describe("RoomWorkspaceSyncService", () => {
     wrongParent.version.workspaceVersionId = "version-3";
     wrongParent.artifact.snapshotId = "version-3";
     wrongParent.version.parentVersionId = "version-0";
-    await expect(service.sync({ roomId: "room-1", target: wrongParent })).rejects.toThrow(/direct successor/i);
+    await expect(service.sync({ roomId: "room-1", target: wrongParent })).rejects.toThrow(/ancestry|based on the current workspace/i);
     const wrongRoom = structuredClone(fixture.target);
     wrongRoom.version.roomId = "room-2";
     await expect(service.sync({ roomId: "room-1", target: wrongRoom })).rejects.toThrow(/room/i);

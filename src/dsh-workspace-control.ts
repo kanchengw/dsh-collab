@@ -72,6 +72,12 @@ function hashId(value: unknown, field: string): string {
   return id;
 }
 
+function workspaceVersionHistory(events: readonly RoomEvent[]): WorkspaceVersionRecord[] {
+  return events
+    .filter((event) => event.type === "workspace-version.published")
+    .map((event) => validateWorkspaceVersionRecord(event.payload));
+}
+
 function controlRequest(value: unknown): DshWorkspaceControlRequest {
   const request = value as DshWorkspaceControlRequest;
   if (!request || typeof request !== "object" || Array.isArray(request) || !request.room || !request.remote || !request.action) {
@@ -238,9 +244,10 @@ export class DshWorkspaceControl {
       token: request.remote.roomToken,
       ...(signal ? { signal } : {}),
     });
+    const syncInput = { roomId: request.room.roomId, target: downloaded.record, knownVersions: workspaceVersionHistory(request.room.roomEvents) };
     const result = discard
-      ? await this.syncService.discardAndSync({ roomId: request.room.roomId, target: downloaded.record })
-      : await this.syncService.sync({ roomId: request.room.roomId, target: downloaded.record });
+      ? await this.syncService.discardAndSync(syncInput)
+      : await this.syncService.sync(syncInput);
     if (result.status === "blocked") throw new Error("Room Workspace has local changes; create a ChangeSet or explicitly discard them");
   }
 
