@@ -72,9 +72,14 @@ function ProjectOverview(props: { changesPort?: CollabChangesPort; t: CollabTran
             : workspace ? props.t("project.workspaceReady") : props.t("project.workspacePending");
 
   return <section className={css.project} data-collab-project="true" aria-label={props.t("project.title")}>
-    <div className={css.projectHeading}><strong>{props.t("project.title")}</strong><span>{props.t("project.version", { version: changes?.workspace.latestVersionId ?? props.t("project.versionPending") })}</span></div>
+    <div className={css.projectHeading}>
+      <div className={css.projectTitle}><span className={css.projectGlyph} aria-hidden="true" /><strong>{props.t("project.title")}</strong></div>
+      <span className={css.projectVersion}>{props.t("project.version", { version: changes?.workspace.latestVersionId ?? props.t("project.versionPending") })}</span>
+    </div>
     <div className={css.projectDetails}>
-      <span>{props.t("project.workspace", { state: workspaceLabel })}</span>
+      <span className={css.projectState} data-state={workspace?.kind === "ready" && workspace.dirtyPaths.length ? "dirty" : workspace ? "ready" : "pending"}>
+        <span className={css.projectStateDot} aria-hidden="true" />{props.t("project.workspace", { state: workspaceLabel })}
+      </span>
     </div>
   </section>;
 }
@@ -144,7 +149,7 @@ export function CollabBarView(props: {
     </header>
     <ProjectOverview changesPort={props.changesPort} t={t} />
     <nav className={css.tabs} role="tablist" aria-label={t("bar.navigation")}>
-      {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
+      {TABS.map((tab) => <button key={tab} id={`${id}-${tab}-tab`} type="button" role="tab" data-tab={tab} aria-selected={activeTab === tab} aria-controls={`${id}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => { chooseTab(tab); }} onKeyDown={onTabKeyDown}>{t(`bar.tab.${tab}`)}</button>)}
     </nav>
     <section className={css.panel} id={`${id}-${activeTab}-panel`} role="tabpanel" aria-labelledby={`${id}-${activeTab}-tab`} data-active-tab={activeTab}>
       {activeTab === "tasks" ? props.tasks ?? <EmptyState>{t("bar.tasksUnavailable")}</EmptyState> : null}
