@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   CollabDiscussion,
+  createCollabDiscussionRoomSendInput,
   createCollabDiscussionSendInput,
+  shouldSubmitCollabDiscussionKey,
   sendCollabDiscussionMessage,
   subscribeCollabDiscussionSnapshot,
   type CollabDiscussionMessage,
@@ -26,6 +28,7 @@ describe("Collab Discussion", () => {
       connection: "online",
       messages,
       port: port(),
+      currentMemberId: "alice",
       scopes: [
         { value: "general", label: "General" },
         { value: "task:task-1", label: "Task: Fix reconnect" },
@@ -35,10 +38,14 @@ describe("Collab Discussion", () => {
     expect(html).toContain('data-collab-discussion="true"');
     expect(html).toContain('data-scope="general"');
     expect(html).toContain('data-scope="task:task-1"');
+    expect(html).toContain('data-author="self"');
+    expect(html).toContain('data-author="other"');
     expect(html).toContain("Task detail");
     expect(html).toContain("引用源");
     expect(html).toContain("General context");
     expect(html).not.toContain("<ol");
+    expect(html).not.toContain("讨论范围");
+    expect(html).not.toContain("<select");
     expect(html).toMatch(/<ul[^>]*>.*General context.*Task detail.*<\/ul>/s);
   });
 
@@ -119,6 +126,14 @@ describe("Collab Discussion", () => {
     expect(input).toEqual({ text: "Reply", scope: "task:task-1", sourceMessageId: "message-1" });
     await sendCollabDiscussionMessage(discussionPort, { text: "  Reply  ", scope: "task:task-1", sourceMessageId: "message-missing" }, messages);
     expect(discussionPort.send).toHaveBeenCalledWith({ text: "Reply", scope: "task:task-1" });
+  });
+
+  it("uses the room scope for the composer and only submits on plain Enter", () => {
+    expect(createCollabDiscussionRoomSendInput({ text: "  Room update  " }, messages)).toEqual({ text: "Room update", scope: "general" });
+    expect(createCollabDiscussionRoomSendInput({ text: "Reply", sourceMessageId: "message-1" }, messages)).toEqual({ text: "Reply", scope: "general", sourceMessageId: "message-1" });
+    expect(shouldSubmitCollabDiscussionKey({ key: "Enter", shiftKey: false })).toBe(true);
+    expect(shouldSubmitCollabDiscussionKey({ key: "Enter", shiftKey: true })).toBe(false);
+    expect(shouldSubmitCollabDiscussionKey({ key: "a", shiftKey: false })).toBe(false);
   });
 });
 

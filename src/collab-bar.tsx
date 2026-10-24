@@ -8,7 +8,7 @@ import css from "./collab-bar.module.css";
 
 export type CollabBarTab = "tasks" | "activity" | "changes" | "reviews";
 
-const TABS: readonly CollabBarTab[] = ["tasks", "activity", "changes", "reviews"];
+const TABS: readonly CollabBarTab[] = ["activity", "tasks", "changes", "reviews"];
 
 export interface CollabBarRoomSnapshot {
   roomId: string;
@@ -23,7 +23,7 @@ export interface CollabBarRoomSnapshot {
 }
 
 export function nextCollabBarTab(current: CollabBarTab, key: string): CollabBarTab {
-  if (key === "Home") return "tasks";
+  if (key === "Home") return "activity";
   if (key === "End") return "reviews";
   const direction = key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0;
   if (direction === 0) return current;

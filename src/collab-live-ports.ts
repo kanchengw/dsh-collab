@@ -71,6 +71,7 @@ export function createCollabTasksPort(client: DshCollabClientPort): CollabTasksP
     async unassignTask(taskId) { await client.unassignTask?.(client.getSnapshot().roomId, taskId); emit(); },
     async setTaskStatus(taskId, status) { await client.setTaskStatus?.(client.getSnapshot().roomId, taskId, status); emit(); },
     async addTaskParticipant(taskId, memberId) { await client.addTaskParticipant?.(client.getSnapshot().roomId, taskId, memberId); emit(); },
+    async sendDiscussion(taskId, text) { await client.send({ text, target: "room", scope: `task:${taskId}` }); emit(); },
     async proposeDecision(input) { await client.proposeDecision?.(client.getSnapshot().roomId, input); emit(); },
     async acceptDecision(decisionId) { await client.acceptDecision?.(client.getSnapshot().roomId, decisionId); emit(); },
     forRoom(roomId) { return roomMatches(client, roomId) ? port : undefined; },
@@ -92,7 +93,7 @@ export function createCollabDiscussionPort(client: DshCollabClientPort): CollabD
         });
       const memberNames = new Map((snapshot.members ?? []).map((member) => [member.memberId, member.displayName]));
       const scopes: Array<{ value: CollabDiscussionScope; label: string }> = [{ value: "general", label: "General" }, ...messages.flatMap((message) => message.scope.startsWith("task:") ? [{ value: message.scope, label: message.scope }] : [])];
-      return { roomId: snapshot.roomId, connection: snapshot.connection === "online" ? "online" : "offline", messages, scopes: [...new Map(scopes.map((scope) => [scope.value, scope])).values()], memberNames };
+      return { roomId: snapshot.roomId, connection: snapshot.connection === "online" ? "online" : "offline", messages, scopes: [...new Map(scopes.map((scope) => [scope.value, scope])).values()], ...(snapshot.memberId ? { currentMemberId: snapshot.memberId } : {}), memberNames };
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -31,9 +31,13 @@
 
 .messages { display: grid; min-height: 0; flex: 1; align-content: start; gap: 9px; margin: 0; padding: 2px 2px 4px; overflow: auto; list-style: none; }
 .empty { display: grid; min-height: 180px; place-items: center; padding: 24px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; text-align: center; }
-.message { position: relative; display: grid; gap: 6px; min-width: 0; padding: 10px 10px 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px; background: var(--dsw-alias-bg-layer-2); }
+.message { position: relative; display: grid; gap: 6px; min-width: 0; width: min(84%, 34rem); padding: 10px 10px 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); }
+.messageOther { justify-self: start; border-top-left-radius: 5px; }
+.messageOwn { justify-self: end; border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 42%, var(--dsw-alias-border-l1)); border-top-right-radius: 5px; background: var(--dsw-alias-state-business-tertiary); }
 .messageMeta { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.messageOwn .messageMeta { justify-content: flex-end; }
 .messageMeta strong { overflow: hidden; color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.messageOwn .messageMeta strong { color: var(--dsw-alias-state-business-primary); }
 .messageMeta span { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-tertiary); font-size: 10px; line-height: 16px; }
 .text { overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; white-space: pre-wrap; }
 .quote,

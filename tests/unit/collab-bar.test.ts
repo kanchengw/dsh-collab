@@ -211,12 +211,12 @@ describe("Collab Bar", () => {
 
   it("uses predictable keyboard tab navigation", () => {
     const cases: Array<[CollabBarTab, string, CollabBarTab]> = [
-      ["tasks", "ArrowRight", "activity"],
-      ["activity", "ArrowRight", "changes"],
+      ["activity", "ArrowRight", "tasks"],
+      ["tasks", "ArrowRight", "changes"],
       ["changes", "ArrowRight", "reviews"],
-      ["reviews", "ArrowRight", "tasks"],
-      ["activity", "ArrowLeft", "tasks"],
-      ["reviews", "Home", "tasks"],
+      ["reviews", "ArrowRight", "activity"],
+      ["activity", "ArrowLeft", "reviews"],
+      ["reviews", "Home", "activity"],
       ["tasks", "End", "reviews"],
       ["changes", "Enter", "changes"],
     ];

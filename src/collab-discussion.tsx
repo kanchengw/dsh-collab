@@ -32,6 +32,7 @@ export interface CollabDiscussionSnapshot {
   connection: "online" | "offline";
   messages: readonly CollabDiscussionMessage[];
   scopes: readonly CollabDiscussionScopeOption[];
+  currentMemberId?: string;
   memberNames?: ReadonlyMap<string, string>;
 }
 
@@ -56,10 +57,9 @@ export interface CollabDiscussionProps {
   port: CollabDiscussionPort;
   scopes?: readonly CollabDiscussionScopeOption[];
   memberNames?: ReadonlyMap<string, string>;
+  currentMemberId?: string;
   snapshotPort?: CollabDiscussionViewPort;
 }
-
-const GENERAL_SCOPE: CollabDiscussionScopeOption = { value: "general", label: "General" };
 
 function isDiscussionScope(value: string): value is CollabDiscussionScope {
   return value === "general" || /^task:[^\s]+$/.test(value);
@@ -89,6 +89,17 @@ export async function sendCollabDiscussionMessage(
   await port.send(createCollabDiscussionSendInput(input, messages));
 }
 
+export function createCollabDiscussionRoomSendInput(
+  input: { text: string; sourceMessageId?: string },
+  messages: readonly CollabDiscussionMessage[],
+): CollabDiscussionSendInput {
+  return createCollabDiscussionSendInput({ ...input, scope: "general" }, messages);
+}
+
+export function shouldSubmitCollabDiscussionKey(input: { key: string; shiftKey: boolean }): boolean {
+  return input.key === "Enter" && !input.shiftKey;
+}
+
 function displayName(memberNames: ReadonlyMap<string, string> | undefined, authorId: string): string {
   return memberNames?.get(authorId) ?? authorId;
 }
@@ -99,6 +110,7 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     connection: props.connection,
     messages: props.messages,
     scopes: props.scopes ?? [],
+    ...(props.currentMemberId ? { currentMemberId: props.currentMemberId } : {}),
     ...(props.memberNames ? { memberNames: props.memberNames } : {}),
   };
   const initialSnapshot = props.snapshotPort?.getSnapshot() ?? fallbackSnapshot;
@@ -108,9 +120,7 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     return subscribeCollabDiscussionSnapshot(props.snapshotPort, setLiveSnapshot);
   }, [props.snapshotPort]);
   const snapshot = liveSnapshot;
-  const scopes = snapshot.scopes.length ? snapshot.scopes : [GENERAL_SCOPE];
   const [draft, setDraft] = useState("");
-  const [scope, setScope] = useState<CollabDiscussionScope>(scopes[0]!.value);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -122,7 +132,7 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     setBusy(true);
     setError(undefined);
     try {
-      await sendCollabDiscussionMessage(props.port, { text: draft, scope, sourceMessageId }, snapshot.messages);
+      await sendCollabDiscussionMessage(props.port, createCollabDiscussionRoomSendInput({ text: draft, sourceMessageId }, snapshot.messages), snapshot.messages);
       setDraft("");
       setSourceMessageId(undefined);
     } catch (cause) {
@@ -141,8 +151,9 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     {snapshot.messages.length === 0 ? <p className={css.empty} role="status">暂无讨论消息</p> : <ul className={css.messages}>
       {snapshot.messages.map((message) => {
         const source = sourceMessage(snapshot.messages, message.sourceMessageId);
-        return <li key={message.messageId} className={css.message} data-scope={message.scope}>
-          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, message.authorId)}</strong><span>{message.scope === "general" ? "General" : message.scope}</span></div>
+        const own = Boolean(snapshot.currentMemberId && message.authorId === snapshot.currentMemberId);
+        return <li key={message.messageId} className={`${css.message} ${own ? css.messageOwn : css.messageOther}`} data-scope={message.scope} data-author={own ? "self" : "other"}>
+          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, message.authorId)}</strong></div>
           <p className={css.text}>{message.text}</p>
           {message.sourceMessageId ? <div className={css.quote} data-reference-state={source ? "available" : "missing"}>
             <span>引用源</span>{source ? <p>{source.text}</p> : <p>引用源不可用</p>}
@@ -152,11 +163,8 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
       })}
     </ul>}
     <form className={css.composer} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <label>范围<select aria-label="讨论范围" value={scope} disabled={!online || busy} onChange={(event) => { setScope(event.currentTarget.value as CollabDiscussionScope); }}>
-        {scopes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select></label>
       {selectedSource ? <div className={css.selectedQuote} role="status"><span>引用中：{selectedSource.text}</span><button type="button" disabled={busy} onClick={() => { setSourceMessageId(undefined); }}>取消引用</button></div> : sourceMessageId ? <p className={css.invalidReference} role="status">引用消息已不可用，发送时将作为新消息处理</p> : null}
-      <label className={css.inputLabel}>消息<textarea aria-label="讨论消息" value={draft} rows={2} disabled={!online || busy} placeholder="输入讨论消息" onChange={(event) => { setDraft(event.currentTarget.value); setError(undefined); }} /></label>
+      <label className={css.inputLabel}>消息<textarea aria-label="讨论消息" value={draft} rows={2} disabled={!online || busy} placeholder="输入讨论消息，Enter 发送，Shift+Enter 换行" onChange={(event) => { setDraft(event.currentTarget.value); setError(undefined); }} onKeyDown={(event) => { if (shouldSubmitCollabDiscussionKey(event)) { event.preventDefault(); void submit(); } }} /></label>
       {error ? <p className={css.error} role="alert">{error}</p> : null}
       <button type="submit" className={css.send} disabled={!online || busy || draft.trim() === ""}>发送</button>
     </form>
