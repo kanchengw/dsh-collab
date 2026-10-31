@@ -67,12 +67,12 @@ async function configValue(commands: RepositoryCommandPort, key: string): Promis
   return result.stdout.trim();
 }
 
-export async function ensureRoomWorkspaceGitBaseline(workspace: RoomWorkspace, subprocess: DshRepositorySubprocess): Promise<void> {
+export async function ensureRoomWorkspaceGitBaseline(workspace: RoomWorkspace, subprocess: DshRepositorySubprocess, allowDirty = false): Promise<void> {
   const commands = createDshRepositoryCommandPort({ subprocess, cwd: workspace.workspacePath });
   const workspaceRoot = await canonical(workspace.workspacePath);
   let root = await repositoryRoot(commands);
   if (root === undefined || !samePath(root, workspaceRoot)) {
-    await assertUnchangedBase(workspace);
+    if (!allowDirty) await assertUnchangedBase(workspace);
     await requiredRun(commands, ["init"]);
     root = await repositoryRoot(commands);
   }
@@ -95,10 +95,10 @@ export async function ensureRoomWorkspaceGitBaseline(workspace: RoomWorkspace, s
     || (storedVersionId !== undefined && storedVersionId !== expectedVersionId)) {
     throw new Error("Room Workspace Git baseline belongs to a different room or base version");
   }
-  await assertUnchangedBase(workspace);
+  if (!allowDirty) await assertUnchangedBase(workspace);
   await requiredRun(commands, ["config", "--local", "collab.roomid", expectedRoomId]);
   await requiredRun(commands, ["config", "--local", "collab.workspaceversion", expectedVersionId]);
-  await requiredRun(commands, ["add", "--all"]);
+  await requiredRun(commands, ["-c", "core.autocrlf=false", "add", "--all"]);
   await requiredRun(commands, [
     "-c", "user.name=DSH Collab",
     "-c", "user.email=dsh-collab@localhost",
