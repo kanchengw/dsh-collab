@@ -829,6 +829,7 @@ export class CollabGateway {
       const body = objectBody(request.body);
       allowedFields(body, ["blocked"]);
       if (typeof body.blocked !== "boolean") throw invalidInput("blocked must be a boolean", { field: "blocked" });
+      if (current.blocked === body.blocked) return { status: 200, body: { task: current } };
       const task = tasks.update({
         taskId,
         blocked: body.blocked,
