@@ -6,18 +6,18 @@
 
 ## What is ready
 
-Current development status (2026-09-25): the production Host/Participant Room
-Workspace path, official left/right Sidebar embedding, and DSH 0.1.7-rc.2
-contract adaptation are implemented and pass the source-level gates. Real
-dual-client UI/network acceptance remains pending. See the [CRP plan](docs/plans/collab-room-project-mvp.md)
-and the [current DSH rc2 adaptation plan](docs/plans/dsh-0.1.7-rc.2-adaptation.md).
+Current development status (2026-10-31): the production Host/Participant Room
+Workspace path, official left/right Sidebar embedding, DSH 0.2.0-rc.2 contract
+adaptation, and dual-client UI/network acceptance are implemented. The
+collaboration room surface is now `Activity / Tasks / Changes / Reviews`.
+See the [two-client environment](e2e/README.md) for the verified runtime baseline.
 
 - Versioned room protocol, HTTP Gateway, WebSocket stream, invite/join, permissions, message targeting, single Host Agent queue, steer/cancel, approval, limits, revocation, audit redaction, snapshot recovery and observability.
 - One package manifest with `exports["./client"]`, `dsh.client`, `dsh.bundle.patch` and `cordis.patch.yml`.
 - Structural DSH Host adapter (`src/dsh-host.ts`) and reusable Host runtime factory (`src/host-runtime.ts`). The runtime owns a dedicated Collab-only HTTP/WebSocket listener and uses a structural DSH session service; it does not expose the DSH listener or import DSH private dispatcher code.
-- Session-scoped Collab Bar hosted by the official DSH right Sidebar, with Activity, Changes and Reviews beside each member's native DSH conversation. Collab Rooms uses the official left Sidebar; selecting a room opens the Bar instead of replacing the conversation with a second full-screen chat UI.
+- Session-scoped Collab Bar hosted by the official DSH right Sidebar, with Activity, Tasks, Changes and Reviews beside each member's native DSH conversation. Collab Rooms uses the official left Sidebar; selecting a room opens the Bar instead of replacing the conversation with a second full-screen chat UI.
 - Namespaced settings UI (`src/collab-settings-card.tsx`) starts safely as `Not configured` and offers three released connection methods: `EasyTier virtual network`, direct `Private network` access, or a user-supplied `Custom WSS endpoint`. Participants get the selected transport from the invitation instead of persistent endpoint configuration.
-- The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. Room identity is now independent from the native Session ID; the Owner Room Workspace has a fresh Host Primary Session for public `@agent`. The legacy share-session UI is scheduled for replacement by the project creation flow in CRP-U11.
+- The dedicated Gateway starts independently of DSH conversations and auto-selects the first available port in `4310-4399`, preferring the last persisted port. Room identity is independent from the native Session ID; the Owner Room Workspace has its own Host Primary Session. The legacy `@agent` room route is retired.
 - Host runtime settings now apply token lifetime, member/message/queue limits; Agent tool approvals remain on DSH's native Host approval chain. Runtime snapshots restore room, ledger, dispatcher and approval projection state while short-lived invites and room tokens are reissued after restart.
 - After the first invite is accepted, the Participant's own DSH stores a hidden Joined-room resume record. Restarting DSH never reconnects it automatically; an explicit `Connect` action re-establishes EasyTier when required and then exchanges the saved credential for a fresh room token.
 - Host room state is atomically persisted under `DSH_HOME/collab/v1/state.json` (default `~/.dsh/collab/v1/state.json`). Room/member state, timeline, queue and approvals survive a clean Host restart; unfinished Agent work is rebound to the current native DSH session and returned to the queue.
@@ -103,7 +103,7 @@ Participant recovery uses a separate `dsh-collab-participant` settings namespace
 
 ## LAN Participant deployment
 
-Do not expose the DSH listener. In network mode the dedicated Collab Gateway binds `0.0.0.0` on its own port; the invitation advertises a reachable private IP using `ws://<private-ip>:<port>/collab`. The Participant installs the same complete plugin and pastes the invitation. Possession of the valid invitation establishes the initial Participant identity; the invitation can be used by multiple members during its one-hour lifetime. Room `@agent` requests always use the Host Agent, while private Side Work runs only after the Participant explicitly starts it on their own local DSH Agent.
+Do not expose the DSH listener. In network mode the dedicated Collab Gateway binds `0.0.0.0` on its own port; the invitation advertises a reachable private IP using `ws://<private-ip>:<port>/collab`. The Participant installs the same complete plugin and pastes the invitation. Possession of the valid invitation establishes the initial Participant identity; the invitation can be used by multiple members during its one-hour lifetime. Room messages remain human collaboration messages; private Side Work runs only after the Participant explicitly starts it on their own local DSH Agent.
 
 Plain `ws://` accepts only literal loopback, RFC1918/link-local, `100.64.0.0/10`, ULA and IPv6 link-local addresses. Public IPs and hostnames require a user-supplied `wss://` endpoint. The plugin does not create a tunnel, configure a router, issue a certificate, or operate an official Relay in this MVP.
 
@@ -128,8 +128,9 @@ does not operate or promise availability for that node.
 
 ## Design and development log
 
-- Architecture, slot/service/patch boundaries, role model, UI states and phased plan: [design.md](./design.md)
+- Current collaboration model and phased plan: [Collab collaboration redesign](./docs/plans/collab-collaboration-redesign.md)
 - Accepted native-Session, official Sidebar, ChangeSet and EasyTier MVP: [Collab Workspace MVP v2](./docs/plans/collab-workspace-mvp-v2.md)
-- Current DSH compatibility and remaining runtime validation: [DSH 0.1.7-rc.2 adaptation](./docs/plans/dsh-0.1.7-rc.2-adaptation.md)
+- Runtime compatibility and dual-client validation: [e2e README](./e2e/README.md)
+- Delivery roadmap: [Collab collaboration redesign roadmap](./docs/plans/collab-collaboration-redesign-roadmap.md)
 - Unit-by-unit implementation records and commits: [dev_log.md](./dev_log.md)
 - HTTP/WebSocket wire contract: [protocol.md](./protocol.md)

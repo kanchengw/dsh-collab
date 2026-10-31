@@ -61,6 +61,9 @@
     "README.md",
     "design.md",
     "protocol.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
     "third_party/easytier/*"
   ],
   "engines": {
@@ -83,7 +86,7 @@
     "react-dom": "18.3.1",
     "tsdown": "0.22.2",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@deepseek-ai/dsh-home-paths": "0.2.0-rc.2",

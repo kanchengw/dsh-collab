@@ -21,6 +21,9 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-util-workspace-path@0.2.0-rc.2'
 overrides:
   dsh-better-sidebar: "-"
+  zod: ^4.6.6
+  vite: ^7.3.7
+  katex: ^0.18.2
 packageExtensions:
   '@deepseek-ai/dsh-client-store@0.2.0-rc.2':
     dependencies:
