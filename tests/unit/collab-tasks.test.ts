@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -10,8 +12,14 @@ import {
   type CollabTasksSnapshot,
 } from "../../src/collab-tasks.js";
 import type { CollaborationDecision, CollaborationTask } from "../../src/collaboration-types.js";
+import { zh, type CollabTranslate } from "../../src/locales.js";
 
 const taskId = "task-1";
+
+const t: CollabTranslate = (key, params) => {
+  const template = zh[key];
+  return params ? template.replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match) : template;
+};
 
 function task(overrides: Partial<CollaborationTask> = {}): CollaborationTask {
   return {
@@ -89,12 +97,33 @@ function port(value: CollabTasksSnapshot): CollabTasksPort {
     unassignTask: vi.fn(async () => undefined),
     setTaskStatus: vi.fn(async () => undefined),
     addTaskParticipant: vi.fn(async () => undefined),
+    sendDiscussion: vi.fn(async () => undefined),
     proposeDecision: vi.fn(async () => undefined),
     acceptDecision: vi.fn(async () => undefined),
   };
 }
 
 describe("Collab Tasks", () => {
+  it("renders task UI copy in Chinese when translated", () => {
+    const html = renderToStaticMarkup(createElement(CollabTasks, { port: port(snapshot()), t }));
+
+    expect(html).toContain("任务看板");
+    expect(html).toContain("任务列表");
+    expect(html).toContain("房间决定");
+    expect(html).toContain("进行中");
+    expect(html).toContain("负责人");
+    expect(html).toContain("创建任务");
+    expect(html).toContain("任务讨论");
+    expect(html).toContain("已提出");
+    expect(html).not.toContain("Task board");
+    expect(html).not.toContain("Create task");
+  });
+
+  it("keeps visible task labels out of CSS-generated English", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/collab-tasks.module.css"), "utf8");
+    expect(css).not.toMatch(/\.board::before\s*\{[^}]*content:/s);
+  });
+
   it("rejects cross-room or inconsistent task projections", () => {
     expect(() => validateCollabTasksSnapshot(snapshot({ tasks: [{ task: task({ roomId: "room-2" }), decisions: [], changeSets: [] }] }))).toThrow(/room/i);
     expect(() => validateCollabTasksSnapshot(snapshot({ tasks: [{ task: task({ assigneeId: "member-unknown" }), decisions: [], changeSets: [] }] }))).toThrow(/member/i);
@@ -110,6 +139,7 @@ describe("Collab Tasks", () => {
     expect(html).toContain("Fix reconnect");
     expect(html).toContain("Doing");
     expect(html).toContain("I reproduced the reconnect race.");
+    expect(html).toContain("Send discussion");
     expect(html).toContain("Decision");
     expect(html).toContain("Room decisions");
     expect(html).toContain("Propose decision");
@@ -145,12 +175,14 @@ describe("Collab Tasks", () => {
     await actions.unassignTask(taskId);
     await actions.setTaskStatus(taskId, "in-review");
     await actions.addTaskParticipant(taskId, "member-bob");
+    await actions.sendDiscussion(taskId, "A task-scoped update.");
 
     expect(tasksPort.createTask).toHaveBeenCalledWith({ title: "New task", description: "A bounded task." });
     expect(tasksPort.claimTask).toHaveBeenCalledWith(taskId);
     expect(tasksPort.unassignTask).toHaveBeenCalledWith(taskId);
     expect(tasksPort.setTaskStatus).toHaveBeenCalledWith(taskId, "in-review");
     expect(tasksPort.addTaskParticipant).toHaveBeenCalledWith(taskId, "member-bob");
+    expect(tasksPort.sendDiscussion).toHaveBeenCalledWith(taskId, "A task-scoped update.");
   });
 });
 

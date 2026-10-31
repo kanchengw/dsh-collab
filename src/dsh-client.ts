@@ -1422,7 +1422,7 @@ function DshCollabBarPanel(props: {
   const discussionSnapshot = discussionPort?.getSnapshot();
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   const discussion = discussionPort && discussionSnapshot
-    ? createElement(CollabDiscussion, { port: discussionPort, snapshotPort: discussionPort, ...discussionSnapshot })
+    ? createElement(CollabDiscussion, { port: discussionPort, snapshotPort: discussionPort, ...discussionSnapshot, t: props.t })
     : createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t });
   return createElement(CollabBarView, {
     key: roomKey,
@@ -1433,7 +1433,7 @@ function DshCollabBarPanel(props: {
     onOpenRooms: props.openRooms,
     ...(props.changesPort ? { changesPort: props.changesPort } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
-    ...(tasksPort ? { tasks: createElement(CollabTasks, { port: tasksPort }) } : {}),
+    ...(tasksPort ? { tasks: createElement(CollabTasks, { port: tasksPort, t: props.t }) } : {}),
     t: props.t,
   });
 }

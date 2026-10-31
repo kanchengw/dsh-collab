@@ -288,7 +288,8 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
     if (!open) return;
     closeRef.current?.focus();
     void Promise.all([port?.refreshOwnedRooms?.(), port?.refreshGateway?.()]).catch((cause) => {
-      setNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.refreshError") });
+      console.error(cause);
+      setNotice({ tone: "error", message: t("rooms.refreshError") });
     });
   }, [embedded, open, port]);
 
@@ -310,7 +311,8 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
       const completed = await action();
       if (success && completed !== false) updateNotice({ tone: "success", message: success });
     } catch (cause) {
-      updateNotice({ tone: "error", message: cause instanceof Error ? cause.message : t("rooms.actionError") });
+      console.error(cause);
+      updateNotice({ tone: "error", message: t("rooms.actionError") });
     } finally {
       setBusy(undefined);
     }

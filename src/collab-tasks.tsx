@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { CollaborationDecision, CollaborationTask, TaskStatus } from "./collaboration-types.js";
 import css from "./collab-tasks.module.css";
+import { defaultCollabTranslate, type CollabLocaleKey, type CollabTranslate } from "./locales.js";
 
 export interface CollabTaskMember {
   memberId: string;
@@ -129,11 +130,41 @@ function memberName(snapshot: CollabTasksSnapshot, memberId: string | undefined)
   return snapshot.members.find((member) => member.memberId === memberId)?.displayName ?? memberId;
 }
 
-function statusLabel(status: TaskStatus): string {
-  return status === "in-review" ? "In review" : status.charAt(0).toUpperCase() + status.slice(1);
+function statusLabel(status: TaskStatus, t: CollabTranslate): string {
+  const keys: Record<TaskStatus, CollabLocaleKey> = {
+    open: "tasks.status.open",
+    doing: "tasks.status.doing",
+    "in-review": "tasks.status.in-review",
+    done: "tasks.status.done",
+    cancelled: "tasks.status.cancelled",
+  };
+  return t(keys[status]);
 }
 
-function DecisionComposer(props: { scope: string; sourceMessageIds: readonly string[]; port: CollabTasksPort; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
+function decisionStatusLabel(status: string, t: CollabTranslate): string {
+  const keys: Partial<Record<string, CollabLocaleKey>> = {
+    proposed: "tasks.decisionStatus.proposed",
+    accepted: "tasks.decisionStatus.accepted",
+    superseded: "tasks.decisionStatus.superseded",
+  };
+  const key = keys[status];
+  return key ? t(key) : status;
+}
+
+function changeSetStatusLabel(status: string, t: CollabTranslate): string {
+  const keys: Partial<Record<string, CollabLocaleKey>> = {
+    submitted: "reviews.status.submitted",
+    "in-review": "reviews.status.in-review",
+    "changes-requested": "reviews.status.changes-requested",
+    approved: "reviews.status.approved",
+    applied: "reviews.status.applied",
+    superseded: "reviews.status.superseded",
+  };
+  const key = keys[status];
+  return key ? t(key) : status;
+}
+
+function DecisionComposer(props: { scope: string; sourceMessageIds: readonly string[]; port: CollabTasksPort; t: CollabTranslate; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
   const [conclusion, setConclusion] = useState("");
   const available = props.port.proposeDecision !== undefined && props.sourceMessageIds.length > 0;
   return <form className={css.actions} onSubmit={(event) => {
@@ -143,14 +174,14 @@ function DecisionComposer(props: { scope: string; sourceMessageIds: readonly str
       await props.port.proposeDecision!({ scope: props.scope, conclusion: requiredText(conclusion, "conclusion"), sourceMessageIds: [...props.sourceMessageIds] });
       setConclusion("");
     });
-  }}><label>Conclusion<input aria-label="Decision conclusion" required value={conclusion} onChange={(event) => { setConclusion(event.currentTarget.value); }} /></label><button type="submit" disabled={!available || props.busy !== undefined}>Propose decision</button></form>;
+  }}><label>{props.t("tasks.decisionConclusion")}<input aria-label={props.t("tasks.decisionConclusionAria")} required value={conclusion} onChange={(event) => { setConclusion(event.currentTarget.value); }} /></label><button type="submit" disabled={!available || props.busy !== undefined}>{props.t("tasks.proposeDecision")}</button></form>;
 }
 
-function DecisionList(props: { decisions: readonly CollabTaskDecision[]; port: CollabTasksPort; snapshot: CollabTasksSnapshot; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
-  return <ul className={css.list}>{props.decisions.map((decision) => <li key={decision.decisionId}><strong>{decision.status}</strong><span>{decision.conclusion}</span>{decision.status === "proposed" ? <button type="button" disabled={props.port.acceptDecision === undefined || props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("accept-decision", () => props.port.acceptDecision!(decision.decisionId)); }}>Accept decision</button> : null}</li>)}</ul>;
+function DecisionList(props: { decisions: readonly CollabTaskDecision[]; port: CollabTasksPort; snapshot: CollabTasksSnapshot; t: CollabTranslate; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
+  return <ul className={css.list}>{props.decisions.map((decision) => <li key={decision.decisionId}><strong>{decisionStatusLabel(decision.status, props.t)}</strong><span>{decision.conclusion}</span>{decision.status === "proposed" ? <button type="button" disabled={props.port.acceptDecision === undefined || props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("accept-decision", () => props.port.acceptDecision!(decision.decisionId)); }}>{props.t("tasks.acceptDecision")}</button> : null}</li>)}</ul>;
 }
 
-function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot; port: CollabTasksPort; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
+function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot; port: CollabTasksPort; t: CollabTranslate; busy?: string; run: (name: string, action: () => Promise<void>) => void }): ReactNode {
   const { task } = props.item;
   const [participantId, setParticipantId] = useState("");
   const [status, setStatus] = useState<TaskStatus>(task.status);
@@ -166,38 +197,39 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
       setDiscussionDraft("");
     });
   };
-  return <section className={css.detail} aria-label="Task details">
-    <header className={css.detailHeader}><div><h3>{task.title}</h3><p>{task.description}</p></div><span className={css.status}>{statusLabel(task.status)}</span></header>
+  return <section className={css.detail} aria-label={props.t("tasks.detailAria")}>
+    <header className={css.detailHeader}><div><h3>{task.title}</h3><p>{task.description}</p></div><span className={css.status}>{statusLabel(task.status, props.t)}</span></header>
     <dl className={css.meta}>
-      <div><dt>Assignee</dt><dd>{memberName(props.snapshot, task.assigneeId)}</dd></div><div><dt>Participants</dt><dd>{task.participantIds.map((memberId) => memberName(props.snapshot, memberId)).join(", ")}</dd></div>
+      <div><dt>{props.t("tasks.assignee")}</dt><dd>{memberName(props.snapshot, task.assigneeId)}</dd></div><div><dt>{props.t("tasks.participants")}</dt><dd>{task.participantIds.map((memberId) => memberName(props.snapshot, memberId)).join(", ")}</dd></div>
     </dl>
     <div className={css.actions}>
-      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || task.assigneeId === props.snapshot.currentMemberId} onClick={() => { props.run("claim", () => props.port.claimTask(task.taskId)); }}>Claim task</button>
-      {task.assigneeId && props.port.unassignTask ? <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("unassign", () => props.port.unassignTask!(task.taskId)); }}>Unassign task</button> : null}
-      <select aria-label="Task status" value={status} disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setStatus(event.currentTarget.value as TaskStatus); }}>
-        {statusOptions.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}
+      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || task.assigneeId === props.snapshot.currentMemberId} onClick={() => { props.run("claim", () => props.port.claimTask(task.taskId)); }}>{props.t("tasks.claim")}</button>
+      {task.assigneeId && props.port.unassignTask ? <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("unassign", () => props.port.unassignTask!(task.taskId)); }}>{props.t("tasks.unassign")}</button> : null}
+      <select aria-label={props.t("tasks.statusAria")} value={status} disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setStatus(event.currentTarget.value as TaskStatus); }}>
+        {statusOptions.map((value) => <option key={value} value={value}>{statusLabel(value, props.t)}</option>)}
       </select>
-      <button type="button" disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined || status === task.status} onClick={() => { props.run("status", () => props.port.setTaskStatus(task.taskId, status)); }}>Update status</button>
+      <button type="button" disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined || status === task.status} onClick={() => { props.run("status", () => props.port.setTaskStatus(task.taskId, status)); }}>{props.t("tasks.updateStatus")}</button>
     </div>
     <div className={css.actions}>
-      <select aria-label="Task participant" value={participantId} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setParticipantId(event.currentTarget.value); }}>
-        <option value="">Select participant</option>
+      <select aria-label={props.t("tasks.participantAria")} value={participantId} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setParticipantId(event.currentTarget.value); }}>
+        <option value="">{props.t("tasks.selectParticipant")}</option>
         {props.snapshot.members.filter((member) => !task.participantIds.includes(member.memberId)).map((member) => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
       </select>
-      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || participantId === ""} onClick={() => { props.run("participant", () => props.port.addTaskParticipant(task.taskId, participantId)); }}>Add participant</button>
+      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || participantId === ""} onClick={() => { props.run("participant", () => props.port.addTaskParticipant(task.taskId, participantId)); }}>{props.t("tasks.addParticipant")}</button>
     </div>
-    <h4>Discussion</h4>
-    {(props.item.discussion ?? []).length === 0 ? <p className={css.hint}>No discussion yet</p> : <ul className={css.list}>{props.item.discussion!.map((message) => <li key={message.messageId}><strong>{memberName(props.snapshot, message.authorId)}</strong><span>{message.text}</span></li>)}</ul>}
-    <form className={css.actions} onSubmit={sendDiscussion}><label>Message<textarea aria-label="Task discussion message" value={discussionDraft} rows={2} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setDiscussionDraft(event.currentTarget.value); }} /></label><button type="submit" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || discussionDraft.trim() === ""}>Send discussion</button></form>
-    <h4>Decision</h4>
-    {props.item.decisions.length === 0 ? <p className={css.hint}>No decisions linked</p> : <DecisionList decisions={props.item.decisions} port={props.port} snapshot={props.snapshot} busy={props.busy} run={props.run} />}
-    <DecisionComposer scope={`task:${task.taskId}`} sourceMessageIds={sourceMessageIds} port={props.port} busy={props.busy} run={props.run} />
-    <h4>ChangeSet</h4>
-    {props.item.changeSets.length === 0 ? <p className={css.hint}>No ChangeSets linked</p> : <ul className={css.list}>{props.item.changeSets.map((changeSet) => <li key={changeSet.changeSetId}><strong>{changeSet.title}</strong><span>{changeSet.status}</span></li>)}</ul>}
+    <h4>{props.t("tasks.discussion")}</h4>
+    {(props.item.discussion ?? []).length === 0 ? <p className={css.hint}>{props.t("tasks.discussionEmpty")}</p> : <ul className={css.list}>{props.item.discussion!.map((message) => <li key={message.messageId}><strong>{memberName(props.snapshot, message.authorId)}</strong><span>{message.text}</span></li>)}</ul>}
+    <form className={css.actions} onSubmit={sendDiscussion}><label>{props.t("tasks.messageLabel")}<textarea aria-label={props.t("tasks.messageAria")} value={discussionDraft} rows={2} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setDiscussionDraft(event.currentTarget.value); }} /></label><button type="submit" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || discussionDraft.trim() === ""}>{props.t("tasks.sendDiscussion")}</button></form>
+    <h4>{props.t("tasks.decision")}</h4>
+    {props.item.decisions.length === 0 ? <p className={css.hint}>{props.t("tasks.decisionsEmpty")}</p> : <DecisionList decisions={props.item.decisions} port={props.port} snapshot={props.snapshot} t={props.t} busy={props.busy} run={props.run} />}
+    <DecisionComposer scope={`task:${task.taskId}`} sourceMessageIds={sourceMessageIds} port={props.port} t={props.t} busy={props.busy} run={props.run} />
+    <h4>{props.t("tasks.changeSets")}</h4>
+    {props.item.changeSets.length === 0 ? <p className={css.hint}>{props.t("tasks.changeSetsEmpty")}</p> : <ul className={css.list}>{props.item.changeSets.map((changeSet) => <li key={changeSet.changeSetId}><strong>{changeSet.title}</strong><span>{changeSetStatusLabel(changeSet.status, props.t)}</span></li>)}</ul>}
   </section>;
 }
 
-export function CollabTasks(props: { port: CollabTasksPort }): ReactNode {
+export function CollabTasks(props: { port: CollabTasksPort; t?: CollabTranslate }): ReactNode {
+  const t = props.t ?? defaultCollabTranslate;
   const [snapshot, setSnapshot] = useState(() => validateCollabTasksSnapshot(props.port.getSnapshot()));
   const [busy, setBusy] = useState<string>();
   const [actionError, setActionError] = useState<string>();
@@ -213,23 +245,24 @@ export function CollabTasks(props: { port: CollabTasksPort }): ReactNode {
     if (busy !== undefined) return;
     setBusy(name);
     setActionError(undefined);
-    void action().catch((error: unknown) => { setActionError(error instanceof Error ? error.message : String(error)); }).finally(() => { setBusy(undefined); });
+    void action().catch((error: unknown) => { console.error(error); setActionError(t("tasks.actionError")); }).finally(() => { setBusy(undefined); });
   };
   const create = (event: FormEvent): void => {
     event.preventDefault();
     run("create", async () => { await actions.createTask({ title, description }); setTitle(""); setDescription(""); await props.port.refresh(); });
   };
   const selected = snapshot.tasks.find((item) => item.task.taskId === snapshot.selectedTaskId) ?? (snapshot.tasks.length === 1 ? snapshot.tasks[0] : undefined);
-  const error = actionError ?? snapshot.error;
-  return <section className={css.tasks} aria-label="Task board" data-collab-tasks="true" data-role={snapshot.role} data-connection={snapshot.connection}>
-    <header className={css.header}><div><h2>Task board</h2><p>Create, claim, and move work through the room.</p></div><span className={css.connection} role="status">{snapshot.connection === "online" ? "Online" : "Offline"}</span></header>
-    {snapshot.connection === "offline" ? <p className={css.offline} role="status">Reconnect to create or update tasks.</p> : null}
-    <section className={css.section} aria-label="Room decisions"><h3>Room decisions</h3>{(snapshot.roomDecisions ?? []).length === 0 ? <p className={css.hint}>No room decisions yet</p> : <DecisionList decisions={snapshot.roomDecisions!} port={props.port} snapshot={snapshot} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} />}<DecisionComposer scope="room" sourceMessageIds={snapshot.availableMessageIds ?? snapshot.tasks.flatMap((item) => item.discussion ?? []).map((message) => message.messageId)} port={props.port} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} /></section>
-    {error ? <div className={css.error} role="alert">{error}<button type="button" onClick={() => { run("refresh", () => props.port.refresh()); }}>Retry</button></div> : null}
-    <form className={css.create} onSubmit={create}><label>Title<input required maxLength={120} value={title} onChange={(event) => { setTitle(event.currentTarget.value); }} /></label><label>Description<textarea value={description} onChange={(event) => { setDescription(event.currentTarget.value); }} /></label><button type="submit" disabled={snapshot.connection === "offline" || busy !== undefined}>Create task</button></form>
-    <section className={css.board} aria-label="Tasks">
-      {snapshot.tasks.length === 0 ? <p className={css.hint}>No tasks yet</p> : <ul className={css.cards}>{snapshot.tasks.map((item) => <li key={item.task.taskId}><button type="button" className={css.card} data-status={item.task.status} aria-pressed={selected?.task.taskId === item.task.taskId} disabled={busy !== undefined} onClick={() => { run("select", () => props.port.selectTask(item.task.taskId)); }}><strong>{item.task.title}</strong><span>{statusLabel(item.task.status)}</span></button></li>)}</ul>}
+  const error = actionError ?? (snapshot.error ? t("tasks.actionError") : undefined);
+  return <section className={css.tasks} aria-label={t("tasks.aria")} data-collab-tasks="true" data-role={snapshot.role} data-connection={snapshot.connection}>
+    <header className={css.header}><div><h2>{t("tasks.title")}</h2><p>{t("tasks.description")}</p></div><span className={css.connection} role="status">{t(snapshot.connection === "online" ? "tasks.online" : "tasks.offline")}</span></header>
+    {snapshot.connection === "offline" ? <p className={css.offline} role="status">{t("tasks.offlineHint")}</p> : null}
+    <section className={css.section} aria-label={t("tasks.roomDecisionsAria")}><h3>{t("tasks.roomDecisions")}</h3>{(snapshot.roomDecisions ?? []).length === 0 ? <p className={css.hint}>{t("tasks.roomDecisionsEmpty")}</p> : <DecisionList decisions={snapshot.roomDecisions!} port={props.port} snapshot={snapshot} t={t} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} />}<DecisionComposer scope="room" sourceMessageIds={snapshot.availableMessageIds ?? snapshot.tasks.flatMap((item) => item.discussion ?? []).map((message) => message.messageId)} port={props.port} t={t} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} /></section>
+    {error ? <div className={css.error} role="alert">{error}<button type="button" onClick={() => { run("refresh", () => props.port.refresh()); }}>{t("tasks.retry")}</button></div> : null}
+    <form className={css.create} onSubmit={create}><label>{t("tasks.titleLabel")}<input required maxLength={120} value={title} onChange={(event) => { setTitle(event.currentTarget.value); }} /></label><label>{t("tasks.descriptionLabel")}<textarea value={description} onChange={(event) => { setDescription(event.currentTarget.value); }} /></label><button type="submit" disabled={snapshot.connection === "offline" || busy !== undefined}>{t("tasks.create")}</button></form>
+    <section className={css.board} aria-label={t("tasks.boardAria")}>
+      <h3 className={css.boardTitle}>{t("tasks.listTitle")}</h3>
+      {snapshot.tasks.length === 0 ? <p className={css.hint}>{t("tasks.empty")}</p> : <ul className={css.cards}>{snapshot.tasks.map((item) => <li key={item.task.taskId}><button type="button" className={css.card} data-status={item.task.status} aria-pressed={selected?.task.taskId === item.task.taskId} disabled={busy !== undefined} onClick={() => { run("select", () => props.port.selectTask(item.task.taskId)); }}><strong>{item.task.title}</strong><span>{statusLabel(item.task.status, t)}</span></button></li>)}</ul>}
     </section>
-    {selected ? <TaskDetail item={selected} snapshot={snapshot} port={props.port} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} /> : null}
+    {selected ? <TaskDetail item={selected} snapshot={snapshot} port={props.port} t={t} busy={busy} run={(name, action) => { run(name, async () => { await action(); }); }} /> : null}
   </section>;
 }

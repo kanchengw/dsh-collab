@@ -133,7 +133,8 @@ describe("Collab Changes", () => {
     expect(html).toContain("Upstream available");
     expect(html).toContain("2 local files changed");
     expect(html).toContain("Fix reconnect");
-    expect(html).toContain("The Host cannot be reached");
+    expect(html).toContain("The change operation failed. Try again.");
+    expect(html).not.toContain("The Host cannot be reached");
     expect(html).toContain("Retry");
     expect(html).toContain("&lt;script&gt;safe&lt;/script&gt;");
     expect(html).not.toContain("<script>");

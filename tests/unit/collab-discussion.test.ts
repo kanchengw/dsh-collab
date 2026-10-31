@@ -12,6 +12,12 @@ import {
   type CollabDiscussionPort,
   type CollabDiscussionViewPort,
 } from "../../src/collab-discussion.js";
+import { zh, type CollabTranslate } from "../../src/locales.js";
+
+const t: CollabTranslate = (key, params) => {
+  const template = zh[key];
+  return params ? template.replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match) : template;
+};
 
 const messages: readonly CollabDiscussionMessage[] = [
   { messageId: "message-1", authorId: "alice", text: "General context", scope: "general" },
@@ -28,6 +34,7 @@ describe("Collab Discussion", () => {
       connection: "online",
       messages,
       port: port(),
+      t,
       currentMemberId: "alice",
       scopes: [
         { value: "general", label: "General" },
@@ -36,6 +43,7 @@ describe("Collab Discussion", () => {
     }));
 
     expect(html).toContain('data-collab-discussion="true"');
+    expect(html).toContain("房间动态");
     expect(html).toContain('data-scope="general"');
     expect(html).toContain('data-scope="task:task-1"');
     expect(html).toContain('data-author="self"');
@@ -54,10 +62,11 @@ describe("Collab Discussion", () => {
       connection: "offline",
       messages: [],
       port: port(),
+      t,
       scopes: [{ value: "general", label: "General" }],
     }));
 
-    expect(html).toContain("暂无讨论消息");
+    expect(html).toContain("还没有讨论消息");
     expect(html).toContain("当前离线，恢复连接后才能发送消息");
     expect(html).toMatch(/<button[^>]+disabled=""[^>]*>发送<\/button>/);
   });
@@ -67,6 +76,7 @@ describe("Collab Discussion", () => {
       connection: "online",
       messages: [{ ...messages[1]!, sourceMessageId: "message-missing" }],
       port: port(),
+      t,
       scopes: [{ value: "general", label: "General" }, { value: "task:task-1", label: "Task: Fix reconnect" }],
     }));
 
@@ -86,6 +96,7 @@ describe("Collab Discussion", () => {
       connection: "offline",
       messages: [],
       port: discussionPort,
+      t,
       snapshotPort: discussionPort,
     }));
     current = { ...current, messages: [{ ...messages[0]!, text: "Fresh general context" }] };
@@ -93,6 +104,7 @@ describe("Collab Discussion", () => {
       connection: "offline",
       messages: [],
       port: discussionPort,
+      t,
       snapshotPort: discussionPort,
     }));
     expect(first).toContain("General context");

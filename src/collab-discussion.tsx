@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import css from "./collab-discussion.module.css";
+import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 
 export type CollabDiscussionScope = "general" | `task:${string}`;
 
@@ -59,6 +60,7 @@ export interface CollabDiscussionProps {
   memberNames?: ReadonlyMap<string, string>;
   currentMemberId?: string;
   snapshotPort?: CollabDiscussionViewPort;
+  t?: CollabTranslate;
 }
 
 function isDiscussionScope(value: string): value is CollabDiscussionScope {
@@ -105,6 +107,7 @@ function displayName(memberNames: ReadonlyMap<string, string> | undefined, autho
 }
 
 export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
+  const t = props.t ?? defaultCollabTranslate;
   const fallbackSnapshot: CollabDiscussionSnapshot = {
     roomId: "",
     connection: props.connection,
@@ -136,19 +139,19 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
       setDraft("");
       setSourceMessageId(undefined);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "发送失败，请稍后重试");
+      setError(t("discussion.sendError"));
     } finally {
       setBusy(false);
     }
   };
 
-  return <section className={css.discussion} data-collab-discussion="true" data-connection={snapshot.connection} aria-label="Discussion">
+  return <section className={css.discussion} data-collab-discussion="true" data-connection={snapshot.connection} aria-label={t("discussion.aria")}>
     <header className={css.header}>
-      <div><h2>Discussion</h2><p>Flat messages for the room and selected objects.</p></div>
-      <span className={css.connection} role="status">{online ? "在线" : "离线"}</span>
+      <div><h2>{t("discussion.title")}</h2><p>{t("discussion.description")}</p></div>
+      <span className={css.connection} role="status">{t(online ? "discussion.online" : "discussion.offline")}</span>
     </header>
-    {!online ? <p className={css.offline} role="status">当前离线，恢复连接后才能发送消息</p> : null}
-    {snapshot.messages.length === 0 ? <p className={css.empty} role="status">暂无讨论消息</p> : <ul className={css.messages}>
+    {!online ? <p className={css.offline} role="status">{t("discussion.offlineHint")}</p> : null}
+    {snapshot.messages.length === 0 ? <p className={css.empty} role="status">{t("discussion.empty")}</p> : <ul className={css.messages}>
       {snapshot.messages.map((message) => {
         const source = sourceMessage(snapshot.messages, message.sourceMessageId);
         const own = Boolean(snapshot.currentMemberId && message.authorId === snapshot.currentMemberId);
@@ -156,17 +159,17 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
           <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, message.authorId)}</strong></div>
           <p className={css.text}>{message.text}</p>
           {message.sourceMessageId ? <div className={css.quote} data-reference-state={source ? "available" : "missing"}>
-            <span>引用源</span>{source ? <p>{source.text}</p> : <p>引用源不可用</p>}
+            <span>{t("discussion.quoteSource")}</span>{source ? <p>{source.text}</p> : <p>{t("discussion.quoteMissing")}</p>}
           </div> : null}
-          <button type="button" className={css.quoteButton} disabled={!online || busy} onClick={() => { setSourceMessageId(message.messageId); }}>引用</button>
+          <button type="button" className={css.quoteButton} disabled={!online || busy} onClick={() => { setSourceMessageId(message.messageId); }}>{t("discussion.quote")}</button>
         </li>;
       })}
     </ul>}
     <form className={css.composer} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      {selectedSource ? <div className={css.selectedQuote} role="status"><span>引用中：{selectedSource.text}</span><button type="button" disabled={busy} onClick={() => { setSourceMessageId(undefined); }}>取消引用</button></div> : sourceMessageId ? <p className={css.invalidReference} role="status">引用消息已不可用，发送时将作为新消息处理</p> : null}
-      <label className={css.inputLabel}>消息<textarea aria-label="讨论消息" value={draft} rows={2} disabled={!online || busy} placeholder="输入讨论消息，Enter 发送，Shift+Enter 换行" onChange={(event) => { setDraft(event.currentTarget.value); setError(undefined); }} onKeyDown={(event) => { if (shouldSubmitCollabDiscussionKey(event)) { event.preventDefault(); void submit(); } }} /></label>
+      {selectedSource ? <div className={css.selectedQuote} role="status"><span>{t("discussion.quoting", { text: selectedSource.text })}</span><button type="button" disabled={busy} onClick={() => { setSourceMessageId(undefined); }}>{t("discussion.cancelQuote")}</button></div> : sourceMessageId ? <p className={css.invalidReference} role="status">{t("discussion.invalidQuote")}</p> : null}
+      <label className={css.inputLabel}>{t("discussion.messageLabel")}<textarea aria-label={t("discussion.messageAria")} value={draft} rows={2} disabled={!online || busy} placeholder={t("discussion.placeholder")} onChange={(event) => { setDraft(event.currentTarget.value); setError(undefined); }} onKeyDown={(event) => { if (shouldSubmitCollabDiscussionKey(event)) { event.preventDefault(); void submit(); } }} /></label>
       {error ? <p className={css.error} role="alert">{error}</p> : null}
-      <button type="submit" className={css.send} disabled={!online || busy || draft.trim() === ""}>发送</button>
+      <button type="submit" className={css.send} disabled={!online || busy || draft.trim() === ""}>{t("discussion.send")}</button>
     </form>
   </section>;
 }

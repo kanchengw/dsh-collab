@@ -227,9 +227,9 @@ export function CollabChanges(props: { port: CollabChangesPort; t?: CollabTransl
     if (busy !== undefined) return;
     setBusy(name);
     setActionError(undefined);
-    void action().catch((error: unknown) => { setActionError(error instanceof Error ? error.message : String(error)); }).finally(() => { setBusy(undefined); });
+    void action().catch((error: unknown) => { console.error(error); setActionError(t("changes.actionError")); }).finally(() => { setBusy(undefined); });
   };
-  const error = actionError ?? snapshot.error;
+  const error = actionError ?? (snapshot.error ? t("changes.actionError") : undefined);
 
   return <section className={css.changes} aria-label={t("changes.title")} data-role={snapshot.role} data-connection={snapshot.connection}>
     <header className={css.header}>

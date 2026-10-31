@@ -13,10 +13,6 @@ function connectionMethodFor(settings: DshCollabSettingsSnapshot): ConnectionMet
   return settings.advertisedEndpoint.startsWith("wss://") ? "custom-wss" : "unconfigured";
 }
 
-function errorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof Error ? cause.message : fallback;
-}
-
 function gatewaySettingsDiffer(saved: DshCollabSettingsSnapshot): boolean {
   const applied = saved.appliedGateway;
   return applied !== undefined
@@ -72,7 +68,8 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
       else await port.startGateway?.();
       setNotice({ tone: "success", message: t(gateway.status === "running" ? "gateway.stoppedNotice" : "gateway.startedNotice") });
     } catch (cause) {
-      setNotice({ tone: "error", message: errorMessage(cause, t("rooms.actionError")) });
+      console.error(cause);
+      setNotice({ tone: "error", message: t("settings.gatewayError") });
     } finally {
       setBusy(undefined);
     }
@@ -135,7 +132,8 @@ export function DshCollabSettingsPanel({ port, t = defaultCollabTranslate }: { p
       resetDraft(committed);
       setNotice({ tone: "success", message: t(gateway.status === "running" ? "settings.savedRestartNotice" : "settings.savedNextStartNotice") });
     } catch (cause) {
-      setNotice({ tone: "error", message: errorMessage(cause, t("settings.saveError")) });
+      console.error(cause);
+      setNotice({ tone: "error", message: t("settings.saveError") });
     } finally {
       setBusy(undefined);
     }

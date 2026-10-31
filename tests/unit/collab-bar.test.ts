@@ -172,6 +172,7 @@ describe("Collab Bar", () => {
     }));
 
     expect(html).toContain("协作");
+    expect(html).toContain("房间项目");
     expect(html).toContain("任务");
     expect(html).toContain("动态");
     expect(html).toContain("变更");

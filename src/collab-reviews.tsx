@@ -235,11 +235,11 @@ export function CollabReviews(props: { port: CollabReviewsPort; t?: CollabTransl
     if (busy !== undefined) return;
     setBusy(name);
     setActionError(undefined);
-    void action().catch((error: unknown) => { setActionError(error instanceof Error ? error.message : String(error)); }).finally(() => { setBusy(undefined); });
+    void action().catch((error: unknown) => { console.error(error); setActionError(t("reviews.actionError")); }).finally(() => { setBusy(undefined); });
   };
   const selected = snapshot.reviews.find((item) => item.review.changeSetId === snapshot.selectedChangeSetId)
     ?? (snapshot.reviews.length === 1 ? snapshot.reviews[0] : undefined);
-  const error = actionError ?? snapshot.error;
+  const error = actionError ?? (snapshot.error ? t("reviews.actionError") : undefined);
   return <section className={css.changes} aria-label={t("reviews.title")} data-role={snapshot.role} data-connection={snapshot.connection}>
     <header className={css.header}><div><h2>{t("reviews.title")}</h2><p>{t("reviews.description")}</p></div><span className={css.connection} role="status">{t(snapshot.connection === "online" ? "reviews.online" : "reviews.offline")}</span></header>
     {snapshot.connection === "offline" ? <p className={css.offline} role="status">{t("reviews.offlineHint")}</p> : null}

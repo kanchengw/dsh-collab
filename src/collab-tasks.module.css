@@ -89,7 +89,7 @@
 .actions button:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
 
 .board { display: grid; gap: 8px; padding: 8px; }
-.board::before { content: 'Tasks'; padding: 3px 4px 1px; color: var(--dsw-alias-label-tertiary); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.boardTitle { margin: 0; padding: 3px 4px 1px; color: var(--dsw-alias-label-tertiary); font-size: 11px; font-weight: 650; letter-spacing: .04em; }
 .cards,
 .list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .card { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); text-align: left; cursor: pointer; transition: border-color 120ms ease-out, background 120ms ease-out; }
