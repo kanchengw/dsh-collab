@@ -1,0 +1,25 @@
+{
+  "packageVersion": "0.1.0",
+  "packageManager": "pnpm@11.19.0",
+  "requiredConfig": [],
+  "featureFlags": {
+    "collab": true,
+    "localSideWork": true,
+    "easyTier": true
+  },
+  "migrations": [
+    {
+      "id": "participant-room-index-v1",
+      "rollback": "Restore the previous participant joined-room settings projection."
+    }
+  ],
+  "rollback": {
+    "owner": "dsh-collab maintainers",
+    "steps": [
+      "Stop sharing the active Collab room.",
+      "Disable or remove the dsh-collab plugin from the DSH profile.",
+      "Restore the previous plugin build and DSH profile state.",
+      "Restart DSH and verify the room list before resharing."
+    ]
+  }
+}

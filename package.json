@@ -14,7 +14,8 @@
     "test:regression": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "build": "pnpm clean && tsc -p tsconfig.build.json && tsdown"
+    "build": "pnpm clean && tsc -p tsconfig.build.json && tsdown",
+    "release:check": "node scripts/release-check.mjs"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -64,7 +65,8 @@
     "LICENSE",
     "SECURITY.md",
     "CHANGELOG.md",
-    "third_party/easytier/*"
+    "third_party/easytier/*",
+    "release.json"
   ],
   "engines": {
     "node": ">=22"
