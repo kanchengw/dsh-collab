@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -109,15 +109,16 @@ describe("ParticipantRoomWorkspaceJoiner", () => {
 
     expect(downloads).toEqual([]);
     const joined = await joiner.join({ roomId: "room-atlas", memberId: "participant-member", roomTitle: "Atlas", token: "room-token" });
+    const canonicalWorkspacePath = await realpath(joined.workspace.workspacePath);
 
     expect(downloads).toEqual([{ roomId: "room-atlas", token: "room-token" }]);
     expect(await readFile(join(joined.workspace.workspacePath, "src", "shared.ts"), "utf8")).toBe("export const shared = true;\n");
-    expect(fixture.dshCalls).toEqual([["create", joined.workspace.workspacePath, "Atlas"]]);
+    expect(fixture.dshCalls).toEqual([["create", canonicalWorkspacePath, "Atlas"]]);
     expect(joined.project).toEqual({
       roomId: "room-atlas",
       memberId: "participant-member",
       roomTitle: "Atlas",
-      workspacePath: joined.workspace.workspacePath,
+      workspacePath: canonicalWorkspacePath,
       nativeWorkspaceId: "dsh-workspace-atlas",
     });
     expect(fixture.snapshots).toHaveLength(1);

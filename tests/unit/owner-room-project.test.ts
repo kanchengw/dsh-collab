@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -126,7 +126,7 @@ describe("OwnerRoomProjectService", () => {
       roomTitle: "Atlas",
       nativeWorkspaceTitle: "source \u00b7 Atlas",
     }));
-    expect(value.roomProjects.get("room-fixed")).toMatchObject({ workspacePath: value.workspacePath, sourcePath: value.sourcePath });
+    expect(value.roomProjects.get("room-fixed")).toMatchObject({ workspacePath: value.workspacePath, sourcePath: await realpath(value.sourcePath) });
     expect(value.calls).toEqual(["room", "sharing", "ledger", "snapshot", "version", "bootstrap", "commit"]);
   });
 

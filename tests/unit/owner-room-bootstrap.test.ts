@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -179,7 +179,7 @@ describe("OwnerRoomWorkspaceBootstrapper", () => {
 
     expect(await readFile(join(initial.sourcePath, "README.md"), "utf8")).toBe("owner source remains private\n");
     expect(await readFile(join(created.workspace.workspacePath, "README.md"), "utf8")).toBe("owner source remains private\n");
-    expect(fixture.dshCalls).toEqual([["create", created.workspace.workspacePath, "Atlas"]]);
+    expect(fixture.dshCalls).toEqual([["create", await realpath(created.workspace.workspacePath), "Atlas"]]);
     expect(calls).toEqual(["connect", "open:host-primary-session"]);
     expect(created.project).toMatchObject({
       roomId: "room-atlas",

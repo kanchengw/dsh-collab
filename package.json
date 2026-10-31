@@ -8,9 +8,12 @@
   "license": "MIT",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "pretest": "pnpm build",
     "test": "vitest run",
+    "pretest:unit": "pnpm build",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration --passWithNoTests",
+    "pretest:regression": "pnpm build",
     "test:regression": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",

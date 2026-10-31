@@ -199,18 +199,18 @@ start a Gateway, share a room or reconnect a Participant.
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm test
 pnpm typecheck
+pnpm test
 pnpm build
 pnpm release:check
 pnpm audit --audit-level=high
 npm pack --dry-run
 ```
 
-`pnpm test` runs the unit and integration suites, including the local
-HTTP/WebSocket E2E flow. The local flow creates a real Gateway, joins two
-Participants, verifies room messaging and cursor recovery, and confirms that
-the retired `target: "dsh"` room route is rejected.
+`pnpm test` builds the Host and client bundles, then runs the unit and
+integration suites, including the local HTTP/WebSocket E2E flow. The local
+flow creates a real Gateway, joins two Participants, verifies room messaging
+and cursor recovery, and confirms that the retired `target: "dsh"` room route is rejected.
 
 For the two-DSH browser harness on Windows, see
 [e2e/README.md](./e2e/README.md). It expects a DSH source checkout at the

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,7 +36,7 @@ function registrarFixture() {
 
 describe("DshRoomProjectRegistrar", () => {
   it("canonicalizes an existing workspace before calling the DSH registry", async () => {
-    const path = await workspace("canonical-target");
+    const path = await realpath(await workspace("canonical-target"));
     const alias = join(path, "..", "canonical-alias");
     await symlink(path, alias, "junction");
     directories.push(alias);
@@ -60,7 +60,7 @@ describe("DshRoomProjectRegistrar", () => {
   });
 
   it("creates, names, and durably records the first native DSH project", async () => {
-    const path = await workspace("first");
+    const path = await realpath(await workspace("first"));
     const { calls, registrar, snapshots, store } = registrarFixture();
 
     await expect(registrar.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: path })).resolves.toEqual({
@@ -76,7 +76,7 @@ describe("DshRoomProjectRegistrar", () => {
   });
 
   it("uses a dedicated native Workspace title without changing the Room title", async () => {
-    const path = await workspace("native-title");
+    const path = await realpath(await workspace("native-title"));
     const { calls, registrar, store } = registrarFixture();
 
     await registrar.register({
@@ -92,7 +92,7 @@ describe("DshRoomProjectRegistrar", () => {
   });
 
   it("reuses a registered native DSH project without overwriting a user rename", async () => {
-    const path = await workspace("reuse");
+    const path = await realpath(await workspace("reuse"));
     const { calls, registrar, snapshots, store } = registrarFixture();
     store.register({ roomId: "room-1", memberId: "member-1", roomTitle: "Atlas", workspacePath: path });
     store.setNativeWorkspaceId({ roomId: "room-1", nativeWorkspaceId: "dsh-workspace-1" });
@@ -107,7 +107,7 @@ describe("DshRoomProjectRegistrar", () => {
   });
 
   it("does not commit a local registration when DSH creation fails", async () => {
-    const path = await workspace("failure");
+    const path = await realpath(await workspace("failure"));
     const store = new RoomProjectStore();
     const snapshots: RoomProjectSnapshot[] = [];
     const registrar = new DshRoomProjectRegistrar({
@@ -122,7 +122,7 @@ describe("DshRoomProjectRegistrar", () => {
   });
 
   it("does not commit a local registration when DSH creation fails", async () => {
-    const path = await workspace("create-failure");
+    const path = await realpath(await workspace("create-failure"));
     const store = new RoomProjectStore();
     const snapshots: RoomProjectSnapshot[] = [];
     const registrar = new DshRoomProjectRegistrar({
