@@ -324,6 +324,31 @@ describe("CollabGateway route contract", () => {
     ]);
   });
 
+  it("allows a Task to be claimed again after it is unassigned", async () => {
+    const taskStore = new TaskStore();
+    const { gateway } = setup(undefined, false, undefined, undefined, () => 10, { taskStore });
+    const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((bootstrap.body as { roomToken: string }).roomToken);
+    const created = await request(gateway, {
+      method: "POST", path: "/v1/rooms/room-1/tasks", headers,
+      body: { title: "Retry claim", clientRequestId: "task-retry-claim" },
+    });
+    const taskId = (created.body as { task: { taskId: string } }).task.taskId;
+
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/claim`, headers,
+      body: { clientRequestId: "claim-first" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: "member-host" } } });
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/unassign`, headers,
+      body: { clientRequestId: "unassign-first" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: undefined } } });
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/claim`, headers,
+      body: { clientRequestId: "claim-second" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: "member-host" } } });
+  });
+
   it("writes Discussion scope and source references into the human message ledger event", async () => {
     const { gateway, ledger } = setup();
     const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });

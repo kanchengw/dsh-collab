@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { CollabError, invalidInput } from "./errors.js";
 import { ApprovalStore } from "./approvals.js";
 import { AgentDispatcher } from "./dispatcher.js";
@@ -801,13 +801,18 @@ export class CollabGateway {
     const current = tasks.get(taskId);
     if (current.roomId !== roomId) throw invalidInput("task does not belong to this room", { field: "taskId" });
     if (request.method === "POST" && tail[1] === "claim") {
-      const task = tasks.claim({ taskId, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:claim`, now: this.now() });
+      const body = request.body === undefined ? {} : objectBody(request.body);
+      allowedFields(body, ["clientRequestId"]);
+      const clientRequestId = typeof body.clientRequestId === "string" ? requestIdField(body, "clientRequestId") : randomUUID();
+      const task = tasks.claim({ taskId, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:claim:${clientRequestId}`, now: this.now() });
       await this.options.commitCriticalState?.();
       return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
     }
     if (request.method === "POST" && tail[1] === "unassign") {
-      if (request.body !== undefined) allowedFields(objectBody(request.body), []);
-      const task = tasks.assign({ taskId, assigneeId: undefined, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:unassign`, now: this.now() });
+      const body = request.body === undefined ? {} : objectBody(request.body);
+      allowedFields(body, ["clientRequestId"]);
+      const clientRequestId = typeof body.clientRequestId === "string" ? requestIdField(body, "clientRequestId") : randomUUID();
+      const task = tasks.assign({ taskId, assigneeId: undefined, actor: { memberId: actor.memberId, principalId: actor.principalId }, eventId: `task:${roomId}:${taskId}:unassign:${clientRequestId}`, now: this.now() });
       await this.options.commitCriticalState?.();
       return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
     }

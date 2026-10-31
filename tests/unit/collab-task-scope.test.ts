@@ -12,6 +12,7 @@ function port(roomId: string, scoped?: CollabTasksPort): CollabTasksPort {
     claimTask: vi.fn(async () => undefined),
     setTaskStatus: vi.fn(async () => undefined),
     addTaskParticipant: vi.fn(async () => undefined),
+    sendDiscussion: vi.fn(async () => undefined),
     ...(scoped ? { forRoom: () => scoped } : {}),
   };
 }

@@ -818,12 +818,12 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   async claimTask(roomId: string, taskId: string): Promise<void> {
     this.assertActiveRoom(roomId);
-    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}, true);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/claim`, { clientRequestId: randomId("task-claim") }, true);
   }
 
   async unassignTask(roomId: string, taskId: string): Promise<void> {
     this.assertActiveRoom(roomId);
-    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/unassign`, {}, true);
+    await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/unassign`, { clientRequestId: randomId("task-unassign") }, true);
   }
 
   async setTaskStatus(roomId: string, taskId: string, status: string): Promise<void> {
