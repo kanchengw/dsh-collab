@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { createDshRepositoryCommandPort, type DshRepositorySubprocess, type RepositoryCommandPort, type RepositoryCommandResult } from "./repository-inspector.js";
 import type { RoomWorkspace } from "./room-workspace.js";
 import { isSafeWorkspaceSnapshotPath } from "./workspace-snapshot-store.js";
@@ -131,16 +131,38 @@ async function workspacePaths(input: {
   basePaths: readonly string[];
   subprocess: DshRepositorySubprocess;
 }): Promise<string[]> {
-  const commands = createDshRepositoryCommandPort({ subprocess: input.subprocess, cwd: input.workspace.workspacePath });
-  const root = (await requiredRun(commands, ["rev-parse", "--show-toplevel"])).stdout.trim();
-  if (root === "" || !samePath(await realpath(root), await realpath(input.workspace.workspacePath))) {
-    throw new Error("ChangeSet Room Workspace Git root does not match its files");
+  const candidates = new Set(input.basePaths);
+  let hasGitDirectory = false;
+  try {
+    const info = await lstat(join(input.workspace.workspacePath, ".git"));
+    hasGitDirectory = info.isDirectory() && !info.isSymbolicLink();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const [tracked, untracked] = await Promise.all([
-    requiredRun(commands, ["ls-files", "-z", "--cached"]),
-    requiredRun(commands, ["ls-files", "-z", "--others", "--exclude-standard"]),
-  ]);
-  const candidates = new Set([...input.basePaths, ...nulPaths(tracked.stdout), ...nulPaths(untracked.stdout)]);
+  if (hasGitDirectory) {
+    const commands = createDshRepositoryCommandPort({ subprocess: input.subprocess, cwd: input.workspace.workspacePath });
+    const root = (await requiredRun(commands, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    if (root === "" || !samePath(await realpath(root), await realpath(input.workspace.workspacePath))) {
+      throw new Error("ChangeSet Room Workspace Git root does not match its files");
+    }
+    const [tracked, untracked] = await Promise.all([
+      requiredRun(commands, ["ls-files", "-z", "--cached"]),
+      requiredRun(commands, ["ls-files", "-z", "--others", "--exclude-standard"]),
+    ]);
+    for (const path of [...nulPaths(tracked.stdout), ...nulPaths(untracked.stdout)]) candidates.add(path);
+  } else {
+    const visit = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (directory === input.workspace.workspacePath && entry.name === ".git") continue;
+        const path = join(directory, entry.name);
+        const relativePath = relative(input.workspace.workspacePath, path).split(sep).join("/");
+        const info = await lstat(path);
+        if (info.isDirectory() && !info.isSymbolicLink()) await visit(path);
+        else candidates.add(relativePath);
+      }
+    };
+    await visit(input.workspace.workspacePath);
+  }
   const paths: string[] = [];
   for (const path of [...candidates].sort(comparePath)) {
     if (!isSafeChangeSetPath(path)) throw new Error(`ChangeSet reserved .git path is unsupported: ${path}`);

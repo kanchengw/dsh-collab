@@ -245,6 +245,18 @@ describe("ChangeSet draft and immutable diff", () => {
     expect(result.patch).not.toContain("node_modules");
   });
 
+  it("creates a draft from a materialized workspace without a Git directory", async () => {
+    const fixture = await roomWorkspace({ "README.md": "old\n" });
+    await rm(join(fixture.workspace.workspacePath, ".git"), { recursive: true, force: true });
+    await writeFile(join(fixture.workspace.workspacePath, "README.md"), "new\n");
+
+    const result = await service(fixture).create({
+      workspace: fixture.workspace, authorId: "participant-1", title: "No Git", summary: "Materialized workspace",
+    });
+
+    expect(result.draft.files).toEqual([expect.objectContaining({ path: "README.md", operation: "modify" })]);
+  });
+
   it("does not guess rename pairings when identical content has multiple old and new paths", async () => {
     const fixture = await roomWorkspace({ "old/a.txt": "same\n", "old/b.txt": "same\n" });
     await rm(join(fixture.workspace.workspacePath, "old"), { recursive: true });
