@@ -581,6 +581,19 @@ export interface DshParticipantSecretPort {
   remove(key: string): Promise<void>;
 }
 
+export interface DshParticipantRoomIndex {
+  load(): Promise<readonly DshCollabJoinedRoom[]>;
+  save(rooms: readonly DshCollabJoinedRoom[]): Promise<void>;
+}
+
+function memoryParticipantRoomIndex(): DshParticipantRoomIndex {
+  let rooms: DshCollabJoinedRoom[] = [];
+  return {
+    load: async () => structuredClone(rooms),
+    save: async (next) => { rooms = structuredClone([...next]); },
+  };
+}
+
 function participantMetadata(state: ParticipantResumeState, credentialKey: string): DshCollabJoinedRoom {
   return {
     gatewayEndpoint: state.gatewayEndpoint,
@@ -604,8 +617,10 @@ function assertParticipantBinding(state: ParticipantResumeState, metadata: DshCo
 export function createDshParticipantPersistence(
   scope: DshSettingsScope<DshCollabParticipantSettings>,
   secrets: DshParticipantSecretPort,
+  index: DshParticipantRoomIndex = memoryParticipantRoomIndex(),
 ): ParticipantPersistence {
   let cache: ParticipantResumeState[] = [];
+  let roomKeys = new Map<string, string>();
   let prepared = false;
   let preparing: Promise<void> | undefined;
   const listeners = new Set<() => void>();
@@ -613,20 +628,37 @@ export function createDshParticipantPersistence(
   const settingsRooms = (): DshCollabJoinedRoom[] => [...(scope.getSnapshot().value?.joinedRooms ?? [])];
   const list = (): ParticipantResumeState[] => structuredClone(cache);
   const sameRoom = (room: JoinedRoomRef, other: JoinedRoomRef): boolean => room.gatewayEndpoint === other.gatewayEndpoint && room.roomId === other.roomId;
+  const metadata = (states: readonly ParticipantResumeState[]): DshCollabJoinedRoom[] => states
+    .map((state) => participantMetadata(state, roomKeys.get(state.roomId) ?? ""))
+    .filter((room) => room.credentialKey !== "");
+  const project = async (states: readonly ParticipantResumeState[]): Promise<void> => {
+    try { await scope.set("joinedRooms", metadata(states)); } catch { /* volatile UI projection must not block durable membership */ }
+  };
   const prepare = async (): Promise<void> => {
     if (prepared) return;
-    if (preparing) return await preparing;
+    if (preparing) {
+      try { await preparing; return; } catch { /* retry after DSH settings become ready */ }
+    }
     preparing = (async () => {
       const current = scope.getSnapshot();
       if (current.status !== "ready") throw new Error("DSH settings are not ready");
+      let records = [...await index.load()];
+      if (records.length === 0) records = settingsRooms();
       const nextStates: ParticipantResumeState[] = [];
-      for (const room of settingsRooms()) {
+      for (const room of records) {
+        if (!room.credentialKey) continue;
         const state = await secrets.load(room.credentialKey);
         assertParticipantBinding(state, room);
-        nextStates.push(state);
+        nextStates.push({ ...state, ...Object.fromEntries(Object.entries({
+          roomTitle: room.roomTitle, hostDisplayName: room.hostDisplayName, workspacePath: room.workspacePath,
+          workspaceFileCount: room.workspaceFileCount, workspaceTotalBytes: room.workspaceTotalBytes,
+        }).filter(([, value]) => value !== undefined && value !== "")) });
       }
       cache = nextStates;
+      roomKeys = new Map(records.map((room) => [room.roomId, room.credentialKey]));
       prepared = true;
+      await index.save(metadata(nextStates));
+      await project(nextStates);
       publish();
     })();
     try { await preparing; } finally { preparing = undefined; }
@@ -642,35 +674,37 @@ export function createDshParticipantPersistence(
     },
     save: async (state) => {
       await prepare();
-      const current = scope.getSnapshot();
-      if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      const previous = settingsRooms().find((room) => room.roomId === state.roomId);
+      const previous = cache.find((room) => room.roomId === state.roomId);
+      const previousKey = previous ? roomKeys.get(previous.roomId) : undefined;
       const key = await secrets.save(state);
-      const rooms = settingsRooms().filter((room) => room.roomId !== state.roomId);
-      rooms.push(participantMetadata(state, key));
+      const nextStates = [...cache.filter((room) => room.roomId !== state.roomId), structuredClone(state)];
+      const nextKeys = new Map(roomKeys);
+      nextKeys.set(state.roomId, key);
+      roomKeys = nextKeys;
       try {
-        await scope.set("joinedRooms", rooms);
-        const saved = settingsRooms().find((room) => room.roomId === state.roomId);
-        if (saved?.credentialKey !== key || saved.memberId !== state.memberId || saved.gatewayEndpoint !== state.gatewayEndpoint) {
-          throw new Error("Participant credential reference was not persisted by DSH");
-        }
+        await index.save(metadata(nextStates));
       } catch (error) {
+        roomKeys.delete(state.roomId);
+
         await secrets.remove(key).catch(() => undefined);
         throw error;
       }
-      cache = [...cache.filter((room) => room.roomId !== state.roomId), structuredClone(state)];
-      if (previous?.credentialKey) await secrets.remove(previous.credentialKey).catch(() => undefined);
+      cache = nextStates;
+      await project(cache);
+      if (previousKey && previousKey !== key) await secrets.remove(previousKey).catch(() => undefined);
       publish();
     },
     remove: async (ref) => {
       await prepare();
-      const current = scope.getSnapshot();
-      if (current.status !== "ready" || !current.writable) throw new Error("DSH settings are not writable");
-      const removed = settingsRooms().find((room) => sameRoom(room, ref));
-      const rooms = settingsRooms().filter((room) => !sameRoom(room, ref));
-      if (rooms.length > 0) await scope.set("joinedRooms", rooms); else await scope.unset("joinedRooms");
-      cache = cache.filter((room) => !sameRoom(room, ref));
-      if (removed?.credentialKey) await secrets.remove(removed.credentialKey);
+      const removed = cache.find((room) => sameRoom(room, ref));
+      if (!removed) return;
+      const removedKey = roomKeys.get(removed.roomId);
+      const nextStates = cache.filter((room) => !sameRoom(room, ref));
+      roomKeys.delete(removed.roomId);
+      await index.save(metadata(nextStates));
+      cache = nextStates;
+      await project(cache);
+      if (removedKey) await secrets.remove(removedKey);
       publish();
     },
   };
@@ -698,6 +732,20 @@ export function createDshEphemeralParticipantPersistence(): ParticipantPersisten
     save: async (state) => { current = structuredClone(state); publish(); },
     remove: async (ref) => {
       if (current && sameRoom(ref, current)) { current = undefined; publish(); }
+    },
+  };
+}
+
+export function createDshParticipantRoomIndexPort(rpc: DshClientConnectionRpc): DshParticipantRoomIndex {
+  return {
+    async load() {
+      const value = controlValue(await rpc.call("/dsh-collab", "credentials/participant-index/load", {}), "Unable to load Participant room index");
+      const decoded = decodeDshParticipantSettings({ joinedRooms: value.rooms });
+      if (!decoded) throw new Error("Invalid Participant room index response");
+      return decoded.joinedRooms ?? [];
+    },
+    async save(rooms) {
+      controlValue(await rpc.call("/dsh-collab", "credentials/participant-index/save", { rooms }), "Unable to save Participant room index");
     },
   };
 }
@@ -1502,11 +1550,11 @@ export function applyDshCollabClient(context: DshCollabClientContext): void {
     : configForms ? configFormScope(configForms.get<PersistedCollabSettings>("collab-host")) : undefined;
   const participantScope = legacySettingsScope
     ? legacySettingsScope.bind<DshCollabParticipantSettings>({ namespace: DSH_COLLAB_PARTICIPANT_NAMESPACE, decode: decodeDshParticipantSettings })
-    : configForms ? configFormScope(configForms.get<DshCollabParticipantSettings>(DSH_COLLAB_PARTICIPANT_NAMESPACE)) : undefined;
+    : configForms ? configFormScope(configForms.get<DshCollabParticipantSettings>("collab-host")) : undefined;
   const connection = optionalService<{ rpc: DshClientConnectionRpc }>(context, "connection");
   const participantPersistence = connection
-    ? participantScope && participantScope.getSnapshot().status === "ready"
-      ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc))
+    ? participantScope
+      ? createDshParticipantPersistence(participantScope, createDshParticipantSecretPort(connection.rpc), createDshParticipantRoomIndexPort(connection.rpc))
       : createDshEphemeralParticipantPersistence()
     : undefined;
   const prepareParticipantPersistence = (): void => { void participantPersistence?.prepare?.().catch(() => undefined); };

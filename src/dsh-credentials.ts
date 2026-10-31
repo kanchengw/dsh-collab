@@ -34,6 +34,9 @@ function participantState(value: unknown): ParticipantResumeState {
     credential: requiredText(input.credential, "credential", 2048),
     ...(typeof input.roomTitle === "string" && input.roomTitle.trim() !== "" ? { roomTitle: requiredText(input.roomTitle, "roomTitle", 80) } : {}),
     ...(typeof input.hostDisplayName === "string" && input.hostDisplayName.trim() !== "" ? { hostDisplayName: requiredText(input.hostDisplayName, "hostDisplayName", 80) } : {}),
+    ...(typeof input.workspacePath === "string" && input.workspacePath.trim() !== "" ? { workspacePath: requiredText(input.workspacePath, "workspacePath", 4096) } : {}),
+    ...(Number.isSafeInteger(input.workspaceFileCount) && (input.workspaceFileCount as number) >= 0 ? { workspaceFileCount: input.workspaceFileCount as number } : {}),
+    ...(Number.isSafeInteger(input.workspaceTotalBytes) && (input.workspaceTotalBytes as number) >= 0 ? { workspaceTotalBytes: input.workspaceTotalBytes as number } : {}),
   };
   if (input.easyTier !== undefined) {
     if (!input.easyTier || typeof input.easyTier !== "object" || Array.isArray(input.easyTier)) throw new Error("Participant EasyTier credential payload is invalid");

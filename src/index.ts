@@ -59,7 +59,7 @@ export * from "./room-summary.js";
 import { createDshRoomProjectSessionObserver, mountDshCollabCordisHost, resolveDshSessionWorkspacePath, type DshCordisHostConfig, type DshCordisHostContext, type DshSessionQuery } from "./dsh-cordis-host.js";
 import { defaultCollabSettings, DSH_COLLAB_PARTICIPANT_NAMESPACE, DSH_COLLAB_PARTICIPANT_SCHEMA, DSH_COLLAB_SETTINGS_NAMESPACE, DSH_COLLAB_SETTINGS_SCHEMA, easyTierConfigFingerprint, validateDshCollabParticipantSettings, validateDshCollabPersistedSettings, type DshCollabPersistedSettings } from "./settings.js";
 import { gatewayHttpUrl, normalizeGatewayEndpoint, privateGatewayEndpoint } from "./endpoint-policy.js";
-import { HostSnapshotFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
+import { HostSnapshotFile, ParticipantRoomsFile, resolveDefaultCollabParticipantRoomsFile, resolveDefaultCollabRoomWorkspaceDir, resolveDefaultCollabSideTaskFile, resolveDefaultCollabSnapshotDir, resolveDefaultCollabStateFile } from "./persistence.js";
 import { RepositoryInspector, createDshRepositoryCommandPort } from "./repository-inspector.js";
 import { createDshLocalAgentSessionPort, type DshLocalAgentContext } from "./dsh-local-agent.js";
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
@@ -137,6 +137,20 @@ export const Config: z<Record<string, unknown>, Record<string, unknown>> = z.obj
     credentialKey: z.string().min(1).required().hidden(),
     configFingerprint: z.string().min(1).default(undefined as unknown as string).hidden(),
   })).default([]).hidden(),
+  // Participant membership metadata is a current-session projection; durable state lives in participant-rooms.json.
+  // Participant membership metadata shares the profile-owned Config form with Host settings.
+  // Credential payloads remain in the dedicated loopback credential store.
+  joinedRooms: z.array(z.object({
+    gatewayEndpoint: z.string().min(1).required(),
+    roomId: z.string().min(1).required(),
+    memberId: z.string().min(1).required(),
+    credentialKey: z.string().min(1).required().hidden(),
+    roomTitle: z.string().default(""),
+    hostDisplayName: z.string().default(""),
+    workspacePath: z.string().default(""),
+    workspaceFileCount: z.number().step(1).min(0).default(undefined as unknown as number),
+    workspaceTotalBytes: z.number().step(1).min(0).default(undefined as unknown as number),
+  })).default([]).hidden().extra("volatile", true),
 });
 
 interface DshSettingsRegistrationContext {
@@ -325,6 +339,7 @@ function registerGatewayControl(
     ? new EasyTierTransportCoordinator({ runtime: new EasyTierRuntimeManager({ processes: createDshEasyTierProcessPort(context.subprocess) }) })
     : undefined);
   const credentialStore = context.credentials ? new DshCollabCredentialStore(context.credentials) : undefined;
+  const participantRoomsFile = new ParticipantRoomsFile(resolveDefaultCollabParticipantRoomsFile());
   const createLocalAgent = context.agents.create;
   const sideTaskPersistence = config.sideTaskFile === false || (config.sideTaskFile === undefined && config.stateFile === false)
     ? undefined
@@ -681,6 +696,16 @@ function registerGatewayControl(
         if (!credentialStore || !payload || typeof payload !== "object" || Array.isArray(payload) || typeof (payload as { credentialKey?: unknown }).credentialKey !== "string") throw new Error("Participant credential request is invalid");
         await credentialStore.deleteParticipant((payload as { credentialKey: string }).credentialKey);
         return { ok: true, value: { deleted: true } };
+      }
+      if (endpoint === "credentials/participant-index/load") {
+        return { ok: true, value: { rooms: await participantRoomsFile.load() } };
+      }
+      if (endpoint === "credentials/participant-index/save") {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray((payload as { rooms?: unknown }).rooms)) throw new Error("Participant room index request is invalid");
+        const rooms = (payload as { rooms: unknown[] }).rooms;
+        if (rooms.some((room) => !room || typeof room !== "object" || Array.isArray(room))) throw new Error("Participant room index request is invalid");
+        await participantRoomsFile.save(rooms as never);
+        return { ok: true, value: { saved: true } };
       }
       if (endpoint === "rooms/list") return { ok: true, value: { rooms: listOwnedRooms() } };
       if (endpoint === "owner/room-project/prepare" || endpoint === "owner/room-project/complete") {

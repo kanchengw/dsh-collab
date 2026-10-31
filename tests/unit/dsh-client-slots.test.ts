@@ -1359,21 +1359,40 @@ describe("real DSH client slot adapter", () => {
     ]);
   });
 
-  it("rolls back a new Participant grant when settings do not commit its reference", async () => {
+  it("keeps a Joined room when the volatile UI projection is unavailable", async () => {
     const scope = {
       getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms: [] }, writable: true }),
       subscribe: () => () => {},
-      set: vi.fn(async () => {}),
+      set: vi.fn(async () => { throw new Error("volatile projection rejected"); }),
       unset: vi.fn(async () => {}),
     };
     const secrets = memoryParticipantSecrets();
     const persistence = createDshParticipantPersistence(scope, secrets);
     const state = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-2", memberId: "member-bob", credential: "resume-secret" };
 
-    await expect(persistence.save(state)).rejects.toThrow(/not persisted/i);
+    await expect(persistence.save(state)).resolves.toBeUndefined();
+    expect(persistence.list?.()).toEqual([state]);
+    expect(secrets.remove).not.toHaveBeenCalled();
+  });
 
-    expect(secrets.remove).toHaveBeenCalledWith(expect.stringMatching(/^dsh-collab\/participant-/));
-    expect(persistence.list?.()).toEqual([]);
+  it("restores Joined rooms from the durable index after a new persistence instance", async () => {
+    let rooms: DshCollabJoinedRoom[] = [];
+    const index = {
+      load: vi.fn(async () => rooms),
+      save: vi.fn(async (next: readonly DshCollabJoinedRoom[]) => { rooms = structuredClone([...next]); }),
+    };
+    const secrets = memoryParticipantSecrets();
+    const scope = () => ({
+      getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms: [] }, writable: true }),
+      subscribe: () => () => {}, set: vi.fn(async () => {}), unset: vi.fn(async () => {}),
+    });
+    const state = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-restore", memberId: "member-bob", credential: "resume-secret", roomTitle: "Restore", workspacePath: "C:\\rooms\\restore", workspaceFileCount: 12, workspaceTotalBytes: 3456 };
+    await createDshParticipantPersistence(scope(), secrets, index).save(state);
+
+    const restored = createDshParticipantPersistence(scope(), secrets, index);
+    await restored.prepare?.();
+    expect(restored.list?.()).toEqual([state]);
+    expect(JSON.stringify(rooms)).not.toContain("resume-secret");
   });
 
   it("replaces a Joined room endpoint when the Host address changes", async () => {
@@ -1403,6 +1422,97 @@ describe("real DSH client slot adapter", () => {
     expect(decodeDshParticipantSettings({ joinedRooms: [current] })).toEqual({ joinedRooms: [current] });
   });
 
+  it("retains persisted Joined room metadata when Participant settings become ready after plugin init", async () => {
+    let participantStatus: "loading" | "ready" = "loading";
+    let participantListener: (() => void) | undefined;
+    const saved = {
+      gatewayEndpoint: "wss://collab.example/collab",
+      roomId: "room-2",
+      memberId: "member-bob",
+      credential: "resume-secret",
+      roomTitle: "Remote",
+      workspacePath: "C:\\rooms\\room-2\\workspace",
+    };
+    const participantRoom = {
+      gatewayEndpoint: saved.gatewayEndpoint,
+      roomId: saved.roomId,
+      memberId: saved.memberId,
+      credentialKey: "dsh-collab/participant-fixed",
+      roomTitle: saved.roomTitle,
+      workspacePath: saved.workspacePath,
+    };
+    let providedSettings: { listJoinedRooms?(): readonly ParticipantResumeState[] } | undefined;
+    const binder = {
+      bind: vi.fn((spec: { namespace: string }) => spec.namespace === "dsh-collab-participant" ? {
+        getSnapshot: () => ({ status: participantStatus, value: participantStatus === "ready" ? { joinedRooms: [participantRoom] } : undefined, writable: true }),
+        subscribe: (listener: () => void) => { participantListener = listener; return () => {}; },
+        set: vi.fn(), unset: vi.fn(),
+      } : {
+        getSnapshot: () => ({ status: "ready", value: { gateway: { gatewayHost: "127.0.0.1", gatewayPort: 4310, exposeMode: "loopback", advertisedEndpoint: "" } }, writable: true }),
+        subscribe: () => () => {}, set: vi.fn(), unset: vi.fn(),
+      }),
+    };
+    const context = {
+      slots: { inject: (_name: string, register: () => unknown) => register(), register: () => () => {} },
+      get: (name: string) => name === "settingsScope" ? binder : name === "connection" ? { rpc: { call: vi.fn(async (_channel: string, endpoint: string) => endpoint === "credentials/participant/load" ? { ok: true, value: { state: saved } } : { ok: true, value: {} }) } } : undefined,
+      provide: (name: string, value: unknown) => { if (name === "collabSettings") providedSettings = value as typeof providedSettings; },
+      effect: (callback: () => void | (() => void)) => { callback(); },
+    };
+
+    applyDshCollabClient(context as DshCollabClientContext);
+    expect(providedSettings?.listJoinedRooms?.()).toEqual([]);
+    expect(participantListener).toEqual(expect.any(Function));
+    participantStatus = "ready";
+    participantListener?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(providedSettings?.listJoinedRooms?.()).toEqual([expect.objectContaining(saved)]);
+  });
+
+  it("uses the registered collab-host Config form for Participant persistence", async () => {
+    const saved = {
+      gatewayEndpoint: "wss://collab.example/collab",
+      roomId: "room-2",
+      memberId: "member-bob",
+      credential: "resume-secret",
+      roomTitle: "Remote",
+      workspacePath: "C:\\rooms\\room-2\\workspace",
+    };
+    const participantRoom = {
+      gatewayEndpoint: saved.gatewayEndpoint,
+      roomId: saved.roomId,
+      memberId: saved.memberId,
+      credentialKey: "dsh-collab/participant-fixed",
+      roomTitle: saved.roomTitle,
+      workspacePath: saved.workspacePath,
+    };
+    const form = {
+      getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms: [participantRoom] }, writable: true }),
+      subscribe: () => () => {},
+      set: vi.fn(async () => true),
+      unset: vi.fn(async () => true),
+    };
+    let providedSettings: { listJoinedRooms?(): readonly ParticipantResumeState[] } | undefined;
+    const getForm = vi.fn((entryId: string) => {
+      if (entryId !== "collab-host") throw new Error(`unexpected settings form ${entryId}`);
+      return form;
+    });
+    applyDshCollabClient({
+      slots: { inject: (_name, register) => register(), register: () => () => {} },
+      get: (name) => name === "configForms"
+        ? { get: getForm }
+        : name === "connection"
+          ? { rpc: { call: vi.fn(async (_channel: string, endpoint: string) => endpoint === "credentials/participant/load" ? { ok: true, value: { state: saved } } : { ok: true, value: {} }) } }
+          : undefined,
+      provide: (name, value) => { if (name === "collabSettings") providedSettings = value as typeof providedSettings; },
+      effect: (callback) => { callback(); },
+    } as DshCollabClientContext);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(getForm).toHaveBeenCalledWith("collab-host");
+    expect(getForm).not.toHaveBeenCalledWith("dsh-collab-participant");
+    expect(providedSettings?.listJoinedRooms?.()).toEqual([expect.objectContaining(saved)]);
+  });
   it("does not connect a saved Joined room when local DSH settings become ready", async () => {
     const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
     const socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");

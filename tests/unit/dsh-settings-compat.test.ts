@@ -17,6 +17,7 @@ const context = { agents: {}, settings: {} } as never;
     expect(Config.dict?.security?.meta.volatile).toBe(true);
     expect(Config.dict?.connectionMethod?.meta.volatile).toBe(true);
     expect(Config.dict?.easyTierSharedNode?.meta.volatile).toBe(true);
+    expect(Config.dict?.joinedRooms?.meta.volatile).toBe(true);
   });
   it("unwraps volatile SettingsForms values before the Host lifecycle reads them", () => {
     const volatile = <T>(value: T) => ({ get: () => value });
