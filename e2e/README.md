@@ -43,8 +43,19 @@ The DSH UI listeners remain loopback at `3082` and `3083` and are never exposed
 by Collab. Generated DSH homes live under `e2e/.state/` and are excluded from
 Git. The client patch is intentionally empty so the released runtime keeps DSH's
 native auto directory picker; the settings overlay selects the released Private
-network mode with the same preferred port for both profiles. The running plugin selects
-the private address when each Gateway starts, exactly as it does for users.
+network mode with the same preferred port for both profiles. The running plugin
+selects the private address when each Gateway starts, exactly as it does for
+users.
+
+The real settings overlay is intentionally not tracked. The prepare script uses
+`dsh-client.settings.patch.yml` when it exists and otherwise falls back to the
+checked-in `dsh-client.settings.patch.example.yml`. To customize the harness
+without publishing machine-local settings:
+
+```powershell
+Copy-Item ./e2e/dsh-client.settings.patch.example.yml ./e2e/dsh-client.settings.patch.yml
+```
+
 Both profiles install the package from the project root, so release changes
 require only rebuilding and rerunning the prepare script; there is no copied
 test source tree.

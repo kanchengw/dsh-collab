@@ -1,0 +1,11 @@
+# Copy this file to dsh-client.settings.patch.yml and edit it for your machine.
+# The real overlay is ignored by Git so local addresses and settings stay private.
+dsh-collab:
+  gateway:
+    gatewayHost: 0.0.0.0
+    gatewayPort: 4310
+    exposeMode: network
+  appliedGateway:
+    gatewayHost: 0.0.0.0
+    gatewayPort: 4310
+    exposeMode: network

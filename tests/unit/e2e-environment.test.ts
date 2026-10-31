@@ -44,7 +44,8 @@ describe("isolated two-DSH browser environment", () => {
   });
 
   it("gives both clients the released private-network invitation path", () => {
-    const settingsPatch = read("e2e/dsh-client.settings.patch.yml");
+    const settingsPatch = read("e2e/dsh-client.settings.patch.example.yml");
+    const gitignore = read(".gitignore");
     const prepare = read("e2e/prepare.ps1");
     const releasePatch = read("cordis.patch.yml");
     const packageJson = JSON.parse(read("package.json")) as { files?: string[] };
@@ -55,6 +56,8 @@ describe("isolated two-DSH browser environment", () => {
     expect(settingsPatch).not.toContain("advertisedEndpoint");
     expect(settingsPatch).not.toContain("__GATEWAY_PORT__");
     expect(prepare).toContain("dsh-client.settings.patch.yml");
+    expect(prepare).toContain("dsh-client.settings.patch.example.yml");
+    expect(gitignore).toContain("/e2e/dsh-client.settings.patch.yml");
     expect(prepare).not.toMatch(/PrivateAddress|__PRIVATE_ADDRESS__/);
     expect(prepare).toContain("foreach ($client in $clients)");
     expect(prepare).toContain("plugin --profile web add $projectRoot");

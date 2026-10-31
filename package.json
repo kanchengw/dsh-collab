@@ -1,7 +1,7 @@
 {
   "name": "dsh-collab",
   "version": "0.1.0",
-  "description": "Human collaboration rooms for one host-side DSH Agent session",
+  "description": "Human collaboration rooms for DeepSeek Harness with a host-owned Agent session",
   "private": false,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -60,7 +60,6 @@
     "lib/*.d.ts",
     "cordis.patch.yml",
     "README.md",
-    "design.md",
     "protocol.md",
     "LICENSE",
     "SECURITY.md",
@@ -94,5 +93,20 @@
     "@deepseek-ai/dsh-home-paths": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "3.18.1",
     "ws": "8.21.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kanchengw/dsh-collab.git"
+  },
+  "homepage": "https://github.com/kanchengw/dsh-collab#readme",
+  "bugs": {
+    "url": "https://github.com/kanchengw/dsh-collab/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "collaboration",
+    "agents",
+    "easytier"
+  ]
 }

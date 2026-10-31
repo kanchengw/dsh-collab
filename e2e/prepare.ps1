@@ -57,7 +57,11 @@ try {
   }
 
   $cordisTemplate = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "dsh-client.patch.yml"))
-  $settingsTemplate = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "dsh-client.settings.patch.yml"))
+  $settingsPatchPath = Join-Path $PSScriptRoot "dsh-client.settings.patch.yml"
+  if (-not (Test-Path $settingsPatchPath)) {
+    $settingsPatchPath = Join-Path $PSScriptRoot "dsh-client.settings.patch.example.yml"
+  }
+  $settingsTemplate = [System.IO.File]::ReadAllText($settingsPatchPath)
   foreach ($client in $clients) {
     $clientHome = Join-Path $projectRoot "e2e/.state/$($client.Id)"
     New-Item -ItemType Directory -Force -Path $clientHome | Out-Null

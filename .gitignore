@@ -1,12 +1,56 @@
+# Dependencies and build output
 node_modules/
-/e2e/.state/
 dist/
 lib/
-.tmp-dsh-*.png
 coverage/
-graphify-out/
+*.tsbuildinfo
+
+# Internal design, delivery logs and generated knowledge graphs
+/design.md
+/AGENTS.md
+/dev_log.md
+/docs/plans/
+/docs/decisions/
+/docs/spikes/
+/scripts/graphify-unit-snapshot.ps1
+/graphify-out/
+
+# Local, private and credential-bearing configuration
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+*.local
+*.local.*
+settings.yaml
+**/settings.yaml
+/e2e/dsh-client.settings.patch.yml
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+
+# Runtime state and generated validation artifacts
+/e2e/.state/
+/e2e/.logs/
+/e2e/.diag-*/
+/.codex-*/
+/.desktop-e2e-*/
+/.diag-*/
+/.ui-validation-*/
+/.visible-source-desktop-*/
+/.u13-test-report.json
+/dsh-collab-owner-debug.json
+/canvas/
+/profiles/
+/sessions/
+/storages/
+/collab/
+
+# Local images; the public README header is the one deliberate exception
+/assets/*
+!/assets/dsh-collab-github-header-roundtable-v9-chat-team.png
+/*.png
