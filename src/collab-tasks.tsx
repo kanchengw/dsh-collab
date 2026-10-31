@@ -36,6 +36,7 @@ export interface CollabTasksSnapshot {
   currentMemberId: string;
   connection: "online" | "offline";
   members: readonly CollabTaskMember[];
+  onlineMemberIds?: readonly string[];
   tasks: readonly CollabTaskItem[];
   selectedTaskId?: string;
   roomDecisions?: readonly CollabTaskDecision[];
@@ -59,7 +60,7 @@ export interface CollabTasksPort {
   forRoom?(roomId: string): CollabTasksPort | undefined;
 }
 
-const TASK_STATUSES: readonly TaskStatus[] = ["open", "doing", "in-review"];
+const TASK_STATUSES: readonly TaskStatus[] = ["open", "doing", "in-review", "done", "cancelled"];
 
 function requiredText(value: string, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} must not be blank`);
@@ -187,7 +188,9 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [discussionDraft, setDiscussionDraft] = useState("");
   const terminal = task.status === "done" || task.status === "cancelled";
-  const statusOptions: readonly TaskStatus[] = terminal ? [task.status] : TASK_STATUSES;
+  const currentIndex = TASK_STATUSES.indexOf(task.status);
+  const nextStatus = terminal ? undefined : TASK_STATUSES[currentIndex + 1];
+  const statusOptions: readonly TaskStatus[] = terminal || (nextStatus !== undefined && nextStatus === "done") ? [task.status] : [task.status, ...(nextStatus ? [nextStatus] : [])];
   const sourceMessageIds = (props.item.discussion ?? []).map((message) => message.messageId);
   const sendDiscussion = (event: FormEvent): void => {
     event.preventDefault();
@@ -213,7 +216,9 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
     <div className={css.actions}>
       <select aria-label={props.t("tasks.participantAria")} value={participantId} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setParticipantId(event.currentTarget.value); }}>
         <option value="">{props.t("tasks.selectParticipant")}</option>
-        {props.snapshot.members.filter((member) => !task.participantIds.includes(member.memberId)).map((member) => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
+        {props.snapshot.members.filter((member) => !task.participantIds.includes(member.memberId)
+          && ((props.snapshot.onlineMemberIds ?? []).length === 0 || (props.snapshot.onlineMemberIds ?? []).includes(member.memberId) || member.memberId === props.snapshot.currentMemberId))
+          .map((member) => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
       </select>
       <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || participantId === ""} onClick={() => { props.run("participant", () => props.port.addTaskParticipant(task.taskId, participantId)); }}>{props.t("tasks.addParticipant")}</button>
     </div>

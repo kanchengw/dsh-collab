@@ -22,6 +22,7 @@ export interface CollabReviewsSnapshot {
   currentMemberId: string;
   connection: "online" | "offline";
   members: readonly CollabReviewMember[];
+  onlineMemberIds?: readonly string[];
   reviews: readonly CollabReviewItem[];
   selectedChangeSetId?: string;
   error?: string;
@@ -109,13 +110,16 @@ function AssignmentForm(props: {
   const [reviewerId, setReviewerId] = useState(props.item.review.requiredReviewerId ?? props.snapshot.members[0]?.memberId ?? "");
   const canAssign = props.snapshot.role === "owner" || props.snapshot.currentMemberId === props.item.review.authorId;
   if (!canAssign || props.item.review.decision) return null;
+  const online = new Set(props.snapshot.onlineMemberIds ?? []);
+  const members = props.snapshot.members.filter((member) => online.size === 0 || online.has(member.memberId)
+    || member.memberId === props.snapshot.currentMemberId || member.memberId === props.item.review.requiredReviewerId);
   return <form className={css.form} onSubmit={(event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     props.run("assign", () => props.port.assignReviewer(props.item.changeSet.changeSetId, reviewerId));
   }}>
     <label htmlFor={`${id}-reviewer`}>{props.t("reviews.requiredReviewer")}</label>
     <select id={`${id}-reviewer`} value={reviewerId} onChange={(event) => { setReviewerId(event.target.value); }}>
-      {props.snapshot.members.map((member) => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
+      {members.map((member) => <option key={member.memberId} value={member.memberId}>{member.displayName}</option>)}
     </select>
     <button type="submit" className={css.primary} disabled={props.snapshot.connection === "offline" || props.busy !== undefined || reviewerId === ""}>{props.t("reviews.assign")}</button>
   </form>;
@@ -205,7 +209,7 @@ function ReviewDetail(props: {
     </dl>
     {review.status === "approved" ? <p className={css.hint}>{props.t("reviews.awaitingApply")}</p> : null}
     {review.status === "approved" && props.snapshot.role === "owner" && props.port.apply ? <div className={css.actions}>
-      <button type="button" className={css.primary} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("apply", () => props.port.apply!(changeSet.changeSetId)); }}>{props.t("reviews.apply")}</button>
+      <button type="button" className={css.primary} aria-busy={props.busy === "apply"} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("apply", () => props.port.apply!(changeSet.changeSetId)); }}>{props.t(props.busy === "apply" ? "reviews.applying" : "reviews.apply")}</button>
     </div> : null}
     {review.supersedesChangeSetId ? <p className={css.hint}>{props.t("reviews.supersedes")} <code>{shortId(review.supersedesChangeSetId)}</code></p> : null}
     {review.supersededByChangeSetId ? <p className={css.hint}>{props.t("reviews.supersededBy")} <code>{shortId(review.supersededByChangeSetId)}</code></p> : null}

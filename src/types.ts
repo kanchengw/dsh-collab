@@ -124,7 +124,7 @@ export interface GatewayResponse {
 
 export type StreamFrame =
   | { kind: "connected"; connectionId: string; roomId: string; lastEventSeq: number }
-  | { kind: "presence"; roomId: string; onlineMemberCount: number }
+  | { kind: "presence"; roomId: string; onlineMemberCount: number; onlineMemberIds?: readonly string[] }
   | AgentOutputFrame
   | { kind: "event"; event: RoomEvent }
   | { kind: "heartbeat"; connectionId: string; serverTime: number }

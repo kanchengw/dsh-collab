@@ -3,6 +3,8 @@ import { reduceTaskEvents, TaskStore } from "./tasks.js";
 import { reduceDecisionEvents, DecisionStore } from "./decisions.js";
 import type { DecisionEvent, TaskEvent } from "./collaboration-types.js";
 import type { RoomEvent } from "./types.js";
+import type { CollabActivityItem } from "./collab-activity.js";
+import { projectCollabActivity } from "./collab-activity.js";
 import type { CollabDiscussionMessage, CollabDiscussionScope, CollabDiscussionViewPort } from "./collab-discussion.js";
 import type { CollabTaskItem, CollabTasksPort, CollabTasksSnapshot } from "./collab-tasks.js";
 
@@ -24,6 +26,26 @@ function decisionMatchesTask(scope: string, taskId: string): boolean {
   return scope.startsWith("task:") && scope.slice("task:".length).split(",").includes(taskId);
 }
 
+function linkedChangeSets(events: readonly RoomEvent[]): Map<string, { changeSetId: string; roomId: string; title: string; status: string }> {
+  const result = new Map<string, { changeSetId: string; roomId: string; title: string; status: string }>();
+  for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
+    const payload = event.payload as { changeSetId?: unknown; title?: unknown; outcome?: unknown; application?: { changeSetId?: unknown } };
+    const id = typeof payload.changeSetId === "string" ? payload.changeSetId : payload.application?.changeSetId;
+    if (typeof id !== "string") continue;
+    const current = result.get(id);
+    if (event.type === "changeset.submitted") {
+      result.set(id, { changeSetId: id, roomId: event.roomId, title: typeof payload.title === "string" ? payload.title : id, status: "submitted" });
+    } else if (event.type === "changeset.review-assigned" && current) {
+      current.status = "in-review";
+    } else if (event.type === "changeset.review-decided" && current) {
+      current.status = payload.outcome === "approved" ? "approved" : "changes-requested";
+    } else if (event.type === "changeset.applied" && current) {
+      current.status = "applied";
+    }
+  }
+  return result;
+}
+
 export function createCollabTasksPort(client: DshCollabClientPort): CollabTasksPort {
   let selectedTaskId: string | undefined;
   const listeners = new Set<() => void>();
@@ -41,10 +63,14 @@ export function createCollabTasksPort(client: DshCollabClientPort): CollabTasksP
           const payload = event.payload as { messageId?: string; authorMemberId?: string; text?: string; scope?: string };
           return { messageId: payload.messageId ?? event.eventId, authorId: payload.authorMemberId ?? event.actor.memberId, text: payload.text ?? "", scope: payload.scope };
         });
+      const changeSetsByRoom = linkedChangeSets(snapshot.roomEvents ?? []);
       const tasks: CollabTaskItem[] = taskProjection.map((task) => ({
         task,
         decisions: decisions.filter((decision) => decisionMatchesTask(decision.scope, task.taskId)),
-        changeSets: [],
+        changeSets: [...new Set(task.changeSetIds)].flatMap((changeSetId) => {
+          const changeSet = changeSetsByRoom.get(changeSetId);
+          return changeSet ? [{ changeSetId: changeSet.changeSetId, roomId: changeSet.roomId, title: changeSet.title, status: changeSet.status }] : [];
+        }),
         discussion: discussion.filter((message) => message.scope === `task:${task.taskId}`).map(({ messageId, authorId, text }) => ({ messageId, authorId, text })),
       }));
       return {
@@ -53,6 +79,7 @@ export function createCollabTasksPort(client: DshCollabClientPort): CollabTasksP
         currentMemberId,
         connection: snapshot.connection === "online" ? "online" : "offline",
         members,
+        onlineMemberIds: snapshot.onlineMemberIds ?? [],
         tasks,
         roomDecisions: decisions.filter((decision) => decision.scope === "room"),
         availableMessageIds: discussion.map((message) => message.messageId),
@@ -89,11 +116,14 @@ export function createCollabDiscussionPort(client: DshCollabClientPort): CollabD
         .map((event) => {
           const payload = event.payload as { messageId?: string; authorMemberId?: string; text?: string; scope?: string; sourceMessageId?: string; mentions?: string[] };
           const scope = payload.scope === "general" || (typeof payload.scope === "string" && /^task:[^\s]+$/.test(payload.scope)) ? payload.scope as CollabDiscussionScope : "general";
-          return { messageId: payload.messageId ?? event.eventId, authorId: payload.authorMemberId ?? event.actor.memberId, text: payload.text ?? "", scope, ...(payload.sourceMessageId ? { sourceMessageId: payload.sourceMessageId } : {}), createdAt: event.createdAt };
+          return { messageId: payload.messageId ?? event.eventId, authorId: payload.authorMemberId ?? event.actor.memberId, text: payload.text ?? "", scope, ...(payload.sourceMessageId ? { sourceMessageId: payload.sourceMessageId } : {}), createdAt: event.createdAt, seq: event.seq };
         });
       const memberNames = new Map((snapshot.members ?? []).map((member) => [member.memberId, member.displayName]));
+      const workUpdates: CollabActivityItem[] = (snapshot.roomEvents ?? []).some((event) => event.type === "work-update.published")
+        ? projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"))
+        : [];
       const scopes: Array<{ value: CollabDiscussionScope; label: string }> = [{ value: "general", label: "General" }, ...messages.flatMap((message) => message.scope.startsWith("task:") ? [{ value: message.scope, label: message.scope }] : [])];
-      return { roomId: snapshot.roomId, connection: snapshot.connection === "online" ? "online" : "offline", messages, scopes: [...new Map(scopes.map((scope) => [scope.value, scope])).values()], ...(snapshot.memberId ? { currentMemberId: snapshot.memberId } : {}), memberNames };
+      return { roomId: snapshot.roomId, connection: snapshot.connection === "online" ? "online" : "offline", messages, scopes: [...new Map(scopes.map((scope) => [scope.value, scope])).values()], ...(snapshot.memberId ? { currentMemberId: snapshot.memberId } : {}), memberNames, workUpdates };
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -28,7 +28,7 @@ export type ClientStreamFrame =
 
 export type ServerStreamFrame =
   | { protocol: typeof COLLAB_PROTOCOL; type: "connected"; connectionId: string; roomId: string; lastEventSeq: number; capabilities?: CollaborationCapability[] }
-  | { protocol: typeof COLLAB_PROTOCOL; type: "presence"; roomId: string; onlineMemberCount: number }
+  | { protocol: typeof COLLAB_PROTOCOL; type: "presence"; roomId: string; onlineMemberCount: number; onlineMemberIds?: readonly string[] }
   | { protocol: typeof COLLAB_PROTOCOL; type: "agent-output"; roomId: string; requestId: string; text: string; streaming: boolean }
   | { protocol: typeof COLLAB_PROTOCOL; type: "event"; event: RoomEvent }
   | { protocol: typeof COLLAB_PROTOCOL; type: "heartbeat"; connectionId: string; serverTime: number }
@@ -168,7 +168,7 @@ export function encodeServerStreamFrame(frame: StreamFrame, capabilities: readon
         ...(capabilities.length === 0 ? {} : { capabilities: [...capabilities] }),
       };
     case "presence":
-      return { protocol: COLLAB_PROTOCOL, type: "presence", roomId: frame.roomId, onlineMemberCount: frame.onlineMemberCount };
+      return { protocol: COLLAB_PROTOCOL, type: "presence", roomId: frame.roomId, onlineMemberCount: frame.onlineMemberCount, ...(frame.onlineMemberIds ? { onlineMemberIds: [...frame.onlineMemberIds] } : {}) };
     case "agent-output":
       return { protocol: COLLAB_PROTOCOL, type: "agent-output", roomId: frame.roomId, requestId: frame.requestId, text: frame.text, streaming: frame.streaming };
     case "event":
@@ -202,10 +202,15 @@ export function decodeServerStreamFrame(value: unknown): DecodedServerStreamFram
     };
   }
   if (type === "presence") {
+    const onlineMemberIds = input.onlineMemberIds === undefined ? undefined : (() => {
+      if (!Array.isArray(input.onlineMemberIds) || input.onlineMemberIds.some((id) => typeof id !== "string" || id.trim() === "")) throw invalidInput("onlineMemberIds is invalid", { field: "onlineMemberIds" });
+      return [...new Set(input.onlineMemberIds as string[])];
+    })();
     return {
       kind: "presence",
       roomId: text(input.roomId, "roomId"),
       onlineMemberCount: nonNegativeInteger(input.onlineMemberCount, "onlineMemberCount"),
+      ...(onlineMemberIds ? { onlineMemberIds } : {}),
     };
   }
   if (type === "agent-output") {

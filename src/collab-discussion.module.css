@@ -38,6 +38,11 @@
 .messageOwn .messageMeta { justify-content: flex-end; }
 .messageMeta strong { overflow: hidden; color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .messageOwn .messageMeta strong { color: var(--dsw-alias-state-business-primary); }
+.workUpdate { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-state-business-tertiary); }
+.activityFiles { display: grid; gap: 4px; margin: 0; padding: 6px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-1); list-style: none; }
+.activityFiles code, .activityChangeSet code { overflow-wrap: anywhere; font-size: 11px; }
+.activityChangeSet { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 17px; }
+.activityChangeSet span { margin-right: 6px; color: var(--dsw-alias-state-business-primary); font-weight: 650; }
 .messageMeta span { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-tertiary); font-size: 10px; line-height: 16px; }
 .text { overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; white-space: pre-wrap; }
 .quote,

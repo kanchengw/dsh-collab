@@ -1395,6 +1395,27 @@ describe("real DSH client slot adapter", () => {
     expect(JSON.stringify(rooms)).not.toContain("resume-secret");
   });
 
+  it("skips a stale Participant credential without hiding other saved rooms", async () => {
+    const secrets = memoryParticipantSecrets();
+    const first = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-a", memberId: "member-a", credential: "secret-a" };
+    const second = { gatewayEndpoint: "wss://collab.example/collab", roomId: "room-b", memberId: "member-b", credential: "secret-b" };
+    const firstKey = await secrets.save(first);
+    const secondKey = await secrets.save(second);
+    await secrets.remove(firstKey);
+    const index = {
+      load: vi.fn(async () => [
+        { ...first, credentialKey: firstKey },
+        { ...second, credentialKey: secondKey },
+      ]),
+      save: vi.fn(async () => undefined),
+    };
+    const scope = { getSnapshot: () => ({ status: "ready" as const, value: { joinedRooms: [] }, writable: true }), subscribe: () => () => {}, set: vi.fn(async () => {}), unset: vi.fn(async () => {}) };
+
+    const persistence = createDshParticipantPersistence(scope, secrets, index);
+    await persistence.prepare?.();
+    expect(persistence.list?.()).toEqual([second]);
+  });
+
   it("replaces a Joined room endpoint when the Host address changes", async () => {
     let joinedRooms: DshCollabJoinedRoom[] = [];
     const scope = {

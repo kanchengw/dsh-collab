@@ -97,6 +97,8 @@
 .form select { min-height: 32px; padding: 6px 8px; }
 .form textarea { min-height: 68px; padding: 7px 8px; resize: vertical; }
 .form .primary { justify-self: start; margin-top: 3px; }
+.taskPicker { display: grid; gap: 5px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.taskPicker select { min-height: 32px; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; }
 .summary { overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 19px; white-space: pre-wrap; }
 
 .files,

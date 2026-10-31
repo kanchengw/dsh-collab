@@ -103,6 +103,21 @@ describe("Collab Changes", () => {
     expect(css).not.toMatch(/\.card\s*\{[^}]*border-bottom:/s);
   });
 
+  it("offers a task link before the Participant submits a ChangeSet draft", () => {
+    const html = renderToStaticMarkup(createElement(CollabChanges, {
+      port: port(participantSnapshot({
+        draft: { draft: draft(), patch: "diff --git a/a b/a\n" },
+        workspace: { kind: "ready", path: "C:/collab/room-1/workspace", baseVersionId: "version-1", dirtyPaths: ["src/reconnect.ts"], linked: true },
+      })),
+      tasks: [{ taskId: "task-1", title: "Fix reconnect", status: "doing" }],
+      t,
+    }));
+
+    expect(html).toContain("关联任务");
+    expect(html).toContain("不关联任务");
+    expect(html).toContain("Fix reconnect");
+  });
+
   it("fails closed instead of projecting draft or staged state from another room", () => {
     expect(() => validateCollabChangesSnapshot(participantSnapshot({
       draft: { draft: draft({ roomId: "room-2" }), patch: "diff --git a/a b/a\n" },

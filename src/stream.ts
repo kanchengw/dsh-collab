@@ -196,8 +196,9 @@ export class RoomStreamHub {
 
   private broadcastPresence(roomId: string): void {
     const roomConnections = [...this.connections.values()].filter((record) => record.roomId === roomId);
-    const onlineMemberCount = new Set(roomConnections.map((record) => record.memberId)).size;
-    for (const record of roomConnections) this.emit(record, { kind: "presence", roomId, onlineMemberCount });
+    const onlineMemberIds = [...new Set(roomConnections.map((record) => record.memberId))];
+    const onlineMemberCount = onlineMemberIds.length;
+    for (const record of roomConnections) this.emit(record, { kind: "presence", roomId, onlineMemberCount, onlineMemberIds });
   }
 
   private record(connectionId: string): ConnectionRecord {

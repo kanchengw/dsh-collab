@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import type { CollabActivityItem } from "./collab-activity.js";
 import css from "./collab-discussion.module.css";
 import { defaultCollabTranslate, type CollabTranslate } from "./locales.js";
 
@@ -16,6 +17,7 @@ export interface CollabDiscussionMessage {
   scope: CollabDiscussionScope;
   sourceMessageId?: string;
   createdAt?: number;
+  seq?: number;
 }
 
 export interface CollabDiscussionSendInput {
@@ -35,6 +37,7 @@ export interface CollabDiscussionSnapshot {
   scopes: readonly CollabDiscussionScopeOption[];
   currentMemberId?: string;
   memberNames?: ReadonlyMap<string, string>;
+  workUpdates?: readonly CollabActivityItem[];
 }
 
 export interface CollabDiscussionViewPort extends CollabDiscussionPort {
@@ -59,6 +62,7 @@ export interface CollabDiscussionProps {
   scopes?: readonly CollabDiscussionScopeOption[];
   memberNames?: ReadonlyMap<string, string>;
   currentMemberId?: string;
+  workUpdates?: readonly CollabActivityItem[];
   snapshotPort?: CollabDiscussionViewPort;
   t?: CollabTranslate;
 }
@@ -106,6 +110,14 @@ function displayName(memberNames: ReadonlyMap<string, string> | undefined, autho
   return memberNames?.get(authorId) ?? authorId;
 }
 
+type DiscussionEntry =
+  | ({ kind: "discussion-message" } & CollabDiscussionMessage)
+  | Extract<CollabActivityItem, { kind: "work-update" }>;
+
+function entryOrder(entry: DiscussionEntry): number {
+  return typeof entry.seq === "number" ? entry.seq : entry.createdAt ?? 0;
+}
+
 export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const fallbackSnapshot: CollabDiscussionSnapshot = {
@@ -115,6 +127,7 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
     scopes: props.scopes ?? [],
     ...(props.currentMemberId ? { currentMemberId: props.currentMemberId } : {}),
     ...(props.memberNames ? { memberNames: props.memberNames } : {}),
+    ...(props.workUpdates ? { workUpdates: props.workUpdates } : {}),
   };
   const initialSnapshot = props.snapshotPort?.getSnapshot() ?? fallbackSnapshot;
   const [liveSnapshot, setLiveSnapshot] = useState<CollabDiscussionSnapshot>(initialSnapshot);
@@ -128,6 +141,12 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const selectedSource = sourceMessage(snapshot.messages, sourceMessageId);
+  const workUpdates: Array<Extract<CollabActivityItem, { kind: "work-update" }>> = (snapshot.workUpdates ?? [])
+    .filter((item): item is Extract<CollabActivityItem, { kind: "work-update" }> => item.kind === "work-update");
+  const entries: DiscussionEntry[] = [
+    ...snapshot.messages.map((message) => ({ kind: "discussion-message" as const, ...message })),
+    ...workUpdates,
+  ].sort((left, right) => entryOrder(left) - entryOrder(right) || String(left.kind).localeCompare(String(right.kind)));
   const online = snapshot.connection === "online";
 
   const submit = async (): Promise<void> => {
@@ -151,17 +170,23 @@ export function CollabDiscussion(props: CollabDiscussionProps): ReactNode {
       <span className={css.connection} role="status">{t(online ? "discussion.online" : "discussion.offline")}</span>
     </header>
     {!online ? <p className={css.offline} role="status">{t("discussion.offlineHint")}</p> : null}
-    {snapshot.messages.length === 0 ? <p className={css.empty} role="status">{t("discussion.empty")}</p> : <ul className={css.messages}>
-      {snapshot.messages.map((message) => {
-        const source = sourceMessage(snapshot.messages, message.sourceMessageId);
-        const own = Boolean(snapshot.currentMemberId && message.authorId === snapshot.currentMemberId);
-        return <li key={message.messageId} className={`${css.message} ${own ? css.messageOwn : css.messageOther}`} data-scope={message.scope} data-author={own ? "self" : "other"}>
-          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, message.authorId)}</strong></div>
-          <p className={css.text}>{message.text}</p>
-          {message.sourceMessageId ? <div className={css.quote} data-reference-state={source ? "available" : "missing"}>
+    {entries.length === 0 ? <p className={css.empty} role="status">{t("discussion.empty")}</p> : <ul className={css.messages}>
+      {entries.map((entry) => {
+        const own = Boolean(snapshot.currentMemberId && entry.authorId === snapshot.currentMemberId);
+        if (entry.kind === "work-update") return <li key={entry.eventId} className={`${css.message} ${css.workUpdate} ${own ? css.messageOwn : css.messageOther}`} data-kind="work-update" data-author={own ? "self" : "other"}>
+          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, entry.authorId)}</strong><span>{t("activity.workUpdate")}</span></div>
+          <p className={css.text}>{entry.summary}</p>
+          {entry.filePaths.length > 0 ? <ul className={css.activityFiles} aria-label={t("activity.files")}>{entry.filePaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul> : null}
+          {entry.changeSetId ? <p className={css.activityChangeSet}><span>{t("activity.changeSet")}</span><code>{entry.changeSetId}</code></p> : null}
+        </li>;
+        const source = sourceMessage(snapshot.messages, entry.sourceMessageId);
+        return <li key={entry.messageId} className={`${css.message} ${own ? css.messageOwn : css.messageOther}`} data-scope={entry.scope} data-author={own ? "self" : "other"}>
+          <div className={css.messageMeta}><strong>{displayName(snapshot.memberNames, entry.authorId)}</strong></div>
+          <p className={css.text}>{entry.text}</p>
+          {entry.sourceMessageId ? <div className={css.quote} data-reference-state={source ? "available" : "missing"}>
             <span>{t("discussion.quoteSource")}</span>{source ? <p>{source.text}</p> : <p>{t("discussion.quoteMissing")}</p>}
           </div> : null}
-          <button type="button" className={css.quoteButton} disabled={!online || busy} onClick={() => { setSourceMessageId(message.messageId); }}>{t("discussion.quote")}</button>
+          <button type="button" className={css.quoteButton} disabled={!online || busy} onClick={() => { setSourceMessageId(entry.messageId); }}>{t("discussion.quote")}</button>
         </li>;
       })}
     </ul>}

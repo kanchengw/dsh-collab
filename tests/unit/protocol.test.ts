@@ -73,11 +73,11 @@ describe("dsh-collab wire protocol", () => {
   });
 
   it("round-trips room presence frames", () => {
-    const frame: StreamFrame = { kind: "presence", roomId: "room-1", onlineMemberCount: 2 };
+    const frame: StreamFrame = { kind: "presence", roomId: "room-1", onlineMemberCount: 2, onlineMemberIds: ["member-alice", "member-host"] };
 
     const wire = encodeServerStreamFrame(frame);
 
-    expect(wire).toEqual({ protocol: COLLAB_PROTOCOL, type: "presence", roomId: "room-1", onlineMemberCount: 2 });
+    expect(wire).toEqual({ protocol: COLLAB_PROTOCOL, type: "presence", roomId: "room-1", onlineMemberCount: 2, onlineMemberIds: ["member-alice", "member-host"] });
     expect(decodeServerStreamFrame(wire)).toEqual(frame);
   });
 

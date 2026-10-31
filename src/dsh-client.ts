@@ -308,6 +308,7 @@ export interface DshCollabClientSnapshot {
   role: "host" | "participant";
   connection: "connecting" | "online" | "offline";
   onlineCount: number;
+  onlineMemberIds?: readonly string[];
   canSteer: boolean;
   unavailableReason?: "host-stopped-sharing" | "host-unreachable" | "resource-limited" | "network-offline" | "transport-failed";
   members?: readonly { memberId: string; displayName: string }[];
@@ -647,12 +648,17 @@ export function createDshParticipantPersistence(
       const nextStates: ParticipantResumeState[] = [];
       for (const room of records) {
         if (!room.credentialKey) continue;
-        const state = await secrets.load(room.credentialKey);
-        assertParticipantBinding(state, room);
-        nextStates.push({ ...state, ...Object.fromEntries(Object.entries({
-          roomTitle: room.roomTitle, hostDisplayName: room.hostDisplayName, workspacePath: room.workspacePath,
-          workspaceFileCount: room.workspaceFileCount, workspaceTotalBytes: room.workspaceTotalBytes,
-        }).filter(([, value]) => value !== undefined && value !== "")) });
+        try {
+          const state = await secrets.load(room.credentialKey);
+          assertParticipantBinding(state, room);
+          nextStates.push({ ...state, ...Object.fromEntries(Object.entries({
+            roomTitle: room.roomTitle, hostDisplayName: room.hostDisplayName, workspacePath: room.workspacePath,
+            workspaceFileCount: room.workspaceFileCount, workspaceTotalBytes: room.workspaceTotalBytes,
+          }).filter(([, value]) => value !== undefined && value !== "")) });
+        } catch (error) {
+          // A stale or missing credential must not hide every other saved room.
+          console.error(`dsh-collab: skipped invalid Participant room ${room.roomId}`, error);
+        }
       }
       cache = nextStates;
       roomKeys = new Map(records.map((room) => [room.roomId, room.credentialKey]));
@@ -1466,11 +1472,12 @@ function DshCollabBarPanel(props: {
     if (snapshot.connection === "online") props.port?.markRead?.();
   }, [props.port, roomKey, snapshot.connection]);
   const tasksPort = resolveCollabTasksPortForRoom(props.tasksPort, selection?.roomId);
+  const changesTasks = tasksPort?.getSnapshot().tasks.map((item) => ({ taskId: item.task.taskId, title: item.task.title, status: item.task.status })) ?? [];
   const discussionPort = resolveCollabDiscussionPortForRoom(props.discussionPort, selection?.roomId);
   const discussionSnapshot = discussionPort?.getSnapshot();
   const activityItems = projectCollabActivity((snapshot.roomEvents ?? []).filter((event) => event.type === "work-update.published"));
   const discussion = discussionPort && discussionSnapshot
-    ? createElement(CollabDiscussion, { port: discussionPort, snapshotPort: discussionPort, ...discussionSnapshot, t: props.t })
+    ? createElement(CollabDiscussion, { port: discussionPort, snapshotPort: discussionPort, ...discussionSnapshot, workUpdates: activityItems, t: props.t })
     : createElement(DshCollabDock, { port: props.port, fallback: snapshot, showHeader: false, workUpdates: activityItems, t: props.t });
   return createElement(CollabBarView, {
     key: roomKey,
@@ -1479,7 +1486,7 @@ function DshCollabBarPanel(props: {
     roomSnapshot: { ...snapshot, ...(() => { const unread = projectCollabUnread(snapshot.roomEvents ?? [], snapshot.memberId, snapshot.lastReadSeq); return { personalUnreadCount: unread.personal, totalUnreadCount: unread.total }; })() },
     discussion,
     onOpenRooms: props.openRooms,
-    ...(props.changesPort ? { changesPort: props.changesPort } : {}),
+    ...(props.changesPort ? { changesPort: props.changesPort, changesTasks } : {}),
     ...(props.reviewsPort ? { reviewsPort: props.reviewsPort } : {}),
     ...(tasksPort ? { tasks: createElement(CollabTasks, { port: tasksPort, t: props.t }) } : {}),
     t: props.t,

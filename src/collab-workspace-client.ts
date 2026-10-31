@@ -75,6 +75,7 @@ function fallback(source: WorkspaceRoomSource): WorkspaceProjection {
       currentMemberId,
       connection: room.connection === "online" ? "online" : "offline",
       members,
+      onlineMemberIds: room.onlineMemberIds,
       reviews: [],
     },
   };
@@ -121,7 +122,7 @@ class SessionWorkspacePorts {
       sync: async () => { await this.run("workspace/changes/sync", {}); },
       discardAndSync: async () => { await this.run("workspace/changes/discard-sync", {}); },
       createDraft: async (draft) => { await this.run("workspace/changes/create-draft", draft); },
-      submitDraft: async () => { await this.run("workspace/changes/submit", {}); },
+      submitDraft: async (input) => { await this.run("workspace/changes/submit", input?.taskId ? { taskId: input.taskId } : {}); },
       selectChangeSet: async (changeSetId) => { await this.run("workspace/changes/select", { changeSetId }); },
     };
     this.reviews = {
@@ -279,6 +280,7 @@ class SessionWorkspacePorts {
         role: binding.role,
         connection: room.connection,
         members: room.members ?? [],
+        onlineMemberIds: room.onlineMemberIds ?? [],
         roomEvents: room.roomEvents ?? [],
       },
       remote,

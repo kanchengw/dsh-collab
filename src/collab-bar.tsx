@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type KeyboardEvent, type ReactNode } from "react";
-import { CollabChanges, type CollabChangesPort } from "./collab-changes.js";
+import { CollabChanges, type CollabChangesPort, type CollabChangesTaskOption } from "./collab-changes.js";
 import type { DshCollabRoomSelection } from "./collab-rooms.js";
 import { CollabReviews, type CollabReviewsPort } from "./collab-reviews.js";
 import type { CollabPanelRenderScope } from "./collab-panel-host.js";
@@ -91,6 +91,7 @@ export function CollabBarView(props: {
   discussion?: ReactNode;
   tasks?: ReactNode;
   changesPort?: CollabChangesPort;
+  changesTasks?: readonly CollabChangesTaskOption[];
   reviewsPort?: CollabReviewsPort;
   initialTab?: CollabBarTab;
   t?: CollabTranslate;
@@ -154,7 +155,7 @@ export function CollabBarView(props: {
     <section className={css.panel} id={`${id}-${activeTab}-panel`} role="tabpanel" aria-labelledby={`${id}-${activeTab}-tab`} data-active-tab={activeTab}>
       {activeTab === "tasks" ? props.tasks ?? <EmptyState>{t("bar.tasksUnavailable")}</EmptyState> : null}
       {activeTab === "activity" ? <div className={css.activity}>{props.discussion}</div> : null}
-      {activeTab === "changes" ? props.changesPort ? <CollabChanges port={props.changesPort} t={t} /> : <EmptyState>{t("bar.changesUnavailable")}</EmptyState> : null}
+      {activeTab === "changes" ? props.changesPort ? <CollabChanges port={props.changesPort} tasks={props.changesTasks} t={t} /> : <EmptyState>{t("bar.changesUnavailable")}</EmptyState> : null}
       {activeTab === "reviews" ? props.reviewsPort ? <CollabReviews port={props.reviewsPort} t={t} /> : <EmptyState>{t("bar.reviewsUnavailable")}</EmptyState> : null}
     </section>
   </aside>;

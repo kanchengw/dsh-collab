@@ -825,6 +825,26 @@ export class CollabGateway {
       await this.options.commitCriticalState?.();
       return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
     }
+    if (request.method === "POST" && tail[1] === "change-sets") {
+      if (!this.options.changeSets) throw new CollabError("REQUEST_STATE", "ChangeSet staging is unavailable");
+      const body = objectBody(request.body);
+      allowedFields(body, ["clientRequestId", "changeSetId"]);
+      const changeSetId = hashIdField(body.changeSetId, "changeSetId");
+      const changeSet = await this.options.changeSets.get(roomId, changeSetId);
+      if (!changeSet || changeSet.draft.roomId !== roomId) throw new CollabError("REQUEST_NOT_FOUND", "ChangeSet was not found", { changeSetId });
+      if (actor.role !== "host" && changeSet.draft.authorId !== actor.memberId) {
+        throw new CollabError("ACTION_FORBIDDEN", "Only the ChangeSet author or Host can link it to a Task");
+      }
+      const task = tasks.linkChangeSet({
+        taskId,
+        changeSetId,
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        eventId: `task:${roomId}:${taskId}:changeset:${changeSetId}`,
+        now: this.now(),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
     if (request.method === "POST" && tail[1] === "participants") {
       const body = objectBody(request.body);
       allowedFields(body, ["memberId"]);

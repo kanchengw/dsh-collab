@@ -21,6 +21,12 @@ export interface CollabChangesSnapshot {
   error?: string;
 }
 
+export interface CollabChangesTaskOption {
+  taskId: string;
+  title: string;
+  status: string;
+}
+
 export interface CollabChangesPort {
   getSnapshot(): CollabChangesSnapshot;
   subscribe(listener: () => void): () => void;
@@ -30,7 +36,7 @@ export interface CollabChangesPort {
   sync(): Promise<void>;
   discardAndSync(): Promise<void>;
   createDraft(input: { title: string; summary: string }): Promise<void>;
-  submitDraft(): Promise<void>;
+  submitDraft(input?: { taskId?: string }): Promise<void>;
   selectChangeSet(changeSetId: string): Promise<void>;
 }
 
@@ -149,6 +155,7 @@ function WorkspaceCard(props: {
 
 function DraftCard(props: {
   snapshot: CollabChangesSnapshot;
+  tasks: readonly CollabChangesTaskOption[];
   busy?: string;
   run(name: string, action: () => Promise<void>): void;
   port: CollabChangesPort;
@@ -157,6 +164,7 @@ function DraftCard(props: {
   const id = useId();
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
+  const [taskId, setTaskId] = useState("");
   const dirty = props.snapshot.workspace.kind === "ready" && props.snapshot.workspace.dirtyPaths.length > 0;
   if (props.snapshot.role !== "participant") return null;
   if (!props.snapshot.draft) return <section className={css.card} aria-label={props.t("changes.draftTitle")}>
@@ -179,9 +187,10 @@ function DraftCard(props: {
   return <section className={css.card} aria-label={props.t("changes.draftTitle")}>
     <div className={css.cardHeader}><h3>{bundle.draft.title}</h3><span className={css.badge}>{props.t("changes.localDraft")}</span></div>
     <p className={css.summary}>{bundle.draft.summary}</p>
+    {props.tasks.length > 0 ? <label className={css.taskPicker} htmlFor={`${id}-task`}>{props.t("changes.taskLabel")}<select id={`${id}-task`} value={taskId} onChange={(event) => { setTaskId(event.currentTarget.value); }}><option value="">{props.t("changes.taskNone")}</option>{props.tasks.map((task) => <option key={task.taskId} value={task.taskId}>{task.title}</option>)}</select></label> : null}
     <FileList files={bundle.draft.files} t={props.t} />
     <Diff patch={bundle.patch} t={props.t} />
-    <div className={css.actions}><button type="button" className={css.primary} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("submit", () => props.port.submitDraft()); }}>
+    <div className={css.actions}><button type="button" className={css.primary} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onClick={() => { props.run("submit", () => props.port.submitDraft(taskId ? { taskId } : undefined)); }}>
       {props.t(props.busy === "submit" ? "changes.submitting" : "changes.submit")}
     </button></div>
   </section>;
@@ -213,7 +222,7 @@ function StagingCard(props: {
   </section>;
 }
 
-export function CollabChanges(props: { port: CollabChangesPort; t?: CollabTranslate }): ReactNode {
+export function CollabChanges(props: { port: CollabChangesPort; tasks?: readonly CollabChangesTaskOption[]; t?: CollabTranslate }): ReactNode {
   const t = props.t ?? defaultCollabTranslate;
   const [snapshot, setSnapshot] = useState(() => validateCollabChangesSnapshot(props.port.getSnapshot()));
   const [busy, setBusy] = useState<string>();
@@ -242,7 +251,7 @@ export function CollabChanges(props: { port: CollabChangesPort; t?: CollabTransl
     {snapshot.connection === "offline" ? <p className={css.offline} role="status">{t("changes.offlineHint")}</p> : null}
     {error ? <div className={css.error} role="alert"><span>{error}</span><button type="button" disabled={busy !== undefined} onClick={() => { run("refresh", () => props.port.refresh()); }}>{t("changes.retry")}</button></div> : null}
     <WorkspaceCard snapshot={snapshot} busy={busy} run={run} port={props.port} t={t} />
-    <DraftCard snapshot={snapshot} busy={busy} run={run} port={props.port} t={t} />
+    <DraftCard snapshot={snapshot} tasks={props.tasks ?? []} busy={busy} run={run} port={props.port} t={t} />
     <StagingCard snapshot={snapshot} busy={busy} run={run} port={props.port} t={t} />
   </section>;
 }

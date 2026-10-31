@@ -35,6 +35,7 @@ export interface DshWorkspaceControlRequest {
     role: "host" | "participant";
     connection: "online";
     members: readonly { memberId: string; displayName: string }[];
+    onlineMemberIds?: readonly string[];
     roomEvents: RoomEvent[];
   };
   remote: { gatewayEndpoint: string; roomToken: string };
@@ -277,6 +278,17 @@ export class DshWorkspaceControl {
       ...(signal ? { signal } : {}),
     }));
     const changeSet = lease.result;
+    if (request.action.taskId !== undefined) {
+      const taskId = text(request.action.taskId, "taskId");
+      body(await transport.request({
+        method: "POST",
+        path: `/v1/rooms/${encodeURIComponent(request.room.roomId)}/tasks/${encodeURIComponent(taskId)}/change-sets`,
+        token: request.remote.roomToken,
+        capabilities: [CHANGE_SET_CAPABILITY],
+        body: { clientRequestId: `link-${changeSet.changeSetId}`, changeSetId: changeSet.changeSetId },
+        ...(signal ? { signal } : {}),
+      }), "Task ChangeSet link");
+    }
     this.selectedChanges.set(request.room.roomId, changeSet.changeSetId);
     this.selectedReviews.set(request.room.roomId, changeSet.changeSetId);
     return {
@@ -404,6 +416,7 @@ export class DshWorkspaceControl {
       currentMemberId: request.room.memberId,
       connection: "online",
       members: request.room.members,
+      onlineMemberIds: request.room.onlineMemberIds,
       reviews: reviewItems,
       ...(selectedReviewId ? { selectedChangeSetId: selectedReviewId } : {}),
     };

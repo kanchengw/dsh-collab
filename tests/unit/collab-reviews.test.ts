@@ -147,6 +147,12 @@ describe("Collab Reviews", () => {
     expect(html).not.toContain(">Applied<");
   });
 
+  it("limits reviewer assignment options to online members", () => {
+    const html = renderToStaticMarkup(createElement(CollabReviews, { port: port(snapshot({ role: "owner", onlineMemberIds: ["member-reviewer"] })) }));
+    expect(html).toContain('value="member-reviewer"');
+    expect(html).not.toContain('value="member-other"');
+  });
+
   it("shows decision controls only to the current required reviewer while keeping Finding available to active members", () => {
     const reviewerHtml = renderToStaticMarkup(createElement(CollabReviews, { port: port(snapshot()) }));
     const otherHtml = renderToStaticMarkup(createElement(CollabReviews, { port: port(snapshot({ currentMemberId: "member-other" })) }));

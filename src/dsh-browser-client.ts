@@ -1189,7 +1189,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
       return;
     }
     if (frame.kind === "presence" && frame.roomId === this.snapshot.roomId) {
-      this.snapshot = { ...this.snapshot, onlineCount: frame.onlineMemberCount };
+      this.snapshot = { ...this.snapshot, onlineCount: frame.onlineMemberCount, ...(frame.onlineMemberIds ? { onlineMemberIds: [...frame.onlineMemberIds] } : {}) };
       this.emit();
       return;
     }
@@ -1273,7 +1273,7 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
 
   private setConnection(connection: DshCollabClientSnapshot["connection"]): void {
     if (this.snapshot.connection === connection) return;
-    this.snapshot = { ...this.snapshot, connection, ...(connection === "offline" ? { onlineCount: 0 } : {}) };
+    this.snapshot = { ...this.snapshot, connection, ...(connection === "offline" ? { onlineCount: 0, onlineMemberIds: [] } : {}) };
     this.emit();
   }
 

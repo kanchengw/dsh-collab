@@ -36,6 +36,7 @@ export function getDshCollabRoomSelection(sessionId?: string): DshCollabRoomSele
 
 export function openDshCollabRoom(selection: DshCollabRoomSelection, panelHost?: CollabPanelHost, target?: CollabPanelOpenTarget): void {
   const destination = selection.kind === "owned" ? target ?? (selection.hostSessionId ? { sessionId: selection.hostSessionId } : undefined) : target;
+  if (selection.kind === "owned" && !destination) throw new Error("Owned room has no Host Session to open");
   const nextSelection = selection.kind === "joined" && destination
     ? { ...selection, localSessionId: destination.sessionId }
     : selection;
@@ -312,7 +313,8 @@ export function DshCollabRoomsPanel({ embedded = false, port, panelHost, createO
       if (success && completed !== false) updateNotice({ tone: "success", message: success });
     } catch (cause) {
       console.error(cause);
-      updateNotice({ tone: "error", message: t("rooms.actionError") });
+      const joinedOpen = visibleJoinedRooms.some((room) => key === `open:${room.roomId}`);
+      updateNotice({ tone: "error", message: joinedOpen ? t("joined.rejoinHint") : t("rooms.actionError") });
     } finally {
       setBusy(undefined);
     }

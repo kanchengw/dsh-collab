@@ -21,7 +21,7 @@ function setup(
   commitCriticalState?: () => Promise<void>,
   limits?: ResourceLimiter,
   now: () => number = () => 10,
-  stores?: { taskStore?: TaskStore; decisionStore?: DecisionStore },
+  stores?: { taskStore?: TaskStore; decisionStore?: DecisionStore; changeSets?: { get(roomId: string, changeSetId: string): Promise<unknown> } },
 ) {
   const rooms = new RoomStore();
   rooms.createRoom({
@@ -81,6 +81,7 @@ function setup(
     ...(limits ? { limits } : {}),
     ...(stores?.taskStore ? { taskStore: stores.taskStore } : {}),
     ...(stores?.decisionStore ? { decisionStore: stores.decisionStore } : {}),
+    ...(stores?.changeSets ? { changeSets: stores.changeSets as never } : {}),
   });
   return { gateway, calls, rooms, ledger, approvals, workspaceSharing, activeRooms, tokenFactory };
 }
@@ -347,6 +348,23 @@ describe("CollabGateway route contract", () => {
       method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/claim`, headers,
       body: { clientRequestId: "claim-second" },
     })).resolves.toMatchObject({ status: 200, body: { task: { assigneeId: "member-host" } } });
+  });
+
+  it("links the submitted ChangeSet to its code Task", async () => {
+    const taskStore = new TaskStore();
+    const changeSetId = "a".repeat(64);
+    const changeSets = { get: vi.fn(async () => ({ changeSetId, draft: { roomId: "room-1", authorId: "member-alice", title: "Fix", summary: "Fix" }, submittedAt: 5 })) };
+    const { gateway, ledger } = setup(undefined, false, undefined, undefined, () => 10, { taskStore, changeSets });
+    const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((bootstrap.body as { roomToken: string }).roomToken);
+    const created = await request(gateway, { method: "POST", path: "/v1/rooms/room-1/tasks", headers, body: { title: "Code task", clientRequestId: "task-link" } });
+    const taskId = (created.body as { task: { taskId: string } }).task.taskId;
+
+    await expect(request(gateway, {
+      method: "POST", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/change-sets`, headers,
+      body: { changeSetId, clientRequestId: "link-change-set" },
+    })).resolves.toMatchObject({ status: 200, body: { task: { changeSetIds: [changeSetId] } } });
+    expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({ type: "task.updated", payload: { taskId, changeSetIds: [changeSetId] } });
   });
 
   it("writes Discussion scope and source references into the human message ledger event", async () => {

@@ -124,12 +124,12 @@ describe("RoomStreamHub", () => {
     const aliceSecondTab = hub.connect({ connectionId: "alice-b", roomId: "room-1", token: token1, onFrame: (frame) => aliceSecondTabFrames.push(frame) });
     const host = hub.connect({ connectionId: "host-a", roomId: "room-1", token: hostToken, onFrame: (frame) => hostFrames.push(frame) });
 
-    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", roomId: "room-1", onlineMemberCount: 2 });
+    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", roomId: "room-1", onlineMemberCount: 2, onlineMemberIds: ["member-alice", "member-host"] });
     expect(aliceSecondTabFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 2 });
     expect(hostFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 2 });
 
     host.close();
-    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 1 });
+    expect(aliceFrames.at(-1)).toMatchObject({ kind: "presence", onlineMemberCount: 1, onlineMemberIds: ["member-alice"] });
     aliceSecondTab.close();
     alice.close();
   });

@@ -49,6 +49,22 @@ describe("production Collab ports", () => {
     expect(live.addTaskParticipant).toHaveBeenCalledWith("room-1", "task-1", "member-bob");
   });
 
+  it("projects linked ChangeSets and published work updates into the live room ports", () => {
+    const changeSetId = "a".repeat(64);
+    const linkedEvents: RoomEvent[] = [
+      ...events,
+      { eventId: "task-link", roomId: "room-1", seq: 4, type: "task.updated", actor: { memberId: "member-host", principalId: "host" }, createdAt: 4, payload: { taskId: "task-1", changeSetIds: [changeSetId] } },
+      { eventId: "cs-submitted", roomId: "room-1", seq: 5, type: "changeset.submitted", actor: { memberId: "member-host", principalId: "host" }, createdAt: 5, payload: { changeSetId, title: "Linked fix", summary: "Fix", submittedAt: 5 } },
+      { eventId: "cs-approved", roomId: "room-1", seq: 6, type: "changeset.review-decided", actor: { memberId: "member-host", principalId: "host" }, createdAt: 6, payload: { changeSetId, outcome: "approved" } },
+      { eventId: "work-update", roomId: "room-1", seq: 7, type: "work-update.published", actor: { memberId: "member-host", principalId: "host" }, createdAt: 7, payload: { updateId: "b".repeat(64), roomId: "room-1", authorId: "member-host", sourceSessionId: "session-1", summary: "Published update", filePaths: ["src/a.ts"], createdAt: 7 } },
+    ];
+    const live = client(linkedEvents);
+    const task = createCollabTasksPort(live).getSnapshot().tasks[0]!;
+    const discussion = createCollabDiscussionPort(live).getSnapshot();
+    expect(task.changeSets).toEqual([expect.objectContaining({ changeSetId, title: "Linked fix", status: "approved" })]);
+    expect(discussion.workUpdates).toEqual([expect.objectContaining({ kind: "work-update", summary: "Published update" })]);
+  });
+
   it("matches generated task ids inside Decision and Discussion scopes", () => {
     const generatedTaskId = "task:task-create";
     const generatedEvents = structuredClone(events);

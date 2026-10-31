@@ -57,6 +57,22 @@ describe("Collab Discussion", () => {
     expect(html).toMatch(/<ul[^>]*>.*General context.*Task detail.*<\/ul>/s);
   });
 
+  it("merges published work updates into the chronological activity feed", () => {
+    const html = renderToStaticMarkup(createElement(CollabDiscussion, {
+      connection: "online",
+      messages: [{ ...messages[0]!, seq: 1 }],
+      workUpdates: [{ eventId: "update-1", seq: 2, createdAt: 2, kind: "work-update", authorId: "bob", summary: "Reconnect is covered", filePaths: ["src/reconnect.ts"], changeSetId: "a".repeat(64) }],
+      port: port(),
+      t,
+      currentMemberId: "alice",
+    }));
+
+    expect(html).toContain('data-kind="work-update"');
+    expect(html).toContain("Reconnect is covered");
+    expect(html).toContain("src/reconnect.ts");
+    expect(html.indexOf("General context")).toBeLessThan(html.indexOf("Reconnect is covered"));
+  });
+
   it("shows explicit empty and offline states and disables sending offline", () => {
     const html = renderToStaticMarkup(createElement(CollabDiscussion, {
       connection: "offline",
