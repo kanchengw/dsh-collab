@@ -825,6 +825,20 @@ export class CollabGateway {
       await this.options.commitCriticalState?.();
       return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
     }
+    if (request.method === "PUT" && tail[1] === "blocked") {
+      const body = objectBody(request.body);
+      allowedFields(body, ["blocked"]);
+      if (typeof body.blocked !== "boolean") throw invalidInput("blocked must be a boolean", { field: "blocked" });
+      const task = tasks.update({
+        taskId,
+        blocked: body.blocked,
+        actor: { memberId: actor.memberId, principalId: actor.principalId },
+        eventId: `task:${roomId}:${taskId}:blocked:${String(body.blocked)}`,
+        now: this.now(),
+      });
+      await this.options.commitCriticalState?.();
+      return { status: 200, body: { task, ...(this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] ? { event: this.options.ledger.readAfter(roomId, beforeSeq, 1)[0] } : {}) } };
+    }
     if (request.method === "POST" && tail[1] === "change-sets") {
       if (!this.options.changeSets) throw new CollabError("REQUEST_STATE", "ChangeSet staging is unavailable");
       const body = objectBody(request.body);

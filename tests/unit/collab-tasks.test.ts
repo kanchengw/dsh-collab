@@ -112,6 +112,7 @@ describe("Collab Tasks", () => {
     expect(html).toContain("房间决定");
     expect(html).toContain("进行中");
     expect(html).toContain("负责人");
+    expect(html).toContain("阻塞标记");
     expect(html).toContain("创建任务");
     expect(html).toContain("任务讨论");
     expect(html).toContain("已提出");

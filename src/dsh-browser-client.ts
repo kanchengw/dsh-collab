@@ -826,6 +826,11 @@ export class DshBrowserCollabClient implements DshCollabClientPort {
     await this.request("POST", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/unassign`, { clientRequestId: randomId("task-unassign") }, true);
   }
 
+  async setTaskBlocked(roomId: string, taskId: string, blocked: boolean): Promise<void> {
+    this.assertActiveRoom(roomId);
+    await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/blocked`, { blocked }, true);
+  }
+
   async setTaskStatus(roomId: string, taskId: string, status: string): Promise<void> {
     this.assertActiveRoom(roomId);
     await this.request("PUT", `/v1/rooms/${encodeURIComponent(roomId)}/tasks/${encodeURIComponent(taskId)}/status`, { status }, true);

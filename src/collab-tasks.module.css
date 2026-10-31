@@ -104,6 +104,8 @@
 .detail h3 { color: var(--dsw-alias-label-primary); font-size: 14px; font-weight: 650; line-height: 20px; }
 .detailHeader p { margin-top: 3px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .status { padding: 2px 7px; border-radius: 999px; background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); }
+.blockedControl { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.blockedControl input { accent-color: var(--dsw-alias-state-business-primary); }
 .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 0; }
 .meta div { min-width: 0; padding: 8px; border-radius: 7px; background: var(--dsw-alias-interactive-bg-hover); }
 .meta dt { color: var(--dsw-alias-label-tertiary); font-size: 10px; line-height: 15px; }

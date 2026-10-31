@@ -367,6 +367,18 @@ describe("CollabGateway route contract", () => {
     expect(ledger.readAfter("room-1", 0).at(-1)).toMatchObject({ type: "task.updated", payload: { taskId, changeSetIds: [changeSetId] } });
   });
 
+  it("toggles the Task blocked marker without changing its status", async () => {
+    const taskStore = new TaskStore();
+    const { gateway } = setup(undefined, false, undefined, undefined, () => 10, { taskStore });
+    const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });
+    const headers = bearer((bootstrap.body as { roomToken: string }).roomToken);
+    const created = await request(gateway, { method: "POST", path: "/v1/rooms/room-1/tasks", headers, body: { title: "Blocked task", clientRequestId: "blocked-task" } });
+    const taskId = (created.body as { task: { taskId: string } }).task.taskId;
+
+    await expect(request(gateway, { method: "PUT", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/blocked`, headers, body: { blocked: true } })).resolves.toMatchObject({ status: 200, body: { task: { blocked: true, status: "open" } } });
+    await expect(request(gateway, { method: "PUT", path: `/v1/rooms/room-1/tasks/${encodeURIComponent(taskId)}/blocked`, headers, body: { blocked: false } })).resolves.toMatchObject({ status: 200, body: { task: { blocked: false } } });
+  });
+
   it("writes Discussion scope and source references into the human message ledger event", async () => {
     const { gateway, ledger } = setup();
     const bootstrap = await request(gateway, { method: "GET", path: "/v1/rooms/room-1/bootstrap", auth: { principalId: "host" } });

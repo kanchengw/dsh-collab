@@ -327,6 +327,7 @@ export interface DshCollabClientPort {
   claimTask?(roomId: string, taskId: string): Promise<void>;
   unassignTask?(roomId: string, taskId: string): Promise<void>;
   setTaskStatus?(roomId: string, taskId: string, status: string): Promise<void>;
+  setTaskBlocked?(roomId: string, taskId: string, blocked: boolean): Promise<void>;
   addTaskParticipant?(roomId: string, taskId: string, memberId: string): Promise<void>;
   proposeDecision?(roomId: string, input: { scope: string; conclusion: string; sourceMessageIds: string[] }): Promise<void>;
   acceptDecision?(roomId: string, decisionId: string): Promise<void>;

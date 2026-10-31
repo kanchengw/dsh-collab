@@ -53,6 +53,7 @@ export interface CollabTasksPort {
   claimTask(taskId: string): Promise<void>;
   unassignTask?(taskId: string): Promise<void>;
   setTaskStatus(taskId: string, status: TaskStatus): Promise<void>;
+  setTaskBlocked?(taskId: string, blocked: boolean): Promise<void>;
   addTaskParticipant(taskId: string, memberId: string): Promise<void>;
   sendDiscussion(taskId: string, text: string): Promise<void>;
   proposeDecision?(input: { scope: string; conclusion: string; sourceMessageIds: string[] }): Promise<void>;
@@ -115,6 +116,7 @@ export function createCollabTaskActionHandlers(port: CollabTasksPort) {
     claimTask: (taskId: string) => port.claimTask(requiredText(taskId, "taskId")),
     unassignTask: (taskId: string) => port.unassignTask?.(requiredText(taskId, "taskId")) ?? Promise.reject(new Error("Task assignment actions are unavailable")),
     setTaskStatus: (taskId: string, status: TaskStatus) => port.setTaskStatus(requiredText(taskId, "taskId"), status),
+    setTaskBlocked: (taskId: string, blocked: boolean) => port.setTaskBlocked?.(requiredText(taskId, "taskId"), blocked) ?? Promise.reject(new Error("Task blocked actions are unavailable")),
     addTaskParticipant: (taskId: string, memberId: string) => port.addTaskParticipant(requiredText(taskId, "taskId"), requiredText(memberId, "memberId")),
     sendDiscussion: (taskId: string, text: string) => port.sendDiscussion(requiredText(taskId, "taskId"), requiredText(text, "text")),
     proposeDecision: (input: { scope: string; conclusion: string; sourceMessageIds: string[] }) => port.proposeDecision?.({
@@ -186,6 +188,7 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
   const { task } = props.item;
   const [participantId, setParticipantId] = useState("");
   const [status, setStatus] = useState<TaskStatus>(task.status);
+  const [blocked, setBlocked] = useState(task.blocked);
   const [discussionDraft, setDiscussionDraft] = useState("");
   const terminal = task.status === "done" || task.status === "cancelled";
   const currentIndex = TASK_STATUSES.indexOf(task.status);
@@ -212,6 +215,10 @@ function TaskDetail(props: { item: CollabTaskItem; snapshot: CollabTasksSnapshot
         {statusOptions.map((value) => <option key={value} value={value}>{statusLabel(value, props.t)}</option>)}
       </select>
       <button type="button" disabled={terminal || props.snapshot.connection === "offline" || props.busy !== undefined || status === task.status} onClick={() => { props.run("status", () => props.port.setTaskStatus(task.taskId, status)); }}>{props.t("tasks.updateStatus")}</button>
+    </div>
+    <div className={css.actions}>
+      <label className={css.blockedControl}><input type="checkbox" checked={blocked} onChange={(event) => { setBlocked(event.currentTarget.checked); }} /> {props.t("tasks.blocked")}</label>
+      <button type="button" disabled={props.snapshot.connection === "offline" || props.busy !== undefined || !props.port.setTaskBlocked || blocked === task.blocked} onClick={() => { props.run("blocked", () => props.port.setTaskBlocked!(task.taskId, blocked)); }}>{props.t("tasks.setBlocked")}</button>
     </div>
     <div className={css.actions}>
       <select aria-label={props.t("tasks.participantAria")} value={participantId} disabled={props.snapshot.connection === "offline" || props.busy !== undefined} onChange={(event) => { setParticipantId(event.currentTarget.value); }}>
