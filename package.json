@@ -1,7 +1,7 @@
 {
   "name": "dsh-collab",
   "version": "0.1.0",
-  "description": "Human collaboration rooms for DeepSeek Harness with a host-owned Agent session",
+  "description": "Multi-user collaboration rooms for DeepSeek Harness",
   "private": false,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -108,8 +108,9 @@
   "keywords": [
     "deepseek-harness",
     "dsh",
+    "dsh-plugin",
     "collaboration",
-    "agents",
-    "easytier"
+    "collaboration-rooms",
+    "multiplayer"
   ]
 }
