@@ -1,0 +1,134 @@
+name: Release
+
+run-name: Release v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version from package.json to publish
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify, publish, and release
+    if: github.repository == 'kanchengw/dsh-collab' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up npm
+        run: npm install --global npm@11.19.0
+
+      - name: Validate release request
+        id: package
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $packageName = node -p "require('./package.json').name"
+          $packageVersion = node -p "require('./package.json').version"
+          $tag = "v$packageVersion"
+
+          if ($env:REQUESTED_VERSION -ne $packageVersion) {
+            throw "Requested version $env:REQUESTED_VERSION does not match package.json version $packageVersion."
+          }
+
+          $alreadyPublished = $false
+          npm view "$packageName@$packageVersion" version *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $publishedGitHead = npm view "$packageName@$packageVersion" gitHead
+            if ($publishedGitHead -ne $env:GITHUB_SHA) {
+              throw "$packageName@$packageVersion was published from $publishedGitHead, not $env:GITHUB_SHA."
+            }
+            $alreadyPublished = $true
+            Write-Output "$packageName@$packageVersion already matches this commit; only the GitHub release will be repaired."
+          }
+
+          $tagSha = git ls-remote --tags origin "refs/tags/$tag" | ForEach-Object { ($_ -split "`t")[0] } | Select-Object -First 1
+          if ($tagSha -and $tagSha -ne $env:GITHUB_SHA) {
+            throw "Tag $tag points to $tagSha, not $env:GITHUB_SHA."
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "name=$packageName"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$packageVersion"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "already_published=$alreadyPublished"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify release manifest
+        run: pnpm release:check
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Inspect npm package contents
+        run: npm pack --dry-run
+
+      - name: Pack release tarball
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force .release | Out-Null
+          npm pack --pack-destination .release --silent | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'npm pack failed' }
+
+      - name: Publish to npm
+        if: steps.package.outputs.already_published != 'true'
+        run: npm publish --provenance --access public
+
+      - name: Create GitHub tag and release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          TAG: ${{ steps.package.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $asset = Get-ChildItem .release/*.tgz | Select-Object -First 1
+            if (-not $asset) { throw 'Release tarball was not produced' }
+            gh release create $env:TAG $asset.FullName --target $env:GITHUB_SHA --title "$env:PACKAGE_NAME $env:TAG" --generate-notes
+            if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+          }

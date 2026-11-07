@@ -6,7 +6,7 @@ import { validateDshCollabManifest } from "../../src/manifest.js";
 describe("dsh package manifest", () => {
   it("exposes one package with host bundle and browser face", () => {
     const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8"));
-    expect(manifest.name).toBe("dsh-collab");
+    expect(manifest.name).toBe("@kanchengw/dsh-collab");
     expect(manifest.exports["./client"]).toBeDefined();
     expect(manifest.dsh.client.platform).toBe("web");
     expect(manifest.dsh.client.inject).toContain("@deepseek-ai/dsh-client-locale");

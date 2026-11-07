@@ -1,5 +1,5 @@
 {
-  "name": "dsh-collab",
+  "name": "@kanchengw/dsh-collab",
   "version": "0.1.0",
   "description": "Multi-user collaboration rooms for DeepSeek Harness",
   "private": false,
@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "build": "pnpm clean && tsc -p tsconfig.build.json && tsdown",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "prepare": "pnpm build"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -112,5 +113,8 @@
     "collaboration",
     "collaboration-rooms",
     "multiplayer"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -27,7 +27,7 @@ describe("installable package build", () => {
     expect(existsSync(resolve(process.cwd(), "src/nginx.ts"))).toBe(false);
     expect(existsSync(resolve(process.cwd(), "src/webserver.ts"))).toBe(false);
     expect(existsSync(resolve(process.cwd(), "vendor/nginx/windows-x64/nginx.exe"))).toBe(false);
-    expect((patch.match(/name: dsh-collab\s*$/gm) ?? []).length).toBe(1);
+    expect((patch.match(/name: '@kanchengw\/dsh-collab'\s*$/gm) ?? []).length).toBe(1);
     expect(patch).not.toContain("dsh-collab/client");
     expect(patch).not.toContain("localProxy");
     expect(patch).not.toContain("127.0.0.2");

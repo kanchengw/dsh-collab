@@ -47,7 +47,8 @@ describe("public release hygiene", () => {
     const packageJson = JSON.parse(read("package.json")) as { files?: string[]; repository?: { url?: string } };
 
     expect(readme).toContain("## Requirements");
-    expect(readme).toContain("## Install from source");
+    expect(readme).toContain("## Install");
+    expect(readme).toContain("The npm package is `@kanchengw/dsh-collab`.");
     expect(readme).toContain("## Quick start");
     expect(readme).toContain("## Security and privacy");
     expect(readme).toContain("## Development");

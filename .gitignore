@@ -4,6 +4,7 @@ dist/
 lib/
 coverage/
 *.tsbuildinfo
+/.release/
 
 # Internal design, delivery logs and generated knowledge graphs
 /design.md

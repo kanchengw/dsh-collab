@@ -84,7 +84,23 @@ nginx, a relay, a certificate or a router rule.
 DSH versions outside the `0.2.x` release line are not compatibility targets for
 this snapshot.
 
-## Install from source
+## Install
+
+### From npm
+
+The npm package is `@kanchengw/dsh-collab`.
+
+```powershell
+dsh plugin --profile web add @kanchengw/dsh-collab
+```
+
+If DSH is run from a source checkout, use that checkout's CLI entry point:
+
+```powershell
+pnpm dsh plugin --profile web add @kanchengw/dsh-collab
+```
+
+### From source
 
 ```powershell
 git clone https://github.com/kanchengw/dsh-collab.git
@@ -92,19 +108,7 @@ cd dsh-collab
 corepack enable
 pnpm install --frozen-lockfile
 pnpm build
-```
-
-Install the built package into the DSH web profile. Use the package directory's
-absolute path:
-
-```powershell
-dsh plugin --profile web add C:\path\to\dsh-collab
-```
-
-If DSH is run from a source checkout, use that checkout's CLI entry point:
-
-```powershell
-pnpm dsh plugin --profile web add C:\path\to\dsh-collab
+dsh plugin --profile web add (Get-Location).Path
 ```
 
 Restart or reload DSH after installing a new build. The plugin uses DSH's
