@@ -6,6 +6,20 @@
   "properties": {
     "role": { "const": "planner" },
     "status": { "enum": ["planned", "blocked"] },
+    "plan_kind": { "enum": ["initial", "revision", "replacement"] },
+    "supersedes_attempt": { "type": ["integer", "null"] },
+    "change_log": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding", "plan_change"],
+        "properties": {
+          "finding": { "type": "string" },
+          "plan_change": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
     "summary": { "type": "string", "minLength": 1 },
     "plan_markdown": { "type": "string", "minLength": 1 },
     "workstreams": {

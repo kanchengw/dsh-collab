@@ -1,0 +1,125 @@
+name: Compat Resume
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: compat-resume-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    name: Resume compatibility loop
+    if: >
+      github.event.issue.state == 'open' &&
+      github.event.comment.user.type != 'Bot' &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      startsWith(github.event.comment.body, '/resume')
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Prepare Codex home
+        shell: pwsh
+        run: |
+          $codexHome = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force $codexHome | Out-Null
+          Copy-Item compat/codex/config.toml $codexHome
+          Copy-Item compat/codex/model-catalog.json $codexHome
+          "CODEX_HOME=$codexHome" | Out-File -Append $env:GITHUB_ENV
+          "COMPAT_CODEX_VERSION=0.142.5" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Install Codex
+        shell: pwsh
+        run: npm install --global @openai/codex@0.142.5
+
+      - name: Resolve resume context
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_IS_PR: ${{ github.event.issue.pull_request != null }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $eventIssue = [string]$env:EVENT_ISSUE_NUMBER
+          $isPr = $env:EVENT_IS_PR -eq "true"
+          $human = ($env:COMMENT_BODY -replace '^\s*/resume\s*', '').Trim()
+          if (-not $human) { $human = "Human requested resume without additional instructions." }
+
+          if ($isPr) {
+            $prNumber = $eventIssue
+            $pr = gh pr view $prNumber --repo $env:GITHUB_REPOSITORY --json body | ConvertFrom-Json
+            $match = [regex]::Match($pr.body, '(?i)(closes|fixes|resolves)\s+#(\d+)')
+            if (-not $match.Success) { throw "PR body does not contain Closes #N" }
+            $issueNumber = $match.Groups[2].Value
+          } else {
+            $issueNumber = $eventIssue
+            $prs = gh pr list --repo $env:GITHUB_REPOSITORY --state open --json number,body | ConvertFrom-Json
+            $pr = $prs | Where-Object { $_.body -match "(?i)(closes|fixes|resolves)\s+#$issueNumber\b" } | Select-Object -Last 1
+            if (-not $pr) { throw "no open PR linked to issue #$issueNumber" }
+            $prNumber = [string]$pr.number
+          }
+
+          $issueInfo = gh issue view $issueNumber --repo $env:GITHUB_REPOSITORY --json labels,comments | ConvertFrom-Json
+          if (-not ($issueInfo.labels | Where-Object { $_.name -eq "kind/upstream" })) {
+            throw "issue #$issueNumber is not a compat issue"
+          }
+          $comments = $issueInfo.comments
+          $planRound = 1 + (($comments | Where-Object { $_.body -like "*<!-- compat:plan*" }).Count)
+          $status = node scripts/compat/status.mjs --json | ConvertFrom-Json
+
+          $humanFile = Join-Path $env:RUNNER_TEMP "human-input.txt"
+          $human | Set-Content $humanFile -Encoding UTF8
+          $watch = Join-Path $env:RUNNER_TEMP "watch-artifact"
+          New-Item -ItemType Directory -Force $watch | Out-Null
+          node scripts/compat/status.mjs --out (Join-Path $watch "compat-report.md")
+
+          "ISSUE_NUMBER=$issueNumber" | Out-File -Append $env:GITHUB_ENV
+          "PR_NUMBER=$prNumber" | Out-File -Append $env:GITHUB_ENV
+          "TAG=$($status.latest.tag)" | Out-File -Append $env:GITHUB_ENV
+          "VERSION=$($status.latest.version)" | Out-File -Append $env:GITHUB_ENV
+          "PLAN_ROUND=$planRound" | Out-File -Append $env:GITHUB_ENV
+          "HUMAN_INPUT_FILE=$humanFile" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Run compatibility loop
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          RESUME: "true"
+          DRY_RUN: "false"
+        run: |
+          $ErrorActionPreference = "Stop"
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/compat/pipeline-loop.ps1 -MaxAttempts 3
+          if ($LASTEXITCODE -ne 0) { throw "compatibility resume loop exited with $LASTEXITCODE" }
+
+      - name: Upload loop artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-resume-${{ github.run_id }}
+          path: ${{ runner.temp }}/compat-loop
+          if-no-files-found: warn

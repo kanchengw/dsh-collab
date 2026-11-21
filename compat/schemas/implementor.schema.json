@@ -17,6 +17,7 @@
   "properties": {
     "role": { "const": "implementor" },
     "status": { "enum": ["implemented", "blocked"] },
+    "plan_kind": { "enum": ["initial", "revision", "replacement"] },
     "summary": { "type": "string", "minLength": 1 },
     "workstreams_completed": { "type": "array", "items": { "type": "string" } },
     "files_changed": { "type": "array", "items": { "type": "string" } },

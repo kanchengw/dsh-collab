@@ -17,19 +17,21 @@
   ],
   "properties": {
     "role": { "const": "reviewer" },
-    "verdict": { "enum": ["approve", "request_changes", "blocked"] },
+    "verdict": { "enum": ["approve", "request_changes"] },
     "summary": { "type": "string", "minLength": 1 },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["severity", "file", "line", "issue", "suggestion"],
+        "required": ["severity", "category", "file", "line", "issue", "evidence"],
         "properties": {
           "severity": { "enum": ["blocking", "non_blocking"] },
+          "category": { "enum": ["compile", "test", "spec", "scope", "docs", "security", "runtime"] },
           "file": { "type": "string" },
           "line": { "type": ["integer", "null"] },
           "issue": { "type": "string" },
-          "suggestion": { "type": "string" }
+          "evidence": { "type": "string" },
+          "expected_behavior": { "type": "string" }
         },
         "additionalProperties": true
       }

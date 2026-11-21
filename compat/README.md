@@ -10,7 +10,7 @@ for `dsh-collab`.
 - Reports version-string drift across the repository.
 - Lists DSH packages, imports and inject surfaces used by this repository.
 - Reports changed upstream packages when a local `deepseek-harness` checkout is available.
-- Runs an auditable four-node pipeline: watch → plan → implement → review.
+- Runs an auditable bounded loop: watch → (Planner → Implementor → Reviewer) × 3.
 
 ## What it does not do
 
@@ -38,28 +38,58 @@ Useful flags:
 
 ## Pipeline
 
-The pipeline is one workflow, `.github/workflows/compat-pipeline.yml`, with four
-jobs. One workflow avoids the GitHub Actions rule that events created by
-`GITHUB_TOKEN` do not trigger another workflow.
+One workflow: `.github/workflows/compat-pipeline.yml`.
 
-| Job | Trigger | Writes | Output |
-|---|---|---|---|
-| `watch` | schedule / manual | issue | compat report + upstream issue |
-| `plan` | after watch | issue comment | `plan.md` + audit card |
-| `implement` | after plan | branch + draft PR | diff + gates + audit card |
-| `review` | after implement | PR review | review + audit card |
+```text
+watch
+  └─ create/update upstream issue + compat report
 
-The branches and PRs are created by `GITHUB_TOKEN`; no PAT or bot account is
-required. The repository setting **Allow GitHub Actions to create and approve
-pull requests** must remain enabled.
+loop (max 3 attempts)
+  ├─ Planner
+  │    ├─ attempt 1: issue + compat report
+  │    ├─ attempt 2+: previous plan + PR diff + Reviewer findings + gates
+  │    └─ outputs status: planned | blocked and plan_kind: initial | revision | replacement
+  ├─ Implementor
+  │    └─ issue + chosen plan + compat report only
+  ├─ Reviewer
+  │    ├─ fresh typecheck / build / full tests on the PR branch
+  │    ├─ PR review with findings, no code edits
+  │    └─ approve | request_changes
+  ├─ approve → awaiting-review, wait for human merge
+  ├─ request_changes → Planner decides revision / replacement / blocked
+  ├─ revision → same branch/PR
+  ├─ replacement → new branch/PR; old PR superseded
+  └─ blocked → agent:blocked + human arbitration
+```
+
+Role boundaries:
+
+- **Planner** does not edit code, review code, or give line-level patches. It owns the decision between revision, replacement and blocked.
+- **Implementor** does not plan, review, or receive raw Reviewer findings.
+- **Reviewer** is read-only; it only returns `approve` or `request_changes` with findings/evidence, not fix instructions and not the revise/replan decision.
+
+`request_changes` starts a new cycle. Planner may choose `revision` every time if it
+believes the plan is converging; the workflow caps total attempts at three.
+When Planner returns `blocked`, the loop stops immediately and asks a human to
+arbitrate.
+
+The scheduled run uses `dry_run=true` (watch + plan only). A manual
+`workflow_dispatch` defaults to `dry_run=true`; set it to `false` to run the full
+loop. Branches and PRs are created by `GITHUB_TOKEN`; no PAT or bot account is
+required.
+
+After a blocked run, a maintainer can comment `/resume [optional note]` on the
+PR or issue. `.github/workflows/compat-resume.yml` reloads the previous plan,
+review, gates, PR and diff, then starts Planner with `trigger=human_resume`.
 
 ## Audit model
 
-Every node creates one run directory and records:
+Every node, on every attempt, creates one run directory under
+`attempt-<n>/<role>/` and records:
 
-- `run.json`: role, run id, issue/PR, commit, model, provider, reasoning effort,
-  prompt path + SHA-256, input paths + SHA-256, output paths + SHA-256, gates,
-  timestamps, status and run URL.
+- `run.json`: role, attempt, run id, issue/PR, commit, model, provider,
+  reasoning effort, prompt path + SHA-256, input paths + SHA-256, output paths +
+  SHA-256, gates, timestamps, status and run URL.
 - `audit.md`: a human-readable audit card posted to the issue or PR.
 - `output.json`: the node's structured JSON output, validated by
   `scripts/compat/audit.mjs`.
@@ -74,9 +104,9 @@ run bundle.
 
 Prompts live in `compat/prompts/`:
 
-- `planner.md`: read-only; creates workstreams, dependencies, gates, decisions and risks.
-- `implementor.md`: writes only within the approved plan; records commands and gates.
-- `reviewer.md`: fresh context; checks spec, scope, tests, docs, audit and security.
+- `planner.md`: read-only; creates or revises the plan; consumes Reviewer findings as input; decides revision/replacement/blocked; does not edit code or give patches.
+- `implementor.md`: writes only within the approved plan; does not plan or review; does not receive raw Reviewer findings.
+- `reviewer.md`: fresh context and read-only; checks spec, scope, tests, docs, audit and security; returns only approve/request_changes with findings/evidence.
 
 JSON schemas live in `compat/schemas/`. The pipeline validates required fields with
 `scripts/compat/audit.mjs`; it does not rely on provider-specific structured-output
@@ -110,6 +140,8 @@ The model catalog is `compat/codex/model-catalog.json`.
 - GitHub-hosted runners cannot run the full DSH host/participant e2e yet; the
   Reviewer records `e2e: not_run` and the human must run `e2e/prepare.ps1` before merge.
 - Pushes and label changes made with `GITHUB_TOKEN` do not trigger other workflows,
-  so the pipeline is one workflow with dependent jobs rather than separate workflows.
-- The Implementor may need a second run after W1 installs the target dependencies;
-  the workflow records the first run's gate results and keeps the PR in draft.
+  so the pipeline is one workflow with a loop job rather than separate workflows.
+- The Implementor installs target dependencies after editing; if `pnpm install`
+  fails, the loop stops as an environment/dependency failure and requires a human.
+- The scheduled run stays in `dry_run` mode until the loop is validated; enable
+  full scheduled runs only after a manual full run is green.

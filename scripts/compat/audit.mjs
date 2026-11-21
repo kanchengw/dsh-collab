@@ -129,6 +129,7 @@ function init() {
     repository: process.env.GITHUB_REPOSITORY ?? "kanchengw/dsh-collab",
     issue: valueOf("--issue") ? Number(valueOf("--issue")) : null,
     pr: valueOf("--pr") ? Number(valueOf("--pr")) : null,
+    attempt: valueOf("--attempt") ? Number(valueOf("--attempt")) : 1,
     event: process.env.GITHUB_EVENT_NAME ?? null,
     ref: process.env.GITHUB_REF ?? null,
     commit: valueOf("--commit") ?? process.env.GITHUB_SHA ?? null,
@@ -157,8 +158,9 @@ function validateOutput(role, output) {
   if (missing.length > 0) fail(`output is missing required fields: ${missing.join(", ")}`);
   if (output.role !== role) fail(`output.role must be "${role}", got ${JSON.stringify(output.role)}`);
   if (role === "planner" && !["planned", "blocked"].includes(output.status)) fail("planner.status must be planned or blocked");
+  if (role === "planner" && output.status === "planned" && !["initial", "revision", "replacement"].includes(output.plan_kind)) fail("planner.plan_kind is invalid");
   if (role === "implementor" && !["implemented", "blocked"].includes(output.status)) fail("implementor.status must be implemented or blocked");
-  if (role === "reviewer" && !["approve", "request_changes", "blocked"].includes(output.verdict)) fail("reviewer.verdict is invalid");
+  if (role === "reviewer" && !["approve", "request_changes"].includes(output.verdict)) fail("reviewer.verdict is invalid");
 }
 
 function card(run) {
@@ -171,6 +173,8 @@ function card(run) {
   lines.push(`| Status | \`${run.status}\` |`);
   lines.push(`| Issue | ${run.issue ?? "-"} |`);
   lines.push(`| PR | ${run.pr ?? "-"} |`);
+  lines.push(`| Attempt | ${run.attempt ?? 1} |`);
+  if (run.planKind) lines.push(`| Plan kind | \`${run.planKind}\` |`);
   lines.push(`| Run | ${run.runUrl ? `[${run.runId}](${run.runUrl})` : "-"} |`);
   lines.push(`| Commit | \`${run.commit ?? "-"}\` |`);
   lines.push(`| Model | \`${run.model ?? "-"}\` |`);
@@ -219,6 +223,7 @@ function finish() {
   const output = readJson(outputPath);
   validateOutput(role, output);
   run.status = role === "reviewer" ? output.verdict : output.status;
+  if (output.plan_kind) run.planKind = output.plan_kind;
   run.finishedAt = now();
   run.outputs = [{ path: safeRelative(outputPath, dir), sha256: sha256File(outputPath) }];
   const gatesArg = valueOf("--gates");
