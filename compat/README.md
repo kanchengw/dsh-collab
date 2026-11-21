@@ -141,6 +141,10 @@ The model catalog is `compat/codex/model-catalog.json`.
   Reviewer records `e2e: not_run` and the human must run `e2e/prepare.ps1` before merge.
 - Pushes and label changes made with `GITHUB_TOKEN` do not trigger other workflows,
   so the pipeline is one workflow with a loop job rather than separate workflows.
+- The Implementor runs Codex with `danger-full-access` on the ephemeral GitHub
+  runner because `workspace-write` was read-only in that environment. `GH_TOKEN`
+  is removed from the Codex child environment; the workflow restores it for git,
+  `gh` and label operations.
 - The Implementor installs target dependencies after editing; if `pnpm install`
   fails, the loop stops as an environment/dependency failure and requires a human.
 - The scheduled run stays in `dry_run` mode until the loop is validated; enable

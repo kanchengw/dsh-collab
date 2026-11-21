@@ -29,6 +29,9 @@ $script:planMode = "initial"
 $script:planRound = 1
 $script:trigger = "initial"
 $script:humanInput = if ($env:HUMAN_INPUT_FILE -and (Test-Path -LiteralPath $env:HUMAN_INPUT_FILE)) { Get-Content $env:HUMAN_INPUT_FILE -Raw } elseif ($env:HUMAN_INPUT) { $env:HUMAN_INPUT } else { "" }
+$script:plannerBlocked = $false
+$script:implementorBlocked = $false
+$script:reviewVerdict = $null
 $script:issueFile = Join-Path $runRoot "issue.md"
 $script:reportFile = Join-Path $runRoot "compat-report.md"
 
@@ -177,8 +180,10 @@ function Invoke-Planner {
     $message | Set-Content $blockedFile -Encoding UTF8
     Post-IssueComment $blockedFile
     Post-PRComment $blockedFile
-    return $false
+    $script:plannerBlocked = $true
+    return
   }
+  $script:plannerBlocked = $false
   if ($plan.plan_kind -notin @("initial", "revision", "replacement")) {
     throw "planner returned invalid plan_kind: $($plan.plan_kind)"
   }
@@ -239,8 +244,15 @@ function Invoke-Implementor {
   $inputs += $promptFile
   Invoke-AuditInit -Role "implementor" -Dir $dir -Attempt $Attempt -Inputs $inputs
   $output = Join-Path $dir "output.json"
-  (Get-Content $promptFile -Raw) | codex exec - --strict-config --sandbox workspace-write --cd $repo --output-last-message $output --json *> (Join-Path $dir "events.jsonl")
-  if ($LASTEXITCODE -ne 0) { throw "implementor failed on attempt $Attempt" }
+  $savedGhToken = $env:GH_TOKEN
+  Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+  try {
+    (Get-Content $promptFile -Raw) | codex exec - --strict-config --sandbox danger-full-access --cd $repo --output-last-message $output --json *> (Join-Path $dir "events.jsonl")
+    $codexExit = $LASTEXITCODE
+  } finally {
+    if ($savedGhToken) { $env:GH_TOKEN = $savedGhToken }
+  }
+  if ($codexExit -ne 0) { throw "implementor failed on attempt $Attempt" }
   Invoke-AuditFinish -Role "implementor" -Dir $dir -Output $output
   $impl = Get-Content $output -Raw | ConvertFrom-Json
   if ($impl.status -eq "blocked") {
@@ -249,8 +261,10 @@ function Invoke-Implementor {
     $message | Set-Content $blockedFile -Encoding UTF8
     Post-IssueComment $blockedFile
     Post-PRComment $blockedFile
-    return $false
+    $script:implementorBlocked = $true
+    return
   }
+  $script:implementorBlocked = $false
 
   git add -N -- . 2>$null
   git diff > (Join-Path $dir "diff.patch")
@@ -285,7 +299,8 @@ function Invoke-Implementor {
     $message | Set-Content $blockedFile -Encoding UTF8
     Post-IssueComment $blockedFile
     Post-PRComment $blockedFile
-    return $false
+    $script:implementorBlocked = $true
+    return
   }
 
   git config user.name "github-actions[bot]"
@@ -378,7 +393,8 @@ function Invoke-Reviewer {
     Set-Label "agent:review" -Remove
     Set-Label "agent:blocked" -Remove
     gh pr ready $script:pr --repo $env:GITHUB_REPOSITORY 2>$null
-    return "approve"
+    $script:reviewVerdict = "approve"
+    return
   }
   if ($review.verdict -eq "approve" -and -not $gatesAllPass) {
     $mismatch = "Reviewer returned approve but one or more gates failed; treating this round as request_changes."
@@ -389,7 +405,8 @@ function Invoke-Reviewer {
   $script:previousReview = $output
   $script:previousGates = $gatesFile
   $script:trigger = "review_return"
-  return "request_changes"
+  $script:reviewVerdict = "request_changes"
+  return
 }
 
 function Write-FinalSummary {
@@ -500,11 +517,16 @@ try {
       $script:planMode = "decide"
       if ($script:trigger -ne "human_resume") { $script:trigger = "review_return" }
     }
-    if (-not (Invoke-Planner -Attempt $attempt)) { $result = "blocked"; break }
+    $script:plannerBlocked = $false
+    Invoke-Planner -Attempt $attempt
+    if ($script:plannerBlocked) { $result = "blocked"; break }
     if ($dryRun) { $result = "dry-run"; break }
-    if (-not (Invoke-Implementor -Attempt $attempt)) { $result = "blocked"; break }
-    $verdict = Invoke-Reviewer -Attempt $attempt
-    if ($verdict -eq "approve") { $result = "approved"; break }
+    $script:implementorBlocked = $false
+    Invoke-Implementor -Attempt $attempt
+    if ($script:implementorBlocked) { $result = "blocked"; break }
+    $script:reviewVerdict = $null
+    Invoke-Reviewer -Attempt $attempt
+    if ($script:reviewVerdict -eq "approve") { $result = "approved"; break }
   }
 
   if ($result -eq "running") {
