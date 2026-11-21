@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ImplementorOutput",
+  "type": "object",
+  "required": [
+    "role",
+    "status",
+    "summary",
+    "workstreams_completed",
+    "files_changed",
+    "commands_run",
+    "gates",
+    "residual_risks",
+    "blockers",
+    "pr_body_markdown"
+  ],
+  "properties": {
+    "role": { "const": "implementor" },
+    "status": { "enum": ["implemented", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "workstreams_completed": { "type": "array", "items": { "type": "string" } },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "exitCode", "summary"],
+        "properties": {
+          "command": { "type": "string" },
+          "exitCode": { "type": ["integer", "null"] },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gates": {
+      "type": "object",
+      "required": ["typecheck", "tests", "build", "e2e"],
+      "properties": {
+        "typecheck": { "enum": ["pass", "fail", "not_run"] },
+        "tests": { "enum": ["pass", "fail", "not_run"] },
+        "build": { "enum": ["pass", "fail", "not_run"] },
+        "e2e": { "enum": ["pass", "fail", "not_run"] }
+      },
+      "additionalProperties": true
+    },
+    "residual_risks": { "type": "array", "items": { "type": "string" } },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "pr_body_markdown": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,551 @@
+name: Compat Pipeline
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run watch + plan only; do not create a branch or PR"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: compat-pipeline
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Watch upstream
+    runs-on: windows-latest
+    timeout-minutes: 20
+    outputs:
+      drift: ${{ steps.check.outputs.drift }}
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      minor: ${{ steps.check.outputs.minor }}
+      issue: ${{ steps.check.outputs.issue }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Ensure labels
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $labels = @(
+            @{ name = "kind/upstream"; color = "1D76DB"; description = "Upstream DSH compatibility" },
+            @{ name = "ready-for-agent"; color = "0E8A16"; description = "Ready for the compatibility agent" },
+            @{ name = "plan-ready"; color = "0E8A16"; description = "Planner output is ready" },
+            @{ name = "agent:review"; color = "FBCA04"; description = "Request compatibility review" },
+            @{ name = "agent:blocked"; color = "B60205"; description = "Compatibility pipeline blocked" },
+            @{ name = "awaiting-review"; color = "5319E7"; description = "Waiting for human review" },
+            @{ name = "origin/internal"; color = "C5DEF5"; description = "Created by the repository workflow" }
+          )
+          foreach ($label in $labels) {
+            gh label create $label.name --color $label.color --description $label.description --force 2>$null
+          }
+
+      - name: Check upstream
+        id: check
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/compat/status.mjs --out compat-report.md
+          node scripts/compat/status.mjs --json --out compat-report.json
+          $report = Get-Content compat-report.json -Raw | ConvertFrom-Json
+          $drift = [bool]$report.drift
+          $tag = [string]$report.latest.tag
+          $version = [string]$report.latest.version
+          $minor = $version -replace '^(\d+\.\d+\.\d+).*','$1'
+          $issueNumber = ""
+          if ($drift) {
+            $issues = gh issue list --repo $env:GITHUB_REPOSITORY --label kind/upstream --state open --json number,title | ConvertFrom-Json
+            $existing = $issues | Where-Object { $_.title.StartsWith("[dsh $minor]") } | Select-Object -First 1
+            $title = "[dsh $minor] Adapt to dsh-v$version"
+            $header = @(
+              "## Upstream",
+              "",
+              "- Tag: ``$tag``",
+              "- Version: ``$version``",
+              "- Commit: ``$($report.latest.commit)``",
+              "- Released: ``$($report.latest.releasedAt)``",
+              "- npm: ``next`` = ``$($report.npm.distTags.next)``",
+              "",
+              "## Compatibility report"
+            ) -join "`n"
+            $header | Set-Content issue-body.md -Encoding UTF8
+            Add-Content issue-body.md (Get-Content compat-report.md -Raw) -Encoding UTF8
+            if ($existing) {
+              $issueNumber = [string]$existing.number
+              gh issue edit $issueNumber --repo $env:GITHUB_REPOSITORY --title $title --body-file issue-body.md
+              gh issue comment $issueNumber --repo $env:GITHUB_REPOSITORY --body "Upstream moved to ``$tag``. The compatibility report was updated in the issue body. Pipeline run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            } else {
+              $url = gh issue create --repo $env:GITHUB_REPOSITORY --title $title --body-file issue-body.md --label kind/upstream --label ready-for-agent --label origin/internal
+              $issueNumber = (($url | Select-Object -Last 1).Trim() -split '/')[-1]
+            }
+          }
+          "drift=$($drift.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "minor=$minor" >> $env:GITHUB_OUTPUT
+          "issue=$issueNumber" >> $env:GITHUB_OUTPUT
+
+      - name: Audit watch
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $run = Join-Path $env:RUNNER_TEMP "compat-watch"
+          New-Item -ItemType Directory -Force $run | Out-Null
+          Copy-Item compat-report.md (Join-Path $run "compat-report.md")
+          Copy-Item compat-report.json (Join-Path $run "compat-report.json")
+          node scripts/compat/audit.mjs init --role watcher --issue "${{ steps.check.outputs.issue }}" --out $run --commit (git rev-parse HEAD) --input (Join-Path $run "compat-report.md") --input (Join-Path $run "compat-report.json")
+          $status = if ("${{ steps.check.outputs.drift }}" -eq "true") { "drift" } else { "clean" }
+          $summary = if ($status -eq "drift") { "Upstream drift detected: ${{ steps.check.outputs.tag }}" } else { "No upstream drift" }
+          @{ role = "watcher"; status = $status; summary = $summary; tag = "${{ steps.check.outputs.tag }}"; version = "${{ steps.check.outputs.version }}"; issue = "${{ steps.check.outputs.issue }}" } | ConvertTo-Json | Set-Content (Join-Path $run "output.json") -Encoding UTF8
+          node scripts/compat/audit.mjs finish --role watcher --dir $run --output (Join-Path $run "output.json")
+          if ("${{ steps.check.outputs.issue }}" -ne "") {
+            gh issue comment "${{ steps.check.outputs.issue }}" --repo $env:GITHUB_REPOSITORY --body-file (Join-Path $run "audit.md")
+          }
+
+      - name: Upload watch artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-watch-${{ github.run_id }}
+          path: ${{ runner.temp }}/compat-watch
+          if-no-files-found: warn
+
+  plan:
+    name: Plan compatibility
+    needs: watch
+    if: needs.watch.outputs.drift == 'true' && needs.watch.outputs.issue != ''
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Prepare Codex home
+        shell: pwsh
+        run: |
+          $codexHome = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force $codexHome | Out-Null
+          Copy-Item compat/codex/config.toml $codexHome
+          Copy-Item compat/codex/model-catalog.json $codexHome
+          "CODEX_HOME=$codexHome" | Out-File -Append $env:GITHUB_ENV
+          "COMPAT_CODEX_VERSION=0.142.5" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Install Codex
+        shell: pwsh
+        run: npm install --global @openai/codex@0.142.5
+
+      - name: Download watch artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-watch-${{ github.run_id }}
+          path: ${{ runner.temp }}/watch-artifact
+
+      - name: Collect issue and report
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-inputs"
+          New-Item -ItemType Directory -Force $inputs | Out-Null
+          $issueFile = Join-Path $inputs "issue.md"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $issue = gh issue view $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --json title,body,comments | ConvertFrom-Json
+          "# Issue #$($env:ISSUE_NUMBER): $($issue.title)`n`n$($issue.body)" | Set-Content $issueFile -Encoding UTF8
+          Copy-Item (Join-Path $env:RUNNER_TEMP "watch-artifact/compat-report.md") $reportFile
+
+      - name: Run Planner
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-inputs"
+          $issueFile = Join-Path $inputs "issue.md"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $run = Join-Path $env:RUNNER_TEMP "compat-plan"
+          node scripts/compat/audit.mjs init --role planner --issue $env:ISSUE_NUMBER --out $run --commit (git rev-parse HEAD) --input $issueFile --input $reportFile --input compat/prompts/planner.md
+          $prompt = (Get-Content compat/prompts/planner.md -Raw) + "`n`n## Issue`n`n" + (Get-Content $issueFile -Raw) + "`n`n## Compatibility report`n`n" + (Get-Content $reportFile -Raw)
+          $prompt | codex exec - --strict-config --sandbox read-only --cd $env:GITHUB_WORKSPACE --output-last-message (Join-Path $run "output.json") --json *> (Join-Path $run "events.jsonl")
+          if ($LASTEXITCODE -ne 0) { throw "Planner failed with exit code $LASTEXITCODE" }
+          node scripts/compat/audit.mjs finish --role planner --dir $run --output (Join-Path $run "output.json")
+          $output = Get-Content (Join-Path $run "output.json") -Raw | ConvertFrom-Json
+          if ($output.status -ne "planned") {
+            gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+            gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body "Planner returned status $($output.status): $($output.summary)"
+            throw "Planner did not return a planned status"
+          }
+          $output.plan_markdown | Set-Content (Join-Path $run "plan.md") -Encoding UTF8
+          $body = "<!-- compat:plan -->`n`n" + $output.plan_markdown + "`n`n" + (Get-Content (Join-Path $run "audit.md") -Raw)
+          $body | Set-Content (Join-Path $run "comment.md") -Encoding UTF8
+          gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body-file (Join-Path $run "comment.md")
+          gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --remove-label ready-for-agent --add-label plan-ready
+
+      - name: Mark blocked
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+        run: |
+          gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+          gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body "Planner failed. See the workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/compat-plan
+          if-no-files-found: warn
+
+  implement:
+    name: Implement compatibility
+    needs: [watch, plan]
+    if: needs.plan.result == 'success' && needs.watch.outputs.drift == 'true' && inputs.dry_run != true
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+      branch: ${{ steps.branch.outputs.name }}
+      review_ready: ${{ steps.pr.outputs.review_ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Prepare Codex home
+        shell: pwsh
+        run: |
+          $codexHome = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force $codexHome | Out-Null
+          Copy-Item compat/codex/config.toml $codexHome
+          Copy-Item compat/codex/model-catalog.json $codexHome
+          "CODEX_HOME=$codexHome" | Out-File -Append $env:GITHUB_ENV
+          "COMPAT_CODEX_VERSION=0.142.5" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Install Codex
+        shell: pwsh
+        run: npm install --global @openai/codex@0.142.5
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan-artifact
+
+      - name: Download watch artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-watch-${{ github.run_id }}
+          path: ${{ runner.temp }}/watch-artifact
+
+      - name: Collect inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-inputs"
+          New-Item -ItemType Directory -Force $inputs | Out-Null
+          $issueFile = Join-Path $inputs "issue.md"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $issue = gh issue view $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --json title,body,comments | ConvertFrom-Json
+          "# Issue #$($env:ISSUE_NUMBER): $($issue.title)`n`n$($issue.body)" | Set-Content $issueFile -Encoding UTF8
+          Copy-Item (Join-Path $env:RUNNER_TEMP "watch-artifact/compat-report.md") $reportFile
+
+      - name: Create branch
+        id: branch
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.watch.outputs.tag }}"
+          $branch = "compat/dsh-" + ($tag -replace '^dsh-v','')
+          $remote = git ls-remote --heads origin $branch
+          if ($remote) {
+            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+            git checkout -B $branch "origin/$branch"
+          } else {
+            git checkout -B $branch
+          }
+          "name=$branch" >> $env:GITHUB_OUTPUT
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+          pnpm rebuild esbuild
+          if ($LASTEXITCODE -ne 0) { throw "pnpm rebuild esbuild failed" }
+
+      - name: Run Implementor
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+          TAG: ${{ needs.watch.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-inputs"
+          $issueFile = Join-Path $inputs "issue.md"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $run = Join-Path $env:RUNNER_TEMP "compat-implement"
+          $plan = Get-Content (Join-Path $env:RUNNER_TEMP "plan-artifact/plan.md") -Raw
+          node scripts/compat/audit.mjs init --role implementor --issue $env:ISSUE_NUMBER --out $run --commit (git rev-parse HEAD) --input $issueFile --input $reportFile --input compat/prompts/implementor.md
+          $prompt = (Get-Content compat/prompts/implementor.md -Raw) + "`n`n## Issue`n`n" + (Get-Content $issueFile -Raw) + "`n`n## Approved plan`n`n" + $plan + "`n`n## Compatibility report`n`n" + (Get-Content $reportFile -Raw)
+          $prompt | codex exec - --strict-config --sandbox workspace-write --cd $env:GITHUB_WORKSPACE --output-last-message (Join-Path $run "output.json") --json *> (Join-Path $run "events.jsonl")
+          if ($LASTEXITCODE -ne 0) { throw "Implementor failed with exit code $LASTEXITCODE" }
+          node scripts/compat/audit.mjs finish --role implementor --dir $run --output (Join-Path $run "output.json")
+          $impl = Get-Content (Join-Path $run "output.json") -Raw | ConvertFrom-Json
+          if ($impl.status -ne "implemented") {
+            gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+            gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body "Implementor returned status $($impl.status): $($impl.summary)"
+            throw "Implementor did not return an implemented status"
+          }
+
+      - name: Capture implement diff
+        if: always()
+        shell: pwsh
+        run: |
+          $run = Join-Path $env:RUNNER_TEMP "compat-implement"
+          New-Item -ItemType Directory -Force $run | Out-Null
+          git add -N -- . 2>$null
+          git diff --binary > (Join-Path $run "diff.patch")
+          git status --porcelain > (Join-Path $run "status.txt")
+
+      - name: Run gates
+        shell: pwsh
+        run: |
+          $run = Join-Path $env:RUNNER_TEMP "compat-implement"
+          $gates = [ordered]@{ typecheck = "not_run"; tests = "not_run"; build = "not_run"; release = "not_run"; e2e = "not_run" }
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "pnpm install failed during gates" }
+          pnpm rebuild esbuild
+          if ($LASTEXITCODE -ne 0) { throw "pnpm rebuild esbuild failed during gates" }
+          node node_modules/typescript/bin/tsc --noEmit *> (Join-Path $run "typecheck.log")
+          $gates.typecheck = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+          node node_modules/vitest/vitest.mjs run tests/unit/manifest.test.ts tests/unit/dsh-local-agent.test.ts tests/unit/dsh-current-primitives.test.ts tests/unit/e2e-environment.test.ts *> (Join-Path $run "tests.log")
+          $gates.tests = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+          pnpm build *> (Join-Path $run "build.log")
+          $gates.build = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+          pnpm release:check *> (Join-Path $run "release-check.log")
+          $gates.release = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+          $gates | ConvertTo-Json | Set-Content (Join-Path $run "gates.json") -Encoding UTF8
+          node scripts/compat/audit.mjs finish --role implementor --dir $run --output (Join-Path $run "output.json") --gates (Join-Path $run "gates.json")
+          git add -N -- . 2>$null
+          git diff --binary > (Join-Path $run "diff.patch")
+          git log --oneline -5 > (Join-Path $run "git-log.txt")
+
+      - name: Commit and open draft PR
+        id: pr
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+          TAG: ${{ needs.watch.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $run = Join-Path $env:RUNNER_TEMP "compat-implement"
+          $output = Get-Content (Join-Path $run "output.json") -Raw | ConvertFrom-Json
+          $gates = Get-Content (Join-Path $run "gates.json") -Raw | ConvertFrom-Json
+          $changed = git status --porcelain
+          if (-not $changed) {
+            gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+            gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body "Implementor made no changes. See the workflow run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            throw "Implementor made no changes"
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "compat: adapt to $env:TAG"
+          git push origin "${{ steps.branch.outputs.name }}"
+          $body = $output.pr_body_markdown + "`n`n" + (Get-Content (Join-Path $run "audit.md") -Raw)
+          $body | Set-Content (Join-Path $run "pr-body.md") -Encoding UTF8
+          $existing = gh pr list --repo $env:GITHUB_REPOSITORY --head "${{ steps.branch.outputs.name }}" --state open --json number,url | ConvertFrom-Json | Select-Object -First 1
+          if ($existing) {
+            $pr = [string]$existing.number
+            $prUrl = [string]$existing.url
+            gh pr edit $pr --repo $env:GITHUB_REPOSITORY --title "compat: adapt to $env:TAG" --body-file (Join-Path $run "pr-body.md")
+          } else {
+            $prUrl = (gh pr create --repo $env:GITHUB_REPOSITORY --draft --base main --head "${{ steps.branch.outputs.name }}" --title "compat: adapt to $env:TAG" --body-file (Join-Path $run "pr-body.md") | Select-Object -Last 1).Trim()
+            $pr = ($prUrl -split '/')[-1]
+          }
+          "pr=$pr" >> $env:GITHUB_OUTPUT
+          $allGreen = $gates.typecheck -eq "pass" -and $gates.tests -eq "pass" -and $gates.build -eq "pass" -and $gates.release -eq "pass"
+          "review_ready=$($allGreen.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($allGreen) {
+            gh pr edit $pr --repo $env:GITHUB_REPOSITORY --add-label agent:review
+          } else {
+            gh pr edit $pr --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+            gh issue edit $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+          }
+          gh issue comment $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --body "Draft PR: $prUrl`n`n$(Get-Content (Join-Path $run "audit.md") -Raw)"
+
+      - name: Upload implement artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-implement-${{ github.run_id }}
+          path: ${{ runner.temp }}/compat-implement
+          if-no-files-found: warn
+
+  review:
+    name: Review compatibility
+    needs: [watch, plan, implement]
+    if: needs.implement.result == 'success' && needs.implement.outputs.review_ready == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.implement.outputs.branch }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Prepare Codex home
+        shell: pwsh
+        run: |
+          $codexHome = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force $codexHome | Out-Null
+          Copy-Item compat/codex/config.toml $codexHome
+          Copy-Item compat/codex/model-catalog.json $codexHome
+          "CODEX_HOME=$codexHome" | Out-File -Append $env:GITHUB_ENV
+          "COMPAT_CODEX_VERSION=0.142.5" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Install Codex
+        shell: pwsh
+        run: npm install --global @openai/codex@0.142.5
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan-artifact
+
+      - name: Download watch artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-watch-${{ github.run_id }}
+          path: ${{ runner.temp }}/watch-artifact
+
+      - name: Download implement artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-implement-${{ github.run_id }}
+          path: ${{ runner.temp }}/implement-artifact
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "pnpm install failed" }
+          pnpm rebuild esbuild
+
+      - name: Collect review inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+          PR_NUMBER: ${{ needs.implement.outputs.pr }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-review-inputs"
+          New-Item -ItemType Directory -Force $inputs | Out-Null
+          $issueFile = Join-Path $inputs "issue.md"
+          $prDiff = Join-Path $inputs "pr.diff"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $gatesFile = Join-Path $inputs "gates.json"
+          $testLog = Join-Path $inputs "full-tests.log"
+          $issue = gh issue view $env:ISSUE_NUMBER --repo $env:GITHUB_REPOSITORY --json title,body,comments | ConvertFrom-Json
+          "# Issue #$($env:ISSUE_NUMBER): $($issue.title)`n`n$($issue.body)" | Set-Content $issueFile -Encoding UTF8
+          gh pr diff $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY > $prDiff
+          Copy-Item (Join-Path $env:RUNNER_TEMP "watch-artifact/compat-report.md") $reportFile
+          pnpm build *> $testLog
+          $buildOk = $LASTEXITCODE -eq 0
+          node node_modules/vitest/vitest.mjs run --maxWorkers=2 *>> $testLog
+          $testStatus = if ($buildOk -and $LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+          $implGates = Get-Content (Join-Path $env:RUNNER_TEMP "implement-artifact/gates.json") -Raw | ConvertFrom-Json
+          @{ typecheck = $implGates.typecheck; tests = $testStatus; build = $implGates.build; release = $implGates.release; e2e = $implGates.e2e } | ConvertTo-Json | Set-Content $gatesFile -Encoding UTF8
+
+      - name: Run Reviewer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ISSUE_NUMBER: ${{ needs.watch.outputs.issue }}
+          PR_NUMBER: ${{ needs.implement.outputs.pr }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "compat-review-inputs"
+          $issueFile = Join-Path $inputs "issue.md"
+          $prDiff = Join-Path $inputs "pr.diff"
+          $reportFile = Join-Path $inputs "compat-report.md"
+          $gatesFile = Join-Path $inputs "gates.json"
+          $run = Join-Path $env:RUNNER_TEMP "compat-review"
+          $plan = Get-Content (Join-Path $env:RUNNER_TEMP "plan-artifact/plan.md") -Raw
+          node scripts/compat/audit.mjs init --role reviewer --issue $env:ISSUE_NUMBER --pr $env:PR_NUMBER --out $run --commit (git rev-parse HEAD) --input $issueFile --input $prDiff --input $reportFile --input $gatesFile --input compat/prompts/reviewer.md
+          $prompt = (Get-Content compat/prompts/reviewer.md -Raw) + "`n`n## Issue`n`n" + (Get-Content $issueFile -Raw) + "`n`n## Approved plan`n`n" + $plan + "`n`n## PR diff`n`n" + (Get-Content $prDiff -Raw) + "`n`n## Compatibility report`n`n" + (Get-Content $reportFile -Raw) + "`n`n## Gate results`n`n" + (Get-Content $gatesFile -Raw)
+          $prompt | codex exec - --strict-config --sandbox read-only --cd $env:GITHUB_WORKSPACE --output-last-message (Join-Path $run "output.json") --json *> (Join-Path $run "events.jsonl")
+          if ($LASTEXITCODE -ne 0) { throw "Reviewer failed with exit code $LASTEXITCODE" }
+          node scripts/compat/audit.mjs finish --role reviewer --dir $run --output (Join-Path $run "output.json") --gates $gatesFile
+          $output = Get-Content (Join-Path $run "output.json") -Raw | ConvertFrom-Json
+          $output.review_markdown | Set-Content (Join-Path $run "review.md") -Encoding UTF8
+          gh pr review $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --comment --body-file (Join-Path $run "review.md")
+          if ($output.verdict -eq "approve") {
+            gh pr ready $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY
+            gh pr edit $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --remove-label agent:review --add-label awaiting-review
+          } else {
+            gh pr edit $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --add-label agent:blocked
+          }
+          gh pr comment $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --body-file (Join-Path $run "audit.md")
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/compat-review
+          if-no-files-found: warn

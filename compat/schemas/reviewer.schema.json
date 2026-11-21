@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReviewerOutput",
+  "type": "object",
+  "required": [
+    "role",
+    "verdict",
+    "summary",
+    "findings",
+    "scope_check",
+    "tests_check",
+    "docs_check",
+    "audit_check",
+    "security_check",
+    "unverified",
+    "review_markdown"
+  ],
+  "properties": {
+    "role": { "const": "reviewer" },
+    "verdict": { "enum": ["approve", "request_changes", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "line", "issue", "suggestion"],
+        "properties": {
+          "severity": { "enum": ["blocking", "non_blocking"] },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "issue": { "type": "string" },
+          "suggestion": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "scope_check": { "enum": ["pass", "fail"] },
+    "tests_check": { "enum": ["pass", "fail"] },
+    "docs_check": { "enum": ["pass", "fail"] },
+    "audit_check": { "enum": ["pass", "fail"] },
+    "security_check": { "enum": ["pass", "fail"] },
+    "unverified": { "type": "array", "items": { "type": "string" } },
+    "review_markdown": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}

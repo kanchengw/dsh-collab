@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repo": "deepseek-ai/deepseek-harness",
+    "tag": "dsh-v0.2.0-rc.2",
+    "commit": "639ed015397290b3745d163aafe02ffee4aa3f84",
+    "npmVersion": "0.2.0-rc.2",
+    "releasedAt": "2026-09-29T17:21:31+08:00"
+  },
+  "tracking": {
+    "tagPattern": "dsh-v0.2.*",
+    "includePrerelease": true,
+    "requireNpmPublished": true,
+    "poll": "daily"
+  },
+  "directPackages": [
+    "@deepseek-ai/dsh-agent",
+    "@deepseek-ai/dsh-client-ui-primitives",
+    "@deepseek-ai/dsh-user-approval",
+    "@deepseek-ai/dsh-home-paths"
+  ],
+  "packagePaths": {
+    "@deepseek-ai/dsh-agent": "packages/core/agent",
+    "@deepseek-ai/dsh-client-ui-primitives": "packages/client/ui-primitives",
+    "@deepseek-ai/dsh-user-approval": "packages/interaction/user-approval",
+    "@deepseek-ai/dsh-home-paths": "packages/util/home-paths",
+    "@deepseek-ai/dsh-session": "packages/core/session",
+    "@deepseek-ai/dsh-workspace": "packages/workspace/workspace",
+    "@deepseek-ai/dsh-client-store": "packages/client/store"
+  }
+}
