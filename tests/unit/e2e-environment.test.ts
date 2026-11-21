@@ -70,7 +70,7 @@ describe("isolated two-DSH browser environment", () => {
   it("rejects a DSH repository that is not the supported runtime version", () => {
     const prepare = read("e2e/prepare.ps1");
 
-    expect(prepare).toContain('$ExpectedDshVersion = "0.2.0-rc.2"');
+    expect(prepare).toContain('$ExpectedDshVersion = "0.2.2-rc.5"');
     expect(prepare).toContain('Join-Path $DshRepo "apps/cli/package.json"');
     expect(prepare).toContain("ConvertFrom-Json");
     expect(prepare).toContain("DSH runtime version mismatch");
