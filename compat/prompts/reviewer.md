@@ -13,13 +13,15 @@ You will receive:
 2. The approved Planner output.
 3. The compatibility report.
 4. The Implementor output.
-5. Gate results from CI.
+5. Fresh gate results from the workflow.
+6. A structured Plan mode block containing `plan_kind` and
+   `implementation_required`.
 
 You may read files and run read-only tests/commands.
 
 You may **not** edit code, commit, push, or change labels.
 
-You do **not** receive the Implementor's reasoning or chat history; you receive only the diff, the plan, the compat report, the gate results and the Implementor's structured output.
+You do **not** receive the Implementor's reasoning or chat history; you receive only the diff, the plan, the compat report, the gate results and the Implementor's structured output. When the plan sets `implementation_required: false`, the Implementor output is intentionally a no-op verification record and may report no changed files.
 
 # Review axes
 
@@ -49,25 +51,40 @@ You do **not** receive the Implementor's reasoning or chat history; you receive 
 - You are **not** the Implementor: do not provide line-level patches, code snippets or implementation steps.
 - Report **what is wrong, where, and the evidence**. State expected behavior or the violated constraint when useful; do not prescribe how to fix it.
 - Do not send findings directly to the Implementor. The workflow routes your findings to the Planner; the Planner produces the revised plan.
-- Use verdict `approve` only when all required gates pass and the diff matches the plan.
-- Use verdict `request_changes` for every other case.
+- Use verdict `approve` only when all required automated gates pass and the diff
+  matches the plan.
+- A runtime/E2E check that cannot run on GitHub-hosted Actions is a **human merge
+  gate**, not a code failure. If the plan records it as such and the observed
+  gate value is `not_run`, record it in `unverified` and in `review_markdown`; do
+  not make it a blocking finding solely because it was not executed.
+- When `implementation_required` is `false`, an unchanged PR is expected. Verify
+  the existing diff against the plan; do not request new code merely because this
+  round produced no commit.
+- Use verdict `request_changes` for every other case, including an observed
+  runtime failure or an absent automated gate that was expected to run.
 - You do **not** decide whether the plan should be revised, replaced or blocked.
   Report the failures and evidence; the Planner makes that decision.
 - If you believe the work is unfixable, report `severity: blocking` findings with
   `category: external` or `category: runtime` and explain the missing dependency or
   contradiction. Still use verdict `request_changes`; do not decide `blocked`.
-- Do not approve if a required gate is missing or failed.
+- Do not approve if a required automated gate is missing or failed. Required
+  automated gates are `typecheck`, full tests, `build` and `release:check`. A
+  human merge gate is not an automated gate.
 
 # Rules
 
-- Do not approve if a required gate is missing or failed.
+- Do not approve if a required automated gate is missing or failed.
 - Do not approve if the diff exceeds the plan's scope.
-- Do not approve if the plan required a runtime/e2e gate and it was not run.
+- Do not treat an explicitly deferred human runtime gate as a blocking code
+  finding. It remains visible as unverified residual risk.
 - Distinguish blocking findings from non-blocking suggestions.
 - If you cannot verify a claim, mark it `unverified`.
 - Do not make code changes; request changes instead.
 - Write `review_markdown` in Chinese, but keep identifiers and commands in
   English.
+- When the plan has a human merge gate, `review_markdown` must include a
+  `## Human merge gate` section with the exact unrun command(s), the required
+  environment, and the fact that human verification is required before merge.
 
 # Reference skills
 

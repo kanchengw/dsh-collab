@@ -52,10 +52,10 @@ loop (max 3 attempts)
   ├─ Implementor
   │    └─ issue + chosen plan + compat report only
   ├─ Reviewer
-  │    ├─ fresh typecheck / build / full tests on the PR branch
+  │    ├─ fresh typecheck / build / full tests / release check on the PR branch
   │    ├─ PR review with findings, no code edits
   │    └─ approve | request_changes
-  ├─ approve → awaiting-review, wait for human merge
+  ├─ approve → awaiting-review, wait for human review/merge
   ├─ request_changes → Planner decides revision / replacement / blocked
   ├─ revision → same branch/PR
   ├─ replacement → new branch/PR; old PR superseded
@@ -67,6 +67,27 @@ Role boundaries:
 - **Planner** does not edit code, review code, or give line-level patches. It owns the decision between revision, replacement and blocked.
 - **Implementor** does not plan, review, or receive raw Reviewer findings.
 - **Reviewer** is read-only; it only returns `approve` or `request_changes` with findings/evidence, not fix instructions and not the revise/replan decision.
+
+### Human merge gate
+
+GitHub-hosted runners cannot launch the interactive host/participant E2E. The
+pipeline therefore treats that check as a **human merge gate**, not as a fourth
+agent or a code defect:
+
+- The Planner records the exact unrun command(s), required checkout/environment
+  and human verifier in the plan.
+- The Reviewer must show the gate in `unverified` and in a `## Human merge gate`
+  section, but it does not return `request_changes` solely because an explicitly
+  deferred runtime check has `e2e: not_run`.
+- The Reviewer still blocks on failed or missing automated gates
+  (`typecheck`, full tests, `build`, `release:check`), observed runtime failures,
+  scope violations or code findings.
+- A human must run the runtime gate before merge. The PR is never auto-merged.
+
+When the current PR already contains the required implementation and only a
+human merge gate remains, the Planner sets `implementation_required: false`.
+The Implementor records a no-op verification round instead of manufacturing a
+commit, and the Reviewer re-runs the automated gates on the existing PR.
 
 `request_changes` starts a new cycle. If the Implementor returns `blocked`, its
 blocker report and diff are passed to the Planner for the next attempt; Planner
@@ -85,6 +106,13 @@ PR or issue. `.github/workflows/compat-resume.yml` reloads the previous plan,
 review, gates, PR and diff, then starts Planner with `trigger=human_resume`.
 
 ## Audit model
+
+At loop start, the workflow copies the main-branch control plane
+(`scripts/compat`, `compat/prompts`, `compat/schemas`, `compat/codex`) into
+`control/`. Node prompts, schemas, audit validation and model configuration use
+that snapshot, so resuming an old PR cannot silently fall back to stale
+instructions or an older audit contract. Repository content under review
+(including `compat/upstream.json`) still comes from the PR branch.
 
 Every node, on every attempt, creates one run directory under
 `attempt-<n>/<role>/` and records:
@@ -139,8 +167,9 @@ The model catalog is `compat/codex/model-catalog.json`.
 
 ## Limitations
 
-- GitHub-hosted runners cannot run the full DSH host/participant e2e yet; the
-  Reviewer records `e2e: not_run` and the human must run `e2e/prepare.ps1` before merge.
+- GitHub-hosted runners cannot run the full DSH host/participant e2e yet. It is
+  recorded as a human merge gate; the Reviewer reports it as unverified and the
+  human must run `e2e/prepare.ps1` and the two-client flow before merge.
 - Pushes and label changes made with `GITHUB_TOKEN` do not trigger other workflows,
   so the pipeline is one workflow with a loop job rather than separate workflows.
 - The Implementor runs Codex with `danger-full-access` on the ephemeral GitHub

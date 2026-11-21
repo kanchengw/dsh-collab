@@ -159,6 +159,8 @@ function validateOutput(role, output) {
   if (output.role !== role) fail(`output.role must be "${role}", got ${JSON.stringify(output.role)}`);
   if (role === "planner" && !["planned", "blocked"].includes(output.status)) fail("planner.status must be planned or blocked");
   if (role === "planner" && output.status === "planned" && !["initial", "revision", "replacement"].includes(output.plan_kind)) fail("planner.plan_kind is invalid");
+  if (role === "planner" && output.status === "planned" && typeof output.implementation_required !== "boolean") fail("planner.implementation_required must be boolean when planned");
+  if (role === "planner" && output.status === "planned" && output.implementation_required === false && output.plan_kind !== "revision") fail("planner.implementation_required=false requires plan_kind=revision");
   if (role === "implementor" && !["implemented", "blocked"].includes(output.status)) fail("implementor.status must be implemented or blocked");
   if (role === "reviewer" && !["approve", "request_changes"].includes(output.verdict)) fail("reviewer.verdict is invalid");
 }
@@ -175,6 +177,7 @@ function card(run) {
   lines.push(`| PR | ${run.pr ?? "-"} |`);
   lines.push(`| Attempt | ${run.attempt ?? 1} |`);
   if (run.planKind) lines.push(`| Plan kind | \`${run.planKind}\` |`);
+  if (run.implementationRequired !== undefined) lines.push(`| Implementation required | \`${run.implementationRequired}\` |`);
   lines.push(`| Run | ${run.runUrl ? `[${run.runId}](${run.runUrl})` : "-"} |`);
   lines.push(`| Commit | \`${run.commit ?? "-"}\` |`);
   lines.push(`| Model | \`${run.model ?? "-"}\` |`);
@@ -224,6 +227,7 @@ function finish() {
   validateOutput(role, output);
   run.status = role === "reviewer" ? output.verdict : output.status;
   if (output.plan_kind) run.planKind = output.plan_kind;
+  if (output.implementation_required !== undefined) run.implementationRequired = output.implementation_required;
   run.finishedAt = now();
   run.outputs = [{ path: safeRelative(outputPath, dir), sha256: sha256File(outputPath) }];
   const gatesArg = valueOf("--gates");

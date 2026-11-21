@@ -26,7 +26,7 @@
         "required": ["severity", "category", "file", "line", "issue", "evidence"],
         "properties": {
           "severity": { "enum": ["blocking", "non_blocking"] },
-          "category": { "enum": ["compile", "test", "spec", "scope", "docs", "security", "runtime"] },
+          "category": { "enum": ["compile", "test", "spec", "scope", "docs", "security", "runtime", "external"] },
           "file": { "type": "string" },
           "line": { "type": ["integer", "null"] },
           "issue": { "type": "string" },

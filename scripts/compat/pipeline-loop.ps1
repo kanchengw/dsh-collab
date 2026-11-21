@@ -17,6 +17,14 @@ $startPlanRound = if ($env:PLAN_ROUND) { [int]$env:PLAN_ROUND } else { 1 }
 $runRoot = Join-Path $env:RUNNER_TEMP "compat-loop"
 New-Item -ItemType Directory -Force $runRoot | Out-Null
 Set-Location $repo
+$controlRoot = Join-Path $runRoot "control"
+New-Item -ItemType Directory -Force $controlRoot | Out-Null
+Copy-Item (Join-Path $repo "scripts/compat") (Join-Path $controlRoot "scripts/compat") -Recurse -Force
+Copy-Item (Join-Path $repo "compat/prompts") (Join-Path $controlRoot "compat/prompts") -Recurse -Force
+Copy-Item (Join-Path $repo "compat/schemas") (Join-Path $controlRoot "compat/schemas") -Recurse -Force
+Copy-Item (Join-Path $repo "compat/codex") (Join-Path $controlRoot "compat/codex") -Recurse -Force
+$script:auditScript = Join-Path $controlRoot "scripts/compat/audit.mjs"
+$script:promptRoot = Join-Path $controlRoot "compat/prompts"
 
 $script:branch = "compat/dsh-" + ($tag -replace '^dsh-v','')
 $script:pr = $null
@@ -24,6 +32,7 @@ $script:previousPlan = $null
 $script:previousReview = $null
 $script:previousGates = $null
 $script:planKind = "initial"
+$script:implementationRequired = $true
 $script:supersedesAttempt = $null
 $script:planMode = "initial"
 $script:planRound = 1
@@ -50,7 +59,7 @@ function Invoke-AuditInit {
     [string[]]$Inputs = @()
   )
   $nodeArgs = @(
-    "scripts/compat/audit.mjs", "init",
+    $script:auditScript, "init",
     "--role", $Role,
     "--issue", $issueNumber,
     "--attempt", "$Attempt",
@@ -73,7 +82,7 @@ function Invoke-AuditFinish {
     [string]$Gates
   )
   $nodeArgs = @(
-    "scripts/compat/audit.mjs", "finish",
+    $script:auditScript, "finish",
     "--role", $Role,
     "--dir", $Dir,
     "--output", $Output
@@ -139,15 +148,15 @@ function Invoke-Planner {
   $inputs = @(
     $script:issueFile,
     $script:reportFile,
-    (Join-Path $repo "compat/prompts/planner.md")
+    (Join-Path $script:promptRoot "planner.md")
   )
   $planModeInstruction = if ($script:planMode -eq "initial") {
     "This is the initial plan. Output plan_kind: initial."
   } else {
-    "Decide whether to revise, replace or block. Output plan_kind: revision or replacement, or status: blocked. You may revise every time if you believe the plan is converging; there is no forced replacement."
+    "Decide whether to revise, replace or block. Output plan_kind: revision or replacement, or status: blocked. You may revise every time if you believe the plan is converging; there is no forced replacement. If the current PR already contains the required code and only a human merge gate remains, return a revision with implementation_required=false; do not create another code workstream."
   }
   $parts = @(
-    (Get-Content (Join-Path $repo "compat/prompts/planner.md") -Raw),
+    (Get-Content (Join-Path $script:promptRoot "planner.md") -Raw),
     "`n`n## Issue`n`n" + (Get-Content $script:issueFile -Raw),
     "`n`n## Compatibility report`n`n" + (Get-Content $script:reportFile -Raw),
     "`n`n## Plan mode`n`nplan_mode: $($script:planMode)`nplan_round: $($script:planRound)`ntrigger: $($script:trigger)`nhuman_input: $($script:humanInput)`nsupersedes_attempt: $($script:supersedesAttempt)`n`n" + $planModeInstruction
@@ -208,6 +217,10 @@ function Invoke-Planner {
     throw "planner must not return plan_kind=initial in decide mode"
   }
   $script:planKind = $plan.plan_kind
+  $script:implementationRequired = if ($null -ne $plan.implementation_required) { [bool]$plan.implementation_required } else { $true }
+  if (-not $script:implementationRequired -and ($script:planKind -ne "revision" -or -not $script:pr)) {
+    throw "implementation_required=false requires plan_kind=revision and an existing PR"
+  }
   if ($plan.supersedes_attempt) { $script:supersedesAttempt = [int]$plan.supersedes_attempt }
   $script:previousPlan = $plan.plan_markdown
   $planFile = Join-Path $dir "plan.md"
@@ -231,6 +244,8 @@ function Invoke-Planner {
 function Invoke-Implementor {
   param([int]$Attempt)
   Write-Step "Attempt $Attempt / Implementor"
+  $script:previousImplementation = $null
+  $script:previousImplementationDiff = $null
   $dir = Join-Path $runRoot "attempt-$Attempt/implementor"
   New-Item -ItemType Directory -Force $dir | Out-Null
   $planFile = Join-Path $runRoot "attempt-$Attempt/planner/plan.md"
@@ -240,7 +255,7 @@ function Invoke-Implementor {
     $script:issueFile,
     $planFile,
     $script:reportFile,
-    (Join-Path $repo "compat/prompts/implementor.md")
+    (Join-Path $script:promptRoot "implementor.md")
   )
   $planModeInstruction = if ($script:planKind -eq "revision") {
     "This is a revision. Preserve unaffected work; apply only the delta described in the plan."
@@ -249,11 +264,11 @@ function Invoke-Implementor {
   } else {
     "This is the initial plan."
   }
-  $prompt = (Get-Content (Join-Path $repo "compat/prompts/implementor.md") -Raw) +
+  $prompt = (Get-Content (Join-Path $script:promptRoot "implementor.md") -Raw) +
     "`n`n## Issue`n`n" + (Get-Content $script:issueFile -Raw) +
     "`n`n## Approved plan`n`n" + (Get-Content $planFile -Raw) +
     "`n`n## Compatibility report`n`n" + (Get-Content $script:reportFile -Raw) +
-    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`n`n" + $planModeInstruction
+    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`nimplementation_required: $($script:implementationRequired.ToString().ToLower())`n`n" + $planModeInstruction
   $prompt | Set-Content $promptFile -Encoding UTF8
   $inputs += $promptFile
   Invoke-AuditInit -Role "implementor" -Dir $dir -Attempt $Attempt -Inputs $inputs
@@ -291,7 +306,11 @@ function Invoke-Implementor {
   git diff > (Join-Path $dir "diff.patch")
   git status --porcelain > (Join-Path $dir "status.txt")
 
-  pnpm install --no-frozen-lockfile --ignore-scripts
+  if ($script:implementationRequired) {
+    pnpm install --no-frozen-lockfile --ignore-scripts
+  } else {
+    pnpm install --frozen-lockfile --ignore-scripts
+  }
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed on attempt $Attempt" }
   pnpm rebuild esbuild
   if ($LASTEXITCODE -ne 0) { throw "pnpm rebuild esbuild failed on attempt $Attempt" }
@@ -315,6 +334,17 @@ function Invoke-Implementor {
 
   $changed = git status --porcelain
   if (-not $changed) {
+    if (-not $script:implementationRequired) {
+      if (-not $script:pr) { throw "implementation_required=false requires an existing PR" }
+      $message = "No code changes required on attempt ${Attempt}. The approved plan marks this as a review-only verification round.`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
+      $noopFile = Join-Path $dir "no-op.md"
+      $message | Set-Content $noopFile -Encoding UTF8
+      Post-IssueComment $noopFile
+      Post-PRComment $noopFile
+      Set-Label "agent:blocked" -Remove
+      Set-Label "agent:review"
+      return
+    }
     $message = "Implementor made no changes on attempt ${Attempt}.`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
     $blockedFile = Join-Path $dir "blocked.md"
     $message | Set-Content $blockedFile -Encoding UTF8
@@ -325,6 +355,10 @@ function Invoke-Implementor {
     $script:trigger = "implementation_blocked"
     $script:implementorBlocked = $true
     return
+  }
+
+  if (-not $script:implementationRequired) {
+    throw "review-only round produced workspace changes; refusing to commit them"
   }
 
   git config user.name "github-actions[bot]"
@@ -379,22 +413,25 @@ function Invoke-Reviewer {
   pnpm rebuild esbuild
   if ($LASTEXITCODE -ne 0) { throw "reviewer pnpm rebuild failed on attempt $Attempt" }
 
-  $gates = [ordered]@{ typecheck = "not_run"; tests = "not_run"; build = "not_run"; e2e = "not_run" }
+  $gates = [ordered]@{ typecheck = "not_run"; tests = "not_run"; build = "not_run"; release = "not_run"; e2e = "not_run" }
   node node_modules/typescript/bin/tsc --noEmit *> (Join-Path $dir "typecheck.log")
   $gates.typecheck = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
   pnpm build *> (Join-Path $dir "build.log")
   $gates.build = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
   node node_modules/vitest/vitest.mjs run --maxWorkers=2 *> (Join-Path $dir "tests.log")
   $gates.tests = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
+  pnpm release:check *> (Join-Path $dir "release-check.log")
+  $gates.release = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
   $gates | ConvertTo-Json | Set-Content $gatesFile -Encoding UTF8
 
   $promptFile = Join-Path $dir "prompt.md"
-  $inputs = @($script:issueFile, $planFile, $script:reportFile, $prDiff, $gatesFile, $implOutput, $implGates, (Join-Path $repo "compat/prompts/reviewer.md"))
-  $prompt = (Get-Content (Join-Path $repo "compat/prompts/reviewer.md") -Raw) +
+  $inputs = @($script:issueFile, $planFile, $script:reportFile, $prDiff, $gatesFile, $implOutput, $implGates, (Join-Path $script:promptRoot "reviewer.md"))
+  $prompt = (Get-Content (Join-Path $script:promptRoot "reviewer.md") -Raw) +
     "`n`n## Issue`n`n" + (Get-Content $script:issueFile -Raw) +
     "`n`n## Approved plan`n`n" + (Get-Content $planFile -Raw) +
     "`n`n## Compatibility report`n`n" + (Get-Content $script:reportFile -Raw) +
     "`n`n## PR diff`n`n" + (Get-Content $prDiff -Raw) +
+    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`nimplementation_required: $($script:implementationRequired.ToString().ToLower())`n" +
     "`n`n## Gate results`n`n" + (Get-Content $gatesFile -Raw) +
     "`n`n## Implementor structured output`n`n" + (Get-Content $implOutput -Raw) +
     "`n`n## Implementor gate results`n`n" + (Get-Content $implGates -Raw)
@@ -411,7 +448,7 @@ function Invoke-Reviewer {
   gh pr review $script:pr --repo $env:GITHUB_REPOSITORY --comment --body-file $reviewFile
   Post-PRComment (Join-Path $dir "audit.md")
 
-  $gatesAllPass = $gates.typecheck -eq "pass" -and $gates.build -eq "pass" -and $gates.tests -eq "pass"
+  $gatesAllPass = $gates.typecheck -eq "pass" -and $gates.build -eq "pass" -and $gates.tests -eq "pass" -and $gates.release -eq "pass"
   if ($review.verdict -eq "approve" -and $gatesAllPass) {
     Set-Label "awaiting-review"
     Set-Label "agent:review" -Remove
@@ -443,6 +480,7 @@ function Write-FinalSummary {
     pr = $script:pr
     result = $Result
     attempts = $MaxAttempts
+    implementationRequired = $script:implementationRequired
     generatedAt = (Get-Date).ToUniversalTime().ToString("o")
     runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
   }
@@ -560,15 +598,17 @@ try {
     if ($script:reviewVerdict -eq "approve") { $result = "approved"; break }
   }
 
-  if ($result -eq "running") {
-    $result = "blocked"
+  if ($result -eq "running") { $result = "blocked" }
+  if ($result -eq "blocked") {
     Set-Label "agent:blocked"
+    Set-Label "agent:review" -Remove
   }
   Write-FinalSummary -Result $result
 } catch {
   $message = "Compatibility loop failed: $($_.Exception.Message)"
   $message | Set-Content (Join-Path $runRoot "error.txt") -Encoding UTF8
   Set-Label "agent:blocked"
+  Set-Label "agent:review" -Remove
   Write-FinalSummary -Result "error"
   exit 2
 }

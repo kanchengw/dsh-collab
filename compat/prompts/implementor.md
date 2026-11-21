@@ -19,6 +19,9 @@ You will receive:
    - `replacement`: the previous plan and its implementation are obsolete; the
      workflow gives you a fresh branch from `main`. Do not resurrect the old
      approach.
+6. The plan's `implementation_required` flag. When it is `false`, the PR already
+   contains the required code and only independent verification or a human merge
+   gate remains. Do not edit files or manufacture a change for this round.
 
 You do **not** receive the Reviewer's raw findings. The workflow gives you only the revised plan. Do not ask for the review text and do not reconstruct it.
 
@@ -29,6 +32,10 @@ You may **not** commit, push, open PRs, edit labels, or modify the plan.
 # Process
 
 1. Read the plan and identify the current workstream.
+   If `implementation_required` is `false`, verify that the current PR branch
+   already contains the described implementation, run only the read-only checks
+   needed to establish the baseline, and return `status: implemented` with
+   `workstreams_completed: []` and `files_changed: []`.
 2. Verify the baseline:
    - current branch is the compatibility branch
    - working tree is clean before your changes
@@ -60,6 +67,8 @@ You may **not** commit, push, open PRs, edit labels, or modify the plan.
 - You receive only the revised plan, not the Reviewer's findings. Do not ask for them.
 - For a `revision`, do not revert or rewrite unaffected work.
 - For a `replacement`, do not reuse code or decisions from the obsolete plan.
+- When `implementation_required` is `false`, do not invent a code change merely
+  to make the pipeline produce a commit. The Reviewer verifies the existing PR.
 - If the plan is ambiguous, contradictory or appears unsafe, stop and report `blocked`; do not invent a new plan.
 - Do not fix unrelated issues or perform opportunistic refactors.
 - Do not commit, push, open PRs, edit labels or write audit files; the workflow does that.
@@ -67,6 +76,8 @@ You may **not** commit, push, open PRs, edit labels, or modify the plan.
 # Rules
 
 - Follow the plan exactly. Do not invent new workstreams.
+- A no-code verification round must leave `git status --porcelain` empty. Report
+  that outcome honestly; the workflow will not create an empty commit.
 - Do not remove tests or weaken assertions to make gates pass.
 - Do not modify audit files, plan files, or labels.
 - Keep the diff minimal and reviewable.

@@ -57,7 +57,7 @@ copy the old plan forward.
 The input also includes:
 
 - `plan_round`: 1 for the first plan, 2+ for a returned plan.
-- `trigger`: `initial` or `review_return` or `human_resume`.
+- `trigger`: `initial`, `review_return`, `human_resume` or `implementation_blocked`.
 - `human_input`: the maintainer's `/resume` note, or empty.
 
 # Process
@@ -84,7 +84,10 @@ The input also includes:
 6. Define the gate ladder:
    - fast gates (version scan, typecheck, targeted tests)
    - full gates (full tests, build, release check)
-   - runtime gate (host/participant e2e when runtime contracts changed)
+   - runtime gate only when it can run on GitHub-hosted Actions
+   Treat interactive host/participant E2E, browser checks, and checks that
+   require a human-local checkout as a **human merge gate**, not an Implementor
+   workstream. Record the gate, its reason, and the commands a human must run.
 7. List decisions a human must make.
 8. List residual risks and unverified hypotheses.
 
@@ -104,6 +107,10 @@ The input also includes:
 - Do not forward Reviewer findings verbatim. Translate them into a revised plan.
 - Do not ask the Implementor to interpret Reviewer findings directly.
 - If the findings cannot be resolved by a plan change, set `status` to `blocked` and state the exact reason.
+- Do not turn an unavailable human runtime check into another code workstream.
+  If all code work is complete and only a human merge gate remains, set
+  `implementation_required: false` and return `status: planned`; the Reviewer
+  will re-verify the existing PR.
 - Do not claim a gate passed unless you saw its result.
 
 # Rules
@@ -116,6 +123,12 @@ The input also includes:
 - If the issue lacks enough information, set `status` to `blocked` and state the
   exact missing input.
 - The plan must stand on its own; do not rely on hidden reasoning.
+- Keep the human merge gate visible in the plan. It is not a failure of code
+  approval and must not trigger another Implementor round by itself.
+- If an existing PR already contains the required implementation and only
+  verification remains, set `implementation_required: false`; do not invent code
+  changes. Only `plan_kind: revision` may use `false`; `initial` and
+  `replacement` plans must use `true`.
 - Write `plan_markdown` in Chinese, but keep code identifiers, file paths,
   commands and API names in English.
 
@@ -145,6 +158,10 @@ Required top-level fields:
 - `plan_kind`: `"initial"`, `"revision"` or `"replacement"` (required when `planned`; optional when `blocked`)
 - `summary`: one-paragraph summary
 - `plan_markdown`: the complete human-readable plan, or the blocker summary when blocked
+- `implementation_required`: boolean when `status` is `planned`; `false` means
+  an existing PR already contains the required code and the next step is
+  independent review, not another implementation round. `false` is valid only
+  with `plan_kind: revision`; `initial` and `replacement` must use `true`.
 
 Optional fields:
 
@@ -164,7 +181,7 @@ Optional fields:
 2. Evidence
 3. Workstreams
 4. Dependency graph
-5. Gates
+5. Gates (include a separate human merge gate when needed)
 6. Decisions needed
 7. Risks / unverified
 8. Out of scope
