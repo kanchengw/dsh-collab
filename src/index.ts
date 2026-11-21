@@ -347,8 +347,8 @@ function registerGatewayControl(
   const sidecar = context.agentDefaultModel && context.agentPresets && context.on && createLocalAgent
     ? new LocalSidecarService(createDshLocalAgentSessionPort({
         agentDefaultModel: context.agentDefaultModel,
-        installModelSelection: (agentContext, selection) => {
-          installModelSelection(agentContext as Parameters<typeof installModelSelection>[0], selection);
+        installModelSelection: (agentContext) => {
+          installModelSelection(agentContext as Parameters<typeof installModelSelection>[0]);
         },
         agents: { create: (input) => createLocalAgent.call(context.agents, input) },
         agentPresets: context.agentPresets,
