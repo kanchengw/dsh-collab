@@ -312,8 +312,11 @@ for (const [name, path] of Object.entries(config.packagePaths ?? {})) {
   if (!stat.skipped) changedPackages.push({ name, path, ...stat });
 }
 
-const totalDrift = versionOccurrences.reduce((sum, item) => sum + item.count, 0);
-const drift = latestTag !== current.tag || totalDrift > 0;
+const versionMismatch = latestVersion !== current.npmVersion;
+const totalDrift = versionMismatch
+  ? versionOccurrences.reduce((sum, item) => sum + item.count, 0)
+  : 0;
+const drift = latestTag !== current.tag || versionMismatch;
 const classification = !drift
   ? "clean"
   : changedPackages.some((item) => item.files > 0)
@@ -340,6 +343,7 @@ const report = {
     published,
   },
   drift,
+  versionMismatch,
   classification,
   recommendedTier: classification === "clean" ? "none" : classification === "version-only" ? "Tier 1 (verify)" : "Tier 2 (verify with Scout)",
   versionOccurrences: versionOccurrences.sort((a, b) => b.count - a.count || a.file.localeCompare(b.file)),
@@ -375,7 +379,11 @@ function markdown() {
   lines.push(`- Drift: **${report.drift ? "yes" : "no"}**`);
   lines.push(`- Classification: **${report.classification}**`);
   lines.push(`- Recommended tier: **${report.recommendedTier}**`);
-  lines.push(`- Version-string drift: **${report.totalDrift} occurrences**`, "");
+  if (report.versionMismatch) {
+    lines.push(`- Version-string drift: **${report.totalDrift} occurrences**`, "");
+  } else {
+    lines.push(`- Current pin occurrences: **${report.versionOccurrences.reduce((sum, item) => sum + item.count, 0)}** (expected; not drift)`, "");
+  }
   lines.push("## Upstream", "");
   lines.push(table(["Item", "Current pin", "Latest upstream"], [
     ["Tag", current.tag, latestTag],
@@ -387,7 +395,10 @@ function markdown() {
   lines.push("```json");
   lines.push(JSON.stringify({ distTags, published }, null, 2));
   lines.push("```", "");
-  lines.push("## Version-string drift", "");
+  lines.push(report.versionMismatch ? "## Version-string drift" : "## Current pin occurrences", "");
+  if (!report.versionMismatch) {
+    lines.push("The current pin is the latest upstream version. These occurrences are expected and are not counted as drift.", "");
+  }
   if (versionOccurrences.length === 0) {
     lines.push("No occurrences of the pinned version were found.", "");
   } else {

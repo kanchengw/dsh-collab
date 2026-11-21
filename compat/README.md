@@ -68,10 +68,12 @@ Role boundaries:
 - **Implementor** does not plan, review, or receive raw Reviewer findings.
 - **Reviewer** is read-only; it only returns `approve` or `request_changes` with findings/evidence, not fix instructions and not the revise/replan decision.
 
-`request_changes` starts a new cycle. Planner may choose `revision` every time if it
-believes the plan is converging; the workflow caps total attempts at three.
-When Planner returns `blocked`, the loop stops immediately and asks a human to
-arbitrate.
+`request_changes` starts a new cycle. If the Implementor returns `blocked`, its
+blocker report and diff are passed to the Planner for the next attempt; Planner
+then decides revision / replacement / blocked. Planner may choose `revision`
+every time if it believes the plan is converging; the workflow caps total attempts
+at three. When Planner returns `blocked`, the loop stops immediately and asks a
+human to arbitrate.
 
 The scheduled run uses `dry_run=true` (watch + plan only). A manual
 `workflow_dispatch` defaults to `dry_run=true`; set it to `false` to run the full

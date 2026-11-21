@@ -32,6 +32,8 @@ $script:humanInput = if ($env:HUMAN_INPUT_FILE -and (Test-Path -LiteralPath $env
 $script:plannerBlocked = $false
 $script:implementorBlocked = $false
 $script:reviewVerdict = $null
+$script:previousImplementation = $null
+$script:previousImplementationDiff = $null
 $script:issueFile = Join-Path $runRoot "issue.md"
 $script:reportFile = Join-Path $runRoot "compat-report.md"
 
@@ -113,6 +115,10 @@ function Switch-ToReplacementBranch {
   }
   $script:pr = $null
   $script:branch = "compat/dsh-" + ($tag -replace '^dsh-v','') + "-replacement-$Attempt-" + $env:GITHUB_RUN_ID
+  git reset --hard HEAD
+  if ($LASTEXITCODE -ne 0) { throw "failed to reset workspace for replacement branch" }
+  git clean -fd
+  if ($LASTEXITCODE -ne 0) { throw "failed to clean workspace for replacement branch" }
   git fetch origin main
   if ($LASTEXITCODE -ne 0) { throw "failed to fetch main for replacement branch" }
   git checkout -B $script:branch origin/main
@@ -159,6 +165,14 @@ function Invoke-Planner {
   if ($script:previousGates) {
     $inputs += $script:previousGates
     $parts += "`n`n## Previous gate results`n`n" + (Get-Content $script:previousGates -Raw)
+  }
+  if ($script:previousImplementation) {
+    $inputs += $script:previousImplementation
+    $parts += "`n`n## Previous implementor blocker`n`n" + (Get-Content $script:previousImplementation -Raw)
+  }
+  if ($script:previousImplementationDiff) {
+    $inputs += $script:previousImplementationDiff
+    $parts += "`n`n## Previous implementor diff`n`n" + (Get-Content $script:previousImplementationDiff -Raw)
   }
   if ($script:pr) {
     $diffFile = Join-Path $dir "pr.diff"
@@ -261,6 +275,13 @@ function Invoke-Implementor {
     $message | Set-Content $blockedFile -Encoding UTF8
     Post-IssueComment $blockedFile
     Post-PRComment $blockedFile
+    git add -N -- . 2>$null
+    $blockedDiff = Join-Path $dir "blocked-diff.patch"
+    git diff > $blockedDiff
+    git status --porcelain > (Join-Path $dir "blocked-status.txt")
+    $script:previousImplementation = $blockedFile
+    $script:previousImplementationDiff = $blockedDiff
+    $script:trigger = "implementation_blocked"
     $script:implementorBlocked = $true
     return
   }
@@ -299,6 +320,9 @@ function Invoke-Implementor {
     $message | Set-Content $blockedFile -Encoding UTF8
     Post-IssueComment $blockedFile
     Post-PRComment $blockedFile
+    $script:previousImplementation = $blockedFile
+    $script:previousImplementationDiff = Join-Path $dir "diff.patch"
+    $script:trigger = "implementation_blocked"
     $script:implementorBlocked = $true
     return
   }
@@ -523,7 +547,14 @@ try {
     if ($dryRun) { $result = "dry-run"; break }
     $script:implementorBlocked = $false
     Invoke-Implementor -Attempt $attempt
-    if ($script:implementorBlocked) { $result = "blocked"; break }
+    if ($script:implementorBlocked) {
+      if ($attempt -lt $MaxAttempts) {
+        $script:planMode = "decide"
+        continue
+      }
+      $result = "blocked"
+      break
+    }
     $script:reviewVerdict = $null
     Invoke-Reviewer -Attempt $attempt
     if ($script:reviewVerdict -eq "approve") { $result = "approved"; break }
