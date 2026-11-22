@@ -402,6 +402,30 @@ function Invoke-Implementor {
 
   $changed = git status --porcelain
   if (-not $changed) {
+    if ($impl.status -eq "implemented") {
+      # Verification-only round: no code change is expected. Persist the
+      # approved plan on the PR so later resume/review-only runs see the
+      # current scope, then continue to the Reviewer without a commit.
+      if (-not $script:pr) { throw "verification-only round requires an existing PR" }
+      $planText = Get-Content $planFile -Raw
+      $prInfo = gh pr view $script:pr --repo $env:GITHUB_REPOSITORY --json body | ConvertFrom-Json
+      $body = [string]$prInfo.body
+      $planBlock = "<!-- compat:plan`n$planText`n-->"
+      if ($body -match '(?s)<!--\s*compat:plan\s*.*?\s*-->') {
+        $body = [regex]::Replace($body, '(?s)<!--\s*compat:plan\s*.*?\s*-->', $planBlock)
+      } else {
+        $body = $body.TrimEnd() + "`n`n" + $planBlock + "`n"
+      }
+      $bodyFile = Join-Path $dir "pr-body.md"
+      $body | Set-Content $bodyFile -Encoding UTF8
+      gh pr edit $script:pr --repo $env:GITHUB_REPOSITORY --body-file $bodyFile
+      $script:stage = "reviewing"
+      Set-Label "agent:blocked" -Remove
+      Set-Label "agent:review"
+      Update-Dashboard -Kind issue
+      Update-Dashboard -Kind pr
+      return $true
+    }
     $message = "Implementor produced no commit on attempt ${Attempt}."
     $blockedFile = Join-Path $dir "blocked.md"
     $message | Set-Content $blockedFile -Encoding UTF8

@@ -115,7 +115,13 @@ Reviewer pass is needed. A normal resume is accepted only when the issue or link
 PR is labeled `agent:blocked`; review-only is accepted whenever the linked PR is
 open, including after a new commit invalidates a prior `awaiting-review` result.
 A normal resume can start from Planner even when no PR exists yet; review-only
-requires an open PR.
+requires an open PR. Resume reads the target Tag/Version from the issue body, so
+an older compat issue keeps its pinned upstream even when a newer report exists.
+
+When the Implementor reports `implemented` with no file changes, the workflow
+treats the round as verification-only. It persists the approved plan into the
+PR body's `compat:plan` block and continues to the Reviewer without
+manufacturing a commit.
 
 ## Audit model
 
