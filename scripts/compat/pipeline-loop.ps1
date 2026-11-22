@@ -38,6 +38,7 @@ $script:promptRoot = Join-Path $controlRoot "compat/prompts"
 
 $script:branch = "compat/dsh-" + ($tag -replace '^dsh-v','')
 $script:pr = $null
+$script:repoOwner = ($env:GITHUB_REPOSITORY -split '/')[0]
 $script:previousPlan = $null
 $script:previousReview = $null
 $script:previousGates = $null
@@ -458,6 +459,7 @@ function Invoke-Implementor {
     $script:pr = ($prUrl -split '/')[-1]
   }
   if (-not $script:pr) { throw "could not create or find PR for $script:branch" }
+  gh pr edit $script:pr --repo $env:GITHUB_REPOSITORY --add-assignee $script:repoOwner
 
   $script:stage = "reviewing"
   Set-Label "agent:blocked" -Remove
@@ -552,6 +554,7 @@ function Invoke-Reviewer {
     Set-Label "awaiting-review"
     Set-Label "agent:review" -Remove
     Set-Label "agent:blocked" -Remove
+    gh pr edit $script:pr --repo $env:GITHUB_REPOSITORY --add-assignee $script:repoOwner --add-reviewer $script:repoOwner 2>$null
     gh pr ready $script:pr --repo $env:GITHUB_REPOSITORY 2>$null
     Update-Dashboard -Kind issue
     Update-Dashboard -Kind pr
@@ -665,6 +668,7 @@ function Load-ResumeContext {
 }
 
 $issue = gh issue view $issueNumber --repo $env:GITHUB_REPOSITORY --json title,body,comments | ConvertFrom-Json
+gh issue edit $issueNumber --repo $env:GITHUB_REPOSITORY --add-assignee $script:repoOwner 2>$null
 "# Issue #${issueNumber}: $($issue.title)`n`n$($issue.body)" | Set-Content $script:issueFile -Encoding UTF8
 Copy-Item (Join-Path $env:RUNNER_TEMP "watch-artifact/compat-report.md") $script:reportFile
 

@@ -144,6 +144,20 @@ cards are not posted as comments. The Reviewer's formal PR review is the only
 per-verdict review. The PR body contains the visible plan summary and a hidden
 plan marker used by resume.
 
+## Ownership and review request
+
+The repository owner is the human accountable owner:
+
+- watcher-created issues are assigned to the repository owner;
+- agent-created draft PRs are assigned to the repository owner;
+- when the Reviewer approves, the PR is assigned to and a human review is requested
+  from the repository owner before it becomes ready for review.
+
+`Assignee` tracks responsibility for the work item. `Reviewer` is the GitHub review
+request that can approve or request changes and can participate in branch
+protection. The workflow Reviewer is an agent comment/reviewer artifact, not a
+GitHub user approval.
+
 ## Ordinary PR CI
 
 The repository CI job (`CI / verify`) is independent from the compatibility loop.

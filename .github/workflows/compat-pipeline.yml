@@ -95,6 +95,8 @@ jobs:
               $url = gh issue create --repo $env:GITHUB_REPOSITORY --title $title --body-file issue-body.md --label kind/upstream --label ready-for-agent --label origin/internal
               $issueNumber = (($url | Select-Object -Last 1).Trim() -split '/')[-1]
             }
+            $owner = ($env:GITHUB_REPOSITORY -split '/')[0]
+            gh issue edit $issueNumber --repo $env:GITHUB_REPOSITORY --add-assignee $owner
           }
           "drift=$($drift.ToString().ToLower())" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
