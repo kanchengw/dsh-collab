@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { ModelSelection, ModelSelectionRef } from "@deepseek-ai/dsh-agent";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import type { DshAssistantStreamPayload } from "./dsh-assistant-stream.js";
 import { DshRequestEventTracker } from "./dsh-request-events.js";
 
@@ -45,7 +45,7 @@ export interface DshLocalAgentContext {
   agentDefaultModel: {
     currentSelection(): ModelSelection;
   };
-  installModelSelection(agentContext: object, selection: ModelSelectionRef): void;
+  installModelSelection(agentContext: object): void;
   agents: {
     create(input: {
       sessionId: string;
@@ -141,7 +141,7 @@ export function createDshLocalAgentSessionPort(
         agentOptions: selection,
         ...(input.cwd === undefined ? {} : { meta: { cwd: input.cwd } }),
         setup: async (agentContext) => {
-          context.installModelSelection(agentContext, { current: selection, assembled: undefined });
+          context.installModelSelection(agentContext);
           await context.agentPresets.mount(agentContext);
           if (input.readOnlyRoot === undefined) return;
           const tools = (agentContext as DshLocalAgentToolContext).tools;

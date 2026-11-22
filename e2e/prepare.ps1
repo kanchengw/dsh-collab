@@ -25,7 +25,7 @@ $agentTeamDependencies = @($dependencySections | ForEach-Object {
 if ($agentTeamDependencies.Count -gt 0) {
   throw "Experimental Agent Team dependencies are not supported: $($agentTeamDependencies -join ", ")"
 }
-$ExpectedDshVersion = "0.2.0-rc.2"
+$ExpectedDshVersion = "0.2.2-rc.5"
 $dshManifestPath = Join-Path $DshRepo "apps/cli/package.json"
 if (-not (Test-Path $dshManifestPath)) {
   throw "DSH CLI manifest not found: $dshManifestPath"
@@ -85,7 +85,7 @@ try {
       if ($profileManifest.dsh -and $profileManifest.dsh.profile -and $profileManifest.dsh.profile.bundles) {
         $profileManifest.dsh.profile.bundles = @($profileManifest.dsh.profile.bundles | Where-Object { $_ -ne "dsh-better-sidebar" })
       }
-      $profileManifest | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $profileManifestPath
+      [System.IO.File]::WriteAllText($profileManifestPath, ($profileManifest | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
     } finally {
       Pop-Location
     }

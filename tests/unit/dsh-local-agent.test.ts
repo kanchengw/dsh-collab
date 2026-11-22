@@ -24,7 +24,9 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
   const cancellations: Array<{ cause: { kind: "user" }; keepInbox: boolean | undefined }> = [];
   const restrictions: Array<{ allow?: string[]; deny?: string[] }> = [];
   const guards: Array<(exec: { name: string; arguments: unknown }) => string | undefined> = [];
-  const installedSelections: unknown[] = [];
+  const installedContexts: object[] = [];
+  const installedArgumentCounts: number[] = [];
+  const createdContexts: object[] = [];
 
   const emit = (sessionId: string, event: DshLocalAgentSessionEvent): void => {
     for (const listener of sessionListeners) listener({ id: sessionId }, event);
@@ -38,8 +40,9 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
     agentDefaultModel: {
       currentSelection: () => ({ provider: "local-provider", model: "local-model" }),
     },
-    installModelSelection(_agentContext: object, selection: Parameters<DshLocalAgentContext["installModelSelection"]>[1]) {
-      installedSelections.push(selection);
+    installModelSelection(agentContext: object) {
+      installedContexts.push(agentContext);
+      installedArgumentCounts.push(arguments.length);
     },
     agents: {
       async create(input: Parameters<DshLocalAgentContext["agents"]["create"]>[0]) {
@@ -50,6 +53,7 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
             guard: (guard: (exec: { name: string; arguments: unknown }) => string | undefined) => { guards.push(guard); return () => {}; },
           },
         };
+        createdContexts.push(agentContext);
         await input.setup?.(agentContext);
         const agent: DshLocalAgent = {
           followup(message) {
@@ -89,7 +93,7 @@ function harness(options: { emitDuringFollowup?: boolean } = {}) {
     },
   } as unknown as DshLocalAgentContext;
 
-  return { agents, cancellations, context, createCalls, emit, emitStream, guards, handles, installedSelections, messages, mountedContexts, prompts, restrictions };
+  return { agents, cancellations, context, createCalls, createdContexts, emit, emitStream, guards, handles, installedArgumentCounts, installedContexts, messages, mountedContexts, prompts, restrictions };
 }
 
 describe("DSH local Agent session adapter", () => {
@@ -107,11 +111,9 @@ describe("DSH local Agent session adapter", () => {
         setup: expect.any(Function),
       }),
     ]);
-    expect(runtime.installedSelections).toEqual([{
-      current: { provider: "local-provider", model: "local-model" },
-      assembled: undefined,
-    }]);
-    expect(runtime.mountedContexts).toHaveLength(1);
+    expect(runtime.installedContexts).toEqual([runtime.createdContexts[0]]);
+    expect(runtime.installedArgumentCounts).toEqual([1]);
+    expect(runtime.mountedContexts).toEqual([runtime.createdContexts[0]]);
     expect(runtime.prompts).toEqual(["Review this change"]);
   });
 

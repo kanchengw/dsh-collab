@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { transform } from "lightningcss";
 
+/** Client module id must equal the installed package name the host row resolves. */
+const packageName = (JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { name: string }).name;
+
 const CSS_PREFIX = "\0dsh-collab-css:";
 const CSS_SUFFIX = ":module";
 
@@ -44,7 +47,7 @@ export default defineConfig({
   }],
   outputOptions: {
     entryFileNames: "client.js",
-    banner: 'window.__ModuleLoader__.load({ id: "dsh-collab", factory: (require) => {',
+    banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {`,
     footer: "return module.exports; } });",
     intro: "var module = { exports: {} }; var exports = module.exports;",
   },

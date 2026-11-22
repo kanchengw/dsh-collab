@@ -2,7 +2,7 @@
 # browser row owns the participant/host room surface; the room role is resolved
 # from trusted session/token evidence at runtime.
 - id: connection
-  inject: [webRuntime, webServer]
+  inject: [webStartup, webServer]
 
 - insert:
     - id: collab-host

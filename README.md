@@ -15,7 +15,7 @@ The package never exposes the DSH UI listener and never gives a Participant
 direct access to the Host Agent or Host filesystem.
 
 > **Project status:** pre-1.0. The production Room Workspace path, native DSH
-> Sidebar integration, DSH `0.2.0-rc.2` adaptation, and dual-client UI/network
+> Sidebar integration, DSH `0.2.2-rc.5` adaptation, and dual-client UI/network
 > acceptance are implemented. The MVP supports one active room per DSH
 > instance.
 
@@ -75,7 +75,7 @@ nginx, a relay, a certificate or a router rule.
 
 | Component | Requirement |
 | --- | --- |
-| DSH | `0.2.0-rc.2` |
+| DSH | `0.2.2-rc.5` |
 | Node.js | `>=22`; CI uses Node.js 24 |
 | pnpm | `11.19.0` |
 | Host workspace | A Git repository |
