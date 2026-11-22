@@ -7,7 +7,6 @@
     "role": { "const": "planner" },
     "status": { "enum": ["planned", "blocked"] },
     "plan_kind": { "enum": ["initial", "revision", "replacement"] },
-    "implementation_required": { "type": "boolean" },
     "supersedes_attempt": { "type": ["integer", "null"] },
     "change_log": {
       "type": "array",
@@ -47,11 +46,7 @@
   "allOf": [
     {
       "if": { "properties": { "status": { "const": "planned" } }, "required": ["status"] },
-      "then": { "required": ["implementation_required"] }
-    },
-    {
-      "if": { "properties": { "plan_kind": { "enum": ["initial", "replacement"] } }, "required": ["plan_kind"] },
-      "then": { "properties": { "implementation_required": { "const": true } } }
+      "then": { "required": ["plan_kind"] }
     }
   ],
   "additionalProperties": true

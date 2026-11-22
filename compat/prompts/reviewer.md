@@ -14,14 +14,13 @@ You will receive:
 3. The compatibility report.
 4. The Implementor output.
 5. Fresh gate results from the workflow.
-6. A structured Plan mode block containing `plan_kind` and
-   `implementation_required`.
+6. A structured Plan mode block containing `plan_kind`.
 
 You may read files and run read-only tests/commands.
 
 You may **not** edit code, commit, push, or change labels.
 
-You do **not** receive the Implementor's reasoning or chat history; you receive only the diff, the plan, the compat report, the gate results and the Implementor's structured output. When the plan sets `implementation_required: false`, the Implementor output is intentionally a no-op verification record and may report no changed files.
+You do **not** receive the Implementor's reasoning or chat history; you receive only the diff, the plan, the compat report, the gate results and, when present, the Implementor's structured output. In a review-only preflight the Implementor is intentionally absent; review the existing PR and do not require a new commit.
 
 # Review axes
 
@@ -57,9 +56,9 @@ You do **not** receive the Implementor's reasoning or chat history; you receive 
   gate**, not a code failure. If the plan records it as such and the observed
   gate value is `not_run`, record it in `unverified` and in `review_markdown`; do
   not make it a blocking finding solely because it was not executed.
-- When `implementation_required` is `false`, an unchanged PR is expected. Verify
-  the existing diff against the plan; do not request new code merely because this
-  round produced no commit.
+- In a review-only preflight, an unchanged PR is expected. Verify the existing
+  diff against the plan; do not request new code merely because this round
+  produced no commit.
 - Use verdict `request_changes` for every other case, including an observed
   runtime failure or an absent automated gate that was expected to run.
 - You do **not** decide whether the plan should be revised, replaced or blocked.
@@ -121,7 +120,7 @@ Required top-level fields:
 A finding object must contain:
 
 - `severity`: `"blocking"` or `"non_blocking"`
-- `category`: `"compile"`, `"test"`, `"spec"`, `"scope"`, `"docs"`, `"security"` or `"runtime"`
+- `category`: `"compile"`, `"test"`, `"spec"`, `"scope"`, `"docs"`, `"security"`, `"runtime"` or `"external"`
 - `file`: repo-relative path
 - `line`: number or null
 - `issue`: what is wrong

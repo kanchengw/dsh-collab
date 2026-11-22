@@ -60,6 +60,11 @@ loop (max 3 attempts)
   ├─ revision → same branch/PR
   ├─ replacement → new branch/PR; old PR superseded
   └─ blocked → agent:blocked + human arbitration
+
+review-only resumption
+  ├─ skips Planner and Implementor on the existing PR
+  ├─ runs Reviewer first
+  └─ if changes are requested, continues with Planner → Implementor → Reviewer
 ```
 
 Role boundaries:
@@ -84,10 +89,11 @@ agent or a code defect:
   scope violations or code findings.
 - A human must run the runtime gate before merge. The PR is never auto-merged.
 
-When the current PR already contains the required implementation and only a
-human merge gate remains, the Planner sets `implementation_required: false`.
-The Implementor records a no-op verification round instead of manufacturing a
-commit, and the Reviewer re-runs the automated gates on the existing PR.
+When a blocked work item only needs a fresh review under updated rules, a
+maintainer can comment `/resume review-only` on the blocked issue or PR. That
+preflight runs the Reviewer directly on the existing PR without Planner or
+Implementor. If the Reviewer approves, the work item becomes awaiting-review.
+If it requests changes, the normal Planner → Implementor → Reviewer loop starts.
 
 `request_changes` starts a new cycle. If the Implementor returns `blocked`, its
 blocker report and diff are passed to the Planner for the next attempt; Planner
@@ -104,6 +110,10 @@ required.
 After a blocked run, a maintainer can comment `/resume [optional note]` on the
 PR or issue. `.github/workflows/compat-resume.yml` reloads the previous plan,
 review, gates, PR and diff, then starts Planner with `trigger=human_resume`.
+Use `/resume review-only` when the code should not change and only an independent
+Reviewer pass is needed. Both commands are rejected unless the issue or linked PR
+is labeled `agent:blocked`. A normal resume can start from Planner even when no PR
+exists yet; review-only requires an open PR.
 
 ## Audit model
 
@@ -120,15 +130,35 @@ Every node, on every attempt, creates one run directory under
 - `run.json`: role, attempt, run id, issue/PR, commit, model, provider,
   reasoning effort, prompt path + SHA-256, input paths + SHA-256, output paths +
   SHA-256, gates, timestamps, status and run URL.
-- `audit.md`: a human-readable audit card posted to the issue or PR.
+- `audit.md`: a human-readable audit card retained in the artifact bundle.
 - `output.json`: the node's structured JSON output, validated by
   `scripts/compat/audit.mjs`.
 - `events.jsonl`: the Codex event stream.
-- Gate logs and, for the Implementor, `diff.patch` and `git-log.txt`.
+- Gate logs and, for the Implementor, `diff.patch` and `blocked-diff.patch` when needed.
+- `run-summary.json`: compact final metrics (duration, attempts, revisions,
+  replacements, gates, blocked reason and links).
 
-Artifacts are uploaded with `actions/upload-artifact`. The issue/PR comments are
-the durable human-visible audit trail; Actions artifacts are the machine-readable
-run bundle.
+Artifacts are uploaded with `actions/upload-artifact`. The issue and PR each have
+one editable dashboard comment (`<!-- compat:dashboard -->`); node logs and audit
+cards are not posted as comments. The Reviewer's formal PR review is the only
+per-verdict review. The PR body contains the visible plan summary and a hidden
+plan marker used by resume.
+
+## Ordinary PR CI
+
+The repository CI job (`CI / verify`) is independent from the compatibility loop.
+For a normal pull request it runs:
+
+- `pnpm install --frozen-lockfile`
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+- `pnpm release:check`
+
+The compatibility loop separately publishes `compat/code-gates` on the PR head
+after the Reviewer runs. That check covers the same code gates plus the
+compatibility report and is used when a bot-created branch does not receive a
+normal PR workflow run.
 
 ## Node contracts
 
@@ -172,6 +202,9 @@ The model catalog is `compat/codex/model-catalog.json`.
   human must run `e2e/prepare.ps1` and the two-client flow before merge.
 - Pushes and label changes made with `GITHUB_TOKEN` do not trigger other workflows,
   so the pipeline is one workflow with a loop job rather than separate workflows.
+  The loop publishes a `compat/code-gates` check run on the PR head after the
+  Reviewer completes; ordinary CI remains a separate repository workflow and now
+  includes `pnpm build`.
 - The Implementor runs Codex with `danger-full-access` on the ephemeral GitHub
   runner because `workspace-write` was read-only in that environment. `GH_TOKEN`
   is removed from the Codex child environment; the workflow restores it for git,

@@ -14,6 +14,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  checks: write
 
 concurrency:
   group: compat-pipeline
@@ -116,9 +117,6 @@ jobs:
           $summary = if ($status -eq "drift") { "Upstream drift detected: ${{ steps.check.outputs.tag }}" } else { "No upstream drift" }
           @{ role = "watcher"; status = $status; summary = $summary; tag = "${{ steps.check.outputs.tag }}"; version = "${{ steps.check.outputs.version }}"; issue = "${{ steps.check.outputs.issue }}" } | ConvertTo-Json | Set-Content (Join-Path $run "output.json") -Encoding UTF8
           node scripts/compat/audit.mjs finish --role watcher --dir $run --output (Join-Path $run "output.json")
-          if ("${{ steps.check.outputs.issue }}" -ne "") {
-            gh issue comment "${{ steps.check.outputs.issue }}" --repo $env:GITHUB_REPOSITORY --body-file (Join-Path $run "audit.md")
-          }
 
       - name: Upload watch artifact
         if: always()

@@ -13,7 +13,17 @@ if (-not $tag) { throw "TAG is required" }
 $version = $env:VERSION
 $dryRun = $env:DRY_RUN -eq "true"
 $resume = $env:RESUME -eq "true"
+$reviewOnly = $env:REVIEW_ONLY -eq "true"
 $startPlanRound = if ($env:PLAN_ROUND) { [int]$env:PLAN_ROUND } else { 1 }
+$script:runStartedAt = Get-Date
+$script:attemptsUsed = 0
+$script:revisionCount = 0
+$script:replacementCount = 0
+$script:stage = "planning"
+$script:lastGates = $null
+$script:lastReviewSummary = $null
+$script:blockedReason = $null
+$script:lastPlan = $null
 $runRoot = Join-Path $env:RUNNER_TEMP "compat-loop"
 New-Item -ItemType Directory -Force $runRoot | Out-Null
 Set-Location $repo
@@ -32,7 +42,6 @@ $script:previousPlan = $null
 $script:previousReview = $null
 $script:previousGates = $null
 $script:planKind = "initial"
-$script:implementationRequired = $true
 $script:supersedesAttempt = $null
 $script:planMode = "initial"
 $script:planRound = 1
@@ -92,19 +101,6 @@ function Invoke-AuditFinish {
   if ($LASTEXITCODE -ne 0) { throw "audit finish failed for $Role" }
 }
 
-function Post-IssueComment {
-  param([string]$File)
-  gh issue comment $issueNumber --repo $env:GITHUB_REPOSITORY --body-file $File
-  if ($LASTEXITCODE -ne 0) { throw "failed to comment on issue $issueNumber" }
-}
-
-function Post-PRComment {
-  param([string]$File)
-  if (-not $script:pr) { return }
-  gh pr comment $script:pr --repo $env:GITHUB_REPOSITORY --body-file $File
-  if ($LASTEXITCODE -ne 0) { throw "failed to comment on PR $($script:pr)" }
-}
-
 function Set-Label {
   param([string]$Label, [switch]$Remove)
   if ($Remove) {
@@ -114,6 +110,90 @@ function Set-Label {
     gh issue edit $issueNumber --repo $env:GITHUB_REPOSITORY --add-label $Label
     if ($script:pr) { gh pr edit $script:pr --repo $env:GITHUB_REPOSITORY --add-label $Label }
   }
+}
+
+function Get-RunUrl {
+  return "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+}
+
+function Get-DurationText {
+  $elapsed = (Get-Date) - $script:runStartedAt
+  if ($elapsed.TotalHours -ge 1) { return ('{0:hh\:mm\:ss}' -f $elapsed) }
+  return ('{0:mm\:ss}' -f $elapsed)
+}
+
+function Get-GateText {
+  if (-not $script:lastGates) { return "pending" }
+  return (($script:lastGates.Keys | ForEach-Object { "$_ $($script:lastGates[$_])" }) -join " · ")
+}
+
+function Get-HumanGateText {
+  if ($script:lastGates -and $script:lastGates.Contains("e2e") -and $script:lastGates["e2e"] -eq "not_run") {
+    return "dual-client runtime E2E (human merge gate)"
+  }
+  return "-"
+}
+
+function Get-DashboardMarkdown {
+  $prLink = if ($script:pr) { "https://github.com/$env:GITHUB_REPOSITORY/pull/$($script:pr)" } else { "-" }
+  $reason = if ($script:blockedReason) { ($script:blockedReason -replace "`r?`n", " " -replace "\|", "\|") } else { "-" }
+  return @(
+    "<!-- compat:dashboard -->",
+    "## Compatibility status",
+    "",
+    "| Field | Value |",
+    "|---|---|",
+    "| Status | ``$($script:stage)`` |",
+    "| PR | $prLink |",
+    "| Attempt | $($script:attemptsUsed) / $MaxAttempts |",
+    "| Plan | ``$($script:planKind)`` |",
+    "| Mode | $(if ($reviewOnly) { 'review-only preflight' } else { 'normal' }) |",
+    "| Revision / replacement | $($script:revisionCount) / $($script:replacementCount) |",
+    "| Duration | $(Get-DurationText) |",
+    "| Gates | $(Get-GateText) |",
+    "| Human gate | $(Get-HumanGateText) |",
+    "| Blocked reason | $reason |",
+    "",
+    "Run: $(Get-RunUrl)"
+  ) -join "`n"
+}
+
+function Update-Dashboard {
+  param([ValidateSet("issue", "pr")][string]$Kind)
+  $number = if ($Kind -eq "pr") { $script:pr } else { $issueNumber }
+  if (-not $number) { return }
+  $payloadFile = Join-Path $runRoot "dashboard-$Kind.json"
+  @{ body = (Get-DashboardMarkdown) } | ConvertTo-Json -Depth 5 | Set-Content $payloadFile -Encoding UTF8
+  $existingId = gh api --paginate "repos/$env:GITHUB_REPOSITORY/issues/$number/comments?per_page=100" --jq '.[] | select(.body | contains("<!-- compat:dashboard -->")) | .id' | Select-Object -First 1
+  if ($existingId) {
+    gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/issues/comments/$existingId" --input $payloadFile | Out-Null
+  } else {
+    gh api --method POST "repos/$env:GITHUB_REPOSITORY/issues/$number/comments" --input $payloadFile | Out-Null
+  }
+  if ($LASTEXITCODE -ne 0) { throw "failed to update $Kind dashboard" }
+}
+
+function Publish-CheckRun {
+  param(
+    [string]$Conclusion,
+    [string]$Title,
+    [string]$Summary
+  )
+  if (-not $script:pr) { return }
+  $sha = (gh pr view $script:pr --repo $env:GITHUB_REPOSITORY --json headRefOid --jq ".headRefOid" | Select-Object -Last 1).Trim()
+  if (-not $sha) { return }
+  $payload = @{
+    name = "compat/code-gates"
+    head_sha = $sha
+    status = "completed"
+    conclusion = $Conclusion
+    details_url = (Get-RunUrl)
+    output = @{ title = $Title; summary = $Summary }
+  } | ConvertTo-Json -Depth 6
+  $payloadFile = Join-Path $runRoot "check-run.json"
+  $payload | Set-Content $payloadFile -Encoding UTF8
+  gh api --method POST "repos/$env:GITHUB_REPOSITORY/check-runs" --input $payloadFile | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "failed to publish compat/code-gates check run" }
 }
 
 function Switch-ToReplacementBranch {
@@ -132,11 +212,8 @@ function Switch-ToReplacementBranch {
   if ($LASTEXITCODE -ne 0) { throw "failed to fetch main for replacement branch" }
   git checkout -B $script:branch origin/main
   if ($LASTEXITCODE -ne 0) { throw "failed to create replacement branch $script:branch" }
-  $message = "Attempt $Attempt produced a replacement plan. Previous plan is obsolete; new branch: ``$($script:branch)``."
-  if ($oldPr) { $message += " Previous PR #$oldPr was closed as superseded." }
-  $messageFile = Join-Path $runRoot "attempt-$Attempt-replacement.md"
-  $message | Set-Content $messageFile -Encoding UTF8
-  Post-IssueComment $messageFile
+  $script:stage = "implementing"
+  Update-Dashboard -Kind issue
 }
 
 function Invoke-Planner {
@@ -153,7 +230,7 @@ function Invoke-Planner {
   $planModeInstruction = if ($script:planMode -eq "initial") {
     "This is the initial plan. Output plan_kind: initial."
   } else {
-    "Decide whether to revise, replace or block. Output plan_kind: revision or replacement, or status: blocked. You may revise every time if you believe the plan is converging; there is no forced replacement. If the current PR already contains the required code and only a human merge gate remains, return a revision with implementation_required=false; do not create another code workstream."
+    "Decide whether to revise, replace or block. Output plan_kind: revision or replacement, or status: blocked. You may revise every time if you believe the plan is converging; there is no forced replacement."
   }
   $parts = @(
     (Get-Content (Join-Path $script:promptRoot "planner.md") -Raw),
@@ -198,15 +275,15 @@ function Invoke-Planner {
   Invoke-AuditFinish -Role "planner" -Dir $dir -Output $output
   $plan = Get-Content $output -Raw | ConvertFrom-Json
   if ($plan.status -eq "blocked") {
-    $message = "Planner blocked on attempt ${Attempt}: $($plan.summary)`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
-    $blockedFile = Join-Path $dir "blocked.md"
-    $message | Set-Content $blockedFile -Encoding UTF8
-    Post-IssueComment $blockedFile
-    Post-PRComment $blockedFile
+    $script:blockedReason = $plan.summary
+    $script:stage = "blocked"
+    Update-Dashboard -Kind issue
+    if ($script:pr) { Update-Dashboard -Kind pr }
     $script:plannerBlocked = $true
     return
   }
   $script:plannerBlocked = $false
+  $script:blockedReason = $null
   if ($plan.plan_kind -notin @("initial", "revision", "replacement")) {
     throw "planner returned invalid plan_kind: $($plan.plan_kind)"
   }
@@ -217,27 +294,19 @@ function Invoke-Planner {
     throw "planner must not return plan_kind=initial in decide mode"
   }
   $script:planKind = $plan.plan_kind
-  $script:implementationRequired = if ($null -ne $plan.implementation_required) { [bool]$plan.implementation_required } else { $true }
-  if (-not $script:implementationRequired -and ($script:planKind -ne "revision" -or -not $script:pr)) {
-    throw "implementation_required=false requires plan_kind=revision and an existing PR"
-  }
   if ($plan.supersedes_attempt) { $script:supersedesAttempt = [int]$plan.supersedes_attempt }
   $script:previousPlan = $plan.plan_markdown
+  $script:lastPlan = $plan
+  $script:lastGates = $null
   $planFile = Join-Path $dir "plan.md"
   $plan.plan_markdown | Set-Content $planFile -Encoding UTF8
-  $commentFile = Join-Path $dir "comment.md"
-  $modeLine = if ($plan.plan_kind -eq "revision") {
-    "> This is a targeted revision. The previous plan remains valid except for the listed changes."
-  } elseif ($plan.plan_kind -eq "replacement") {
-    "> This is a replacement plan. The previous plan is obsolete."
-  } else {
-    "> This is the initial plan."
-  }
-  ("<!-- compat:plan attempt=$Attempt kind=$($plan.plan_kind) -->`n`n" + $modeLine + "`n`n" + $plan.plan_markdown + "`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)) | Set-Content $commentFile -Encoding UTF8
-  Post-IssueComment $commentFile
-  Post-PRComment $commentFile
+  if ($plan.plan_kind -eq "revision") { $script:revisionCount++ }
+  if ($plan.plan_kind -eq "replacement") { $script:replacementCount++ }
+  $script:stage = "implementing"
   gh issue edit $issueNumber --repo $env:GITHUB_REPOSITORY --remove-label ready-for-agent --add-label plan-ready 2>$null
   if ($plan.plan_kind -eq "replacement") { Switch-ToReplacementBranch -Attempt $Attempt }
+  Update-Dashboard -Kind issue
+  if ($script:pr) { Update-Dashboard -Kind pr }
   return $true
 }
 
@@ -268,7 +337,7 @@ function Invoke-Implementor {
     "`n`n## Issue`n`n" + (Get-Content $script:issueFile -Raw) +
     "`n`n## Approved plan`n`n" + (Get-Content $planFile -Raw) +
     "`n`n## Compatibility report`n`n" + (Get-Content $script:reportFile -Raw) +
-    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`nimplementation_required: $($script:implementationRequired.ToString().ToLower())`n`n" + $planModeInstruction
+    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`n`n" + $planModeInstruction
   $prompt | Set-Content $promptFile -Encoding UTF8
   $inputs += $promptFile
   Invoke-AuditInit -Role "implementor" -Dir $dir -Attempt $Attempt -Inputs $inputs
@@ -285,18 +354,19 @@ function Invoke-Implementor {
   Invoke-AuditFinish -Role "implementor" -Dir $dir -Output $output
   $impl = Get-Content $output -Raw | ConvertFrom-Json
   if ($impl.status -eq "blocked") {
-    $message = "Implementor blocked on attempt ${Attempt}: $($impl.summary)`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
     $blockedFile = Join-Path $dir "blocked.md"
-    $message | Set-Content $blockedFile -Encoding UTF8
-    Post-IssueComment $blockedFile
-    Post-PRComment $blockedFile
+    $impl.summary | Set-Content $blockedFile -Encoding UTF8
     git add -N -- . 2>$null
     $blockedDiff = Join-Path $dir "blocked-diff.patch"
     git diff > $blockedDiff
     git status --porcelain > (Join-Path $dir "blocked-status.txt")
     $script:previousImplementation = $blockedFile
     $script:previousImplementationDiff = $blockedDiff
+    $script:blockedReason = $impl.summary
+    $script:stage = "blocked"
     $script:trigger = "implementation_blocked"
+    Update-Dashboard -Kind issue
+    if ($script:pr) { Update-Dashboard -Kind pr }
     $script:implementorBlocked = $true
     return
   }
@@ -306,11 +376,7 @@ function Invoke-Implementor {
   git diff > (Join-Path $dir "diff.patch")
   git status --porcelain > (Join-Path $dir "status.txt")
 
-  if ($script:implementationRequired) {
-    pnpm install --no-frozen-lockfile --ignore-scripts
-  } else {
-    pnpm install --frozen-lockfile --ignore-scripts
-  }
+  pnpm install --no-frozen-lockfile --ignore-scripts
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed on attempt $Attempt" }
   pnpm rebuild esbuild
   if ($LASTEXITCODE -ne 0) { throw "pnpm rebuild esbuild failed on attempt $Attempt" }
@@ -326,6 +392,7 @@ function Invoke-Implementor {
   $gates.release = if ($LASTEXITCODE -eq 0) { "pass" } else { "fail" }
   $gatesFile = Join-Path $dir "gates.json"
   $gates | ConvertTo-Json | Set-Content $gatesFile -Encoding UTF8
+  $script:lastGates = $gates
   Invoke-AuditFinish -Role "implementor" -Dir $dir -Output $output -Gates $gatesFile
 
   git add -N -- . 2>$null
@@ -334,31 +401,18 @@ function Invoke-Implementor {
 
   $changed = git status --porcelain
   if (-not $changed) {
-    if (-not $script:implementationRequired) {
-      if (-not $script:pr) { throw "implementation_required=false requires an existing PR" }
-      $message = "No code changes required on attempt ${Attempt}. The approved plan marks this as a review-only verification round.`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
-      $noopFile = Join-Path $dir "no-op.md"
-      $message | Set-Content $noopFile -Encoding UTF8
-      Post-IssueComment $noopFile
-      Post-PRComment $noopFile
-      Set-Label "agent:blocked" -Remove
-      Set-Label "agent:review"
-      return
-    }
-    $message = "Implementor made no changes on attempt ${Attempt}.`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)
+    $message = "Implementor produced no commit on attempt ${Attempt}."
     $blockedFile = Join-Path $dir "blocked.md"
     $message | Set-Content $blockedFile -Encoding UTF8
-    Post-IssueComment $blockedFile
-    Post-PRComment $blockedFile
     $script:previousImplementation = $blockedFile
     $script:previousImplementationDiff = Join-Path $dir "diff.patch"
+    $script:blockedReason = $message
+    $script:stage = "blocked"
     $script:trigger = "implementation_blocked"
+    Update-Dashboard -Kind issue
+    if ($script:pr) { Update-Dashboard -Kind pr }
     $script:implementorBlocked = $true
     return
-  }
-
-  if (-not $script:implementationRequired) {
-    throw "review-only round produced workspace changes; refusing to commit them"
   }
 
   git config user.name "github-actions[bot]"
@@ -369,8 +423,32 @@ function Invoke-Implementor {
   git push origin $script:branch
   if ($LASTEXITCODE -ne 0) { throw "git push failed on attempt $Attempt" }
 
+  $planText = Get-Content $planFile -Raw
+  $planSummary = if ($script:lastPlan -and $script:lastPlan.summary) { $script:lastPlan.summary } else { "See the plan artifact for details." }
+  $workstreamLines = @()
+  if ($script:lastPlan -and $script:lastPlan.workstreams) {
+    $workstreamLines += "| Workstream | Goal | Files |"
+    $workstreamLines += "|---|---|---|"
+    foreach ($ws in @($script:lastPlan.workstreams)) {
+      $workstreamLines += "| $($ws.id) | $($ws.goal) | $(@($ws.files) -join ', ') |"
+    }
+  }
+  $filesText = if ($impl.files_changed) { (@($impl.files_changed) -join ', ') } else { "-" }
+  $gateLines = @(
+    "| Gate | Result |",
+    "|---|---|",
+    "| typecheck | ``$($gates.typecheck)`` |",
+    "| tests | ``$($gates.tests)`` |",
+    "| build | ``$($gates.build)`` |",
+    "| release | ``$($gates.release)`` |",
+    "| e2e | ``$($gates.e2e)`` |"
+  )
+  $humanGate = if ($gates.e2e -eq "not_run") { "`n## Human merge gate`n`nDual-client runtime E2E is not run by GitHub-hosted Actions. A human must run the documented E2E before merge." } else { "" }
+  $prBodyText = "Closes #$issueNumber`n`n## Plan`n`n$planSummary`n`n" +
+    (($workstreamLines -join "`n")) + "`n`n## Implementation`n`n$($impl.summary)`n`nFiles: $filesText`n`n## Gates`n`n" +
+    ($gateLines -join "`n") + $humanGate + "`n`n<!-- compat:plan`n$planText`n-->`n"
   $prBody = Join-Path $dir "pr-body.md"
-  ($impl.pr_body_markdown + "`n`n## Compatibility issue`n`nCloses #$issueNumber`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)) | Set-Content $prBody -Encoding UTF8
+  $prBodyText | Set-Content $prBody -Encoding UTF8
   $existing = gh pr list --repo $env:GITHUB_REPOSITORY --head $script:branch --state open --json number,url | ConvertFrom-Json | Select-Object -First 1
   if ($existing) {
     $script:pr = [string]$existing.number
@@ -381,15 +459,11 @@ function Invoke-Implementor {
   }
   if (-not $script:pr) { throw "could not create or find PR for $script:branch" }
 
-  $planFile = Join-Path $runRoot "attempt-$Attempt/planner/plan.md"
-  $planComment = Join-Path $dir "plan-comment.md"
-  ("<!-- compat:plan attempt=$Attempt -->`n`n" + (Get-Content $planFile -Raw) + "`n`n" + (Get-Content (Join-Path $runRoot "attempt-$Attempt/planner/audit.md") -Raw)) | Set-Content $planComment -Encoding UTF8
-  Post-PRComment $planComment
-  $issueComment = Join-Path $dir "issue-comment.md"
-  ("Draft PR updated: https://github.com/$env:GITHUB_REPOSITORY/pull/$($script:pr)`n`n" + (Get-Content (Join-Path $dir "audit.md") -Raw)) | Set-Content $issueComment -Encoding UTF8
-  Post-IssueComment $issueComment
+  $script:stage = "reviewing"
   Set-Label "agent:blocked" -Remove
   Set-Label "agent:review"
+  Update-Dashboard -Kind issue
+  Update-Dashboard -Kind pr
   return $true
 }
 
@@ -400,8 +474,15 @@ function Invoke-Reviewer {
   $dir = Join-Path $runRoot "attempt-$Attempt/reviewer"
   New-Item -ItemType Directory -Force $dir | Out-Null
   $planFile = Join-Path $runRoot "attempt-$Attempt/planner/plan.md"
+  if (-not (Test-Path -LiteralPath $planFile)) {
+    if (-not $script:previousPlan) { throw "reviewer requires an approved plan" }
+    New-Item -ItemType Directory -Force (Split-Path $planFile) | Out-Null
+    $script:previousPlan | Set-Content $planFile -Encoding UTF8
+  }
   $implOutput = Join-Path $runRoot "attempt-$Attempt/implementor/output.json"
   $implGates = Join-Path $runRoot "attempt-$Attempt/implementor/gates.json"
+  $implOutputText = if (Test-Path -LiteralPath $implOutput) { Get-Content $implOutput -Raw } else { "Not run: review-only round." }
+  $implGatesText = if (Test-Path -LiteralPath $implGates) { Get-Content $implGates -Raw } else { "Not run: review-only round." }
   $prDiff = Join-Path $dir "pr.diff"
   $gatesFile = Join-Path $dir "gates.json"
 
@@ -425,16 +506,19 @@ function Invoke-Reviewer {
   $gates | ConvertTo-Json | Set-Content $gatesFile -Encoding UTF8
 
   $promptFile = Join-Path $dir "prompt.md"
-  $inputs = @($script:issueFile, $planFile, $script:reportFile, $prDiff, $gatesFile, $implOutput, $implGates, (Join-Path $script:promptRoot "reviewer.md"))
+  $inputs = @($script:issueFile, $planFile, $script:reportFile, $prDiff, $gatesFile, (Join-Path $script:promptRoot "reviewer.md"))
+  foreach ($optionalInput in @($implOutput, $implGates)) {
+    if (Test-Path -LiteralPath $optionalInput) { $inputs += $optionalInput }
+  }
   $prompt = (Get-Content (Join-Path $script:promptRoot "reviewer.md") -Raw) +
     "`n`n## Issue`n`n" + (Get-Content $script:issueFile -Raw) +
     "`n`n## Approved plan`n`n" + (Get-Content $planFile -Raw) +
     "`n`n## Compatibility report`n`n" + (Get-Content $script:reportFile -Raw) +
     "`n`n## PR diff`n`n" + (Get-Content $prDiff -Raw) +
-    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`nimplementation_required: $($script:implementationRequired.ToString().ToLower())`n" +
+    "`n`n## Plan mode`n`nplan_kind: $($script:planKind)`n" +
     "`n`n## Gate results`n`n" + (Get-Content $gatesFile -Raw) +
-    "`n`n## Implementor structured output`n`n" + (Get-Content $implOutput -Raw) +
-    "`n`n## Implementor gate results`n`n" + (Get-Content $implGates -Raw)
+    "`n`n## Implementor structured output`n`n" + $implOutputText +
+    "`n`n## Implementor gate results`n`n" + $implGatesText
   $prompt | Set-Content $promptFile -Encoding UTF8
   $inputs += $promptFile
   Invoke-AuditInit -Role "reviewer" -Dir $dir -Attempt $Attempt -Inputs $inputs
@@ -446,60 +530,106 @@ function Invoke-Reviewer {
   $reviewFile = Join-Path $dir "review.md"
   ("<!-- compat:review attempt=$Attempt -->`n`n" + $review.review_markdown) | Set-Content $reviewFile -Encoding UTF8
   gh pr review $script:pr --repo $env:GITHUB_REPOSITORY --comment --body-file $reviewFile
-  Post-PRComment (Join-Path $dir "audit.md")
 
+  $script:lastGates = $gates
+  $script:lastReviewSummary = $review.summary
   $gatesAllPass = $gates.typecheck -eq "pass" -and $gates.build -eq "pass" -and $gates.tests -eq "pass" -and $gates.release -eq "pass"
+  $checkConclusion = if (-not $gatesAllPass) { "failure" } elseif ($review.verdict -eq "approve") { "success" } else { "action_required" }
+  $checkTitle = if ($review.verdict -eq "approve" -and $gatesAllPass) { "Compatibility code gates passed" } else { "Compatibility code gates need attention" }
+  $checkSummary = (@(
+    "Verdict: $($review.verdict)",
+    "typecheck: $($gates.typecheck)",
+    "tests: $($gates.tests)",
+    "build: $($gates.build)",
+    "release: $($gates.release)",
+    "e2e: $($gates.e2e) (human merge gate when not_run)"
+  ) -join "`n")
+  Publish-CheckRun -Conclusion $checkConclusion -Title $checkTitle -Summary $checkSummary
+
   if ($review.verdict -eq "approve" -and $gatesAllPass) {
+    $script:stage = "approved"
+    $script:blockedReason = $null
     Set-Label "awaiting-review"
     Set-Label "agent:review" -Remove
     Set-Label "agent:blocked" -Remove
     gh pr ready $script:pr --repo $env:GITHUB_REPOSITORY 2>$null
+    Update-Dashboard -Kind issue
+    Update-Dashboard -Kind pr
     $script:reviewVerdict = "approve"
     return
   }
   if ($review.verdict -eq "approve" -and -not $gatesAllPass) {
-    $mismatch = "Reviewer returned approve but one or more gates failed; treating this round as request_changes."
-    $mismatchFile = Join-Path $dir "gate-mismatch.md"
-    $mismatch | Set-Content $mismatchFile -Encoding UTF8
-    Post-PRComment $mismatchFile
+    Write-Warning "Reviewer returned approve but one or more gates failed; treating this round as request_changes."
   }
   $script:previousReview = $output
   $script:previousGates = $gatesFile
   $script:trigger = "review_return"
   $script:reviewVerdict = "request_changes"
+  $script:stage = "changes-requested"
+  $script:blockedReason = $review.summary
+  Update-Dashboard -Kind issue
+  Update-Dashboard -Kind pr
   return
 }
 
 function Write-FinalSummary {
   param([string]$Result)
+  if ($Result -eq "approved") { $script:stage = "approved" }
+  elseif ($Result -eq "dry-run") { $script:stage = "dry-run" }
+  elseif ($Result -eq "error") { $script:stage = "error" }
+  else { $script:stage = "blocked" }
+
+  $prUrl = if ($script:pr) { "https://github.com/$env:GITHUB_REPOSITORY/pull/$($script:pr)" } else { $null }
   $summary = [ordered]@{
     issue = $issueNumber
     tag = $tag
     version = $version
     branch = $script:branch
     pr = $script:pr
+    prUrl = $prUrl
     result = $Result
-    attempts = $MaxAttempts
-    implementationRequired = $script:implementationRequired
+    reviewOnly = $reviewOnly
+    duration = (Get-DurationText)
+    attempts = $script:attemptsUsed
+    revisions = $script:revisionCount
+    replacements = $script:replacementCount
+    gates = $script:lastGates
+    humanGate = (Get-HumanGateText)
+    blockedReason = $script:blockedReason
     generatedAt = (Get-Date).ToUniversalTime().ToString("o")
-    runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+    runUrl = (Get-RunUrl)
   }
-  $summary | ConvertTo-Json | Set-Content (Join-Path $runRoot "final.json") -Encoding UTF8
-  $comment = Join-Path $runRoot "final.md"
-  @(
+  $summary | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $runRoot "final.json") -Encoding UTF8
+  $summary | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $runRoot "run-summary.json") -Encoding UTF8
+
+  Update-Dashboard -Kind issue
+  if ($script:pr) { Update-Dashboard -Kind pr }
+
+  $prValue = if ($prUrl) { $prUrl } else { "-" }
+  $lines = @(
     "<!-- compat:final result=$Result -->",
     "",
-    "## Compatibility pipeline finished",
+    "## Compatibility result: ``$Result``",
     "",
-    "- Result: ``$Result``",
-    "- Issue: #$issueNumber",
-    "- Branch: ``$script:branch``",
-    "- PR: $($script:pr ? "https://github.com/$env:GITHUB_REPOSITORY/pull/$($script:pr)" : "-")",
-    "- Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
-    ""
-  ) | Set-Content $comment -Encoding UTF8
-  Post-IssueComment $comment
-  Post-PRComment $comment
+    "| Field | Value |",
+    "|---|---|",
+    "| Duration | $($summary.duration) |",
+    "| Mode | $(if ($reviewOnly) { 'review-only preflight' } else { 'normal' }) |",
+    "| Attempts | $($summary.attempts) |",
+    "| Revisions | $($summary.revisions) |",
+    "| Replacements | $($summary.replacements) |",
+    "| Gates | $(Get-GateText) |",
+    "| Human gate | $($summary.humanGate) |",
+    "| PR | $prValue |",
+    "| Run | $($summary.runUrl) |"
+  )
+  if ($Result -ne "approved" -and $script:blockedReason) {
+    $lines += ""
+    $lines += "**Blocked reason:** $($script:blockedReason)"
+    $lines += ""
+    $lines += "Next action: inspect the run artifact and use ``/resume [note]`` when the blocking input is available."
+  }
+  $lines | Set-Content (Join-Path $runRoot "final.md") -Encoding UTF8
 }
 
 function Find-OpenPRForIssue {
@@ -514,7 +644,10 @@ function Load-ResumeContext {
   $planComment = $issue.comments | Where-Object { $_.body -like "*<!-- compat:plan*" } | Select-Object -Last 1
   if ($planComment) { $script:previousPlan = $planComment.body }
   if ($script:pr) {
-    $pr = gh pr view $script:pr --repo $env:GITHUB_REPOSITORY --json comments,reviews | ConvertFrom-Json
+    $pr = gh pr view $script:pr --repo $env:GITHUB_REPOSITORY --json body,comments,reviews | ConvertFrom-Json
+    if ($pr.body -match '(?s)<!--\s*compat:plan\s*(.*?)\s*-->') {
+      $script:previousPlan = $matches[1].Trim()
+    }
     $review = $pr.reviews | Where-Object { $_.body -like "*<!-- compat:review*" } | Select-Object -Last 1
     if ($review) {
       $path = Join-Path $runRoot "resume-review.md"
@@ -547,11 +680,21 @@ if ($resume) {
       $script:branch = [string]$match.headRefName
     }
   }
-  if (-not $script:branch) { throw "resume requires an existing PR branch" }
-  git fetch origin "$($script:branch):refs/remotes/origin/$($script:branch)"
-  if ($LASTEXITCODE -ne 0) { throw "failed to fetch resume branch" }
-  git checkout -B $script:branch "origin/$($script:branch)"
-  if ($LASTEXITCODE -ne 0) { throw "failed to checkout resume branch" }
+  if ($script:pr) {
+    git fetch origin "$($script:branch):refs/remotes/origin/$($script:branch)"
+    if ($LASTEXITCODE -ne 0) { throw "failed to fetch resume branch" }
+    git checkout -B $script:branch "origin/$($script:branch)"
+    if ($LASTEXITCODE -ne 0) { throw "failed to checkout resume branch" }
+  } else {
+    $remote = git ls-remote --heads origin $script:branch
+    if ($remote) {
+      git fetch origin "$($script:branch):refs/remotes/origin/$($script:branch)"
+      git checkout -B $script:branch "origin/$($script:branch)"
+    } else {
+      git checkout -B $script:branch
+    }
+    if ($LASTEXITCODE -ne 0) { throw "failed to prepare branch for PR-less resume" }
+  }
   Load-ResumeContext
   $script:planMode = if ($script:previousPlan) { "decide" } else { "initial" }
   $script:trigger = "human_resume"
@@ -573,29 +716,52 @@ if ($resume) {
 
 try {
   $result = "running"
-  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-    $script:planRound = $startPlanRound + $attempt - 1
-    if ($attempt -gt 1) {
-      $script:planMode = "decide"
-      if ($script:trigger -ne "human_resume") { $script:trigger = "review_return" }
-    }
-    $script:plannerBlocked = $false
-    Invoke-Planner -Attempt $attempt
-    if ($script:plannerBlocked) { $result = "blocked"; break }
-    if ($dryRun) { $result = "dry-run"; break }
-    $script:implementorBlocked = $false
-    Invoke-Implementor -Attempt $attempt
-    if ($script:implementorBlocked) {
-      if ($attempt -lt $MaxAttempts) {
-        $script:planMode = "decide"
-        continue
-      }
-      $result = "blocked"
-      break
-    }
+  if ($reviewOnly) {
+    if (-not $script:pr) { throw "review-only requires an existing PR" }
+    if (-not $script:previousPlan) { throw "review-only requires a previous approved plan" }
+    $script:attemptsUsed = 0
+    $script:planKind = "revision"
+    $script:stage = "reviewing"
+    Update-Dashboard -Kind issue
+    Update-Dashboard -Kind pr
     $script:reviewVerdict = $null
-    Invoke-Reviewer -Attempt $attempt
-    if ($script:reviewVerdict -eq "approve") { $result = "approved"; break }
+    Invoke-Reviewer -Attempt 0
+    if ($script:reviewVerdict -eq "approve") {
+      $result = "approved"
+    } else {
+      $script:planMode = "decide"
+      $script:trigger = "review_return"
+    }
+  }
+
+  if ($result -ne "approved") {
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+      $script:attemptsUsed = $attempt
+      $script:planRound = $startPlanRound + $attempt - 1
+      if ($attempt -gt 1) {
+        $script:planMode = "decide"
+        if ($script:trigger -ne "human_resume") { $script:trigger = "review_return" }
+      }
+      $script:plannerBlocked = $false
+      Invoke-Planner -Attempt $attempt
+      if ($script:plannerBlocked) { $result = "blocked"; break }
+      if ($dryRun) { $result = "dry-run"; break }
+      $script:implementorBlocked = $false
+      Invoke-Implementor -Attempt $attempt
+      if ($script:implementorBlocked) {
+        if ($attempt -lt $MaxAttempts) {
+          $script:planMode = "decide"
+          continue
+        }
+        $result = "blocked"
+        break
+      }
+      $script:reviewVerdict = $null
+      Invoke-Reviewer -Attempt $attempt
+      if ($script:reviewVerdict -eq "approve") { $result = "approved"; break }
+      $script:planMode = "decide"
+      $script:trigger = "review_return"
+    }
   }
 
   if ($result -eq "running") { $result = "blocked" }
@@ -607,6 +773,8 @@ try {
 } catch {
   $message = "Compatibility loop failed: $($_.Exception.Message)"
   $message | Set-Content (Join-Path $runRoot "error.txt") -Encoding UTF8
+  $script:blockedReason = $_.Exception.Message
+  $script:stage = "error"
   Set-Label "agent:blocked"
   Set-Label "agent:review" -Remove
   Write-FinalSummary -Result "error"

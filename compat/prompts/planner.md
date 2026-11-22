@@ -108,9 +108,9 @@ The input also includes:
 - Do not ask the Implementor to interpret Reviewer findings directly.
 - If the findings cannot be resolved by a plan change, set `status` to `blocked` and state the exact reason.
 - Do not turn an unavailable human runtime check into another code workstream.
-  If all code work is complete and only a human merge gate remains, set
-  `implementation_required: false` and return `status: planned`; the Reviewer
-  will re-verify the existing PR.
+  If all code work is already complete and only verification remains, the human
+  should use `/resume review-only`; do not pretend that a no-code review is a new
+  implementation plan.
 - Do not claim a gate passed unless you saw its result.
 
 # Rules
@@ -125,10 +125,9 @@ The input also includes:
 - The plan must stand on its own; do not rely on hidden reasoning.
 - Keep the human merge gate visible in the plan. It is not a failure of code
   approval and must not trigger another Implementor round by itself.
-- If an existing PR already contains the required implementation and only
-  verification remains, set `implementation_required: false`; do not invent code
-  changes. Only `plan_kind: revision` may use `false`; `initial` and
-  `replacement` plans must use `true`.
+- Do not invent code changes to fill a plan. If the correct action is a
+  no-code review, return `status: blocked` with the exact reason and direct the
+  human to `/resume review-only`.
 - Write `plan_markdown` in Chinese, but keep code identifiers, file paths,
   commands and API names in English.
 
@@ -158,10 +157,6 @@ Required top-level fields:
 - `plan_kind`: `"initial"`, `"revision"` or `"replacement"` (required when `planned`; optional when `blocked`)
 - `summary`: one-paragraph summary
 - `plan_markdown`: the complete human-readable plan, or the blocker summary when blocked
-- `implementation_required`: boolean when `status` is `planned`; `false` means
-  an existing PR already contains the required code and the next step is
-  independent review, not another implementation round. `false` is valid only
-  with `plan_kind: revision`; `initial` and `replacement` must use `true`.
 
 Optional fields:
 

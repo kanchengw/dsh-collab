@@ -8,6 +8,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  checks: write
 
 concurrency:
   group: compat-resume-${{ github.event.issue.number }}
@@ -68,10 +69,11 @@ jobs:
           $isPr = $env:EVENT_IS_PR -eq "true"
           $human = ($env:COMMENT_BODY -replace '^\s*/resume\s*', '').Trim()
           if (-not $human) { $human = "Human requested resume without additional instructions." }
+          $reviewOnly = $human -match '(?i)\breview-only\b'
 
           if ($isPr) {
             $prNumber = $eventIssue
-            $pr = gh pr view $prNumber --repo $env:GITHUB_REPOSITORY --json body | ConvertFrom-Json
+            $pr = gh pr view $prNumber --repo $env:GITHUB_REPOSITORY --json body,labels | ConvertFrom-Json
             $match = [regex]::Match($pr.body, '(?i)(closes|fixes|resolves)\s+#(\d+)')
             if (-not $match.Success) { throw "PR body does not contain Closes #N" }
             $issueNumber = $match.Groups[2].Value
@@ -79,14 +81,33 @@ jobs:
             $issueNumber = $eventIssue
             $prs = gh pr list --repo $env:GITHUB_REPOSITORY --state open --json number,body | ConvertFrom-Json
             $pr = $prs | Where-Object { $_.body -match "(?i)(closes|fixes|resolves)\s+#$issueNumber\b" } | Select-Object -Last 1
-            if (-not $pr) { throw "no open PR linked to issue #$issueNumber" }
-            $prNumber = [string]$pr.number
+            $prNumber = if ($pr) { [string]$pr.number } else { "" }
           }
 
           $issueInfo = gh issue view $issueNumber --repo $env:GITHUB_REPOSITORY --json labels,comments | ConvertFrom-Json
           if (-not ($issueInfo.labels | Where-Object { $_.name -eq "kind/upstream" })) {
             throw "issue #$issueNumber is not a compat issue"
           }
+
+          $issueBlocked = [bool]($issueInfo.labels | Where-Object { $_.name -eq "agent:blocked" })
+          $prBlocked = $false
+          if ($prNumber) {
+            $prLabels = gh pr view $prNumber --repo $env:GITHUB_REPOSITORY --json labels | ConvertFrom-Json
+            $prBlocked = [bool]($prLabels.labels | Where-Object { $_.name -eq "agent:blocked" })
+          }
+          if (-not ($issueBlocked -or $prBlocked)) {
+            $message = "Compatibility resume ignored: this work item is not ``agent:blocked``."
+            if ($isPr) { gh pr comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }
+            else { gh issue comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }
+            throw "resume requires agent:blocked"
+          }
+          if ($reviewOnly -and -not $prNumber) {
+            $message = "Compatibility review-only ignored: an open PR is required."
+            if ($isPr) { gh pr comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }
+            else { gh issue comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }
+            throw "review-only requires an open PR"
+          }
+
           $comments = $issueInfo.comments
           $planRound = 1 + (($comments | Where-Object { $_.body -like "*<!-- compat:plan*" }).Count)
           $status = node scripts/compat/status.mjs --json | ConvertFrom-Json
@@ -103,6 +124,8 @@ jobs:
           "VERSION=$($status.latest.version)" | Out-File -Append $env:GITHUB_ENV
           "PLAN_ROUND=$planRound" | Out-File -Append $env:GITHUB_ENV
           "HUMAN_INPUT_FILE=$humanFile" | Out-File -Append $env:GITHUB_ENV
+          "REVIEW_ONLY=$($reviewOnly.ToString().ToLower())" | Out-File -Append $env:GITHUB_ENV
+
 
       - name: Run compatibility loop
         shell: pwsh
