@@ -85,7 +85,7 @@ try {
       if ($profileManifest.dsh -and $profileManifest.dsh.profile -and $profileManifest.dsh.profile.bundles) {
         $profileManifest.dsh.profile.bundles = @($profileManifest.dsh.profile.bundles | Where-Object { $_ -ne "dsh-better-sidebar" })
       }
-      $profileManifest | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $profileManifestPath
+      [System.IO.File]::WriteAllText($profileManifestPath, ($profileManifest | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
     } finally {
       Pop-Location
     }
