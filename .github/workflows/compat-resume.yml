@@ -95,7 +95,7 @@ jobs:
             $prLabels = gh pr view $prNumber --repo $env:GITHUB_REPOSITORY --json labels | ConvertFrom-Json
             $prBlocked = [bool]($prLabels.labels | Where-Object { $_.name -eq "agent:blocked" })
           }
-          if (-not ($issueBlocked -or $prBlocked)) {
+          if (-not $reviewOnly -and -not ($issueBlocked -or $prBlocked)) {
             $message = "Compatibility resume ignored: this work item is not ``agent:blocked``."
             if ($isPr) { gh pr comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }
             else { gh issue comment $eventIssue --repo $env:GITHUB_REPOSITORY --body $message }

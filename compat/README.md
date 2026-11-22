@@ -111,9 +111,11 @@ After a blocked run, a maintainer can comment `/resume [optional note]` on the
 PR or issue. `.github/workflows/compat-resume.yml` reloads the previous plan,
 review, gates, PR and diff, then starts Planner with `trigger=human_resume`.
 Use `/resume review-only` when the code should not change and only an independent
-Reviewer pass is needed. Both commands are rejected unless the issue or linked PR
-is labeled `agent:blocked`. A normal resume can start from Planner even when no PR
-exists yet; review-only requires an open PR.
+Reviewer pass is needed. A normal resume is accepted only when the issue or linked
+PR is labeled `agent:blocked`; review-only is accepted whenever the linked PR is
+open, including after a new commit invalidates a prior `awaiting-review` result.
+A normal resume can start from Planner even when no PR exists yet; review-only
+requires an open PR.
 
 ## Audit model
 
