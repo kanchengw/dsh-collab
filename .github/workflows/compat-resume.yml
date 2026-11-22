@@ -84,7 +84,7 @@ jobs:
             $prNumber = if ($pr) { [string]$pr.number } else { "" }
           }
 
-          $issueInfo = gh issue view $issueNumber --repo $env:GITHUB_REPOSITORY --json labels,comments | ConvertFrom-Json
+          $issueInfo = gh issue view $issueNumber --repo $env:GITHUB_REPOSITORY --json labels,comments,body | ConvertFrom-Json
           if (-not ($issueInfo.labels | Where-Object { $_.name -eq "kind/upstream" })) {
             throw "issue #$issueNumber is not a compat issue"
           }
@@ -110,7 +110,11 @@ jobs:
 
           $comments = $issueInfo.comments
           $planRound = 1 + (($comments | Where-Object { $_.body -like "*<!-- compat:plan*" }).Count)
-          $status = node scripts/compat/status.mjs --json | ConvertFrom-Json
+          $tagMatch = [regex]::Match([string]$issueInfo.body, '(?m)^-\s*Tag:\s*`([^`]+)`')
+          $versionMatch = [regex]::Match([string]$issueInfo.body, '(?m)^-\s*Version:\s*`([^`]+)`')
+          if (-not $tagMatch.Success -or -not $versionMatch.Success) { throw "issue #$issueNumber does not record Tag/Version" }
+          $tag = $tagMatch.Groups[1].Value
+          $version = $versionMatch.Groups[1].Value
 
           $humanFile = Join-Path $env:RUNNER_TEMP "human-input.txt"
           $human | Set-Content $humanFile -Encoding UTF8
@@ -120,8 +124,8 @@ jobs:
 
           "ISSUE_NUMBER=$issueNumber" | Out-File -Append $env:GITHUB_ENV
           "PR_NUMBER=$prNumber" | Out-File -Append $env:GITHUB_ENV
-          "TAG=$($status.latest.tag)" | Out-File -Append $env:GITHUB_ENV
-          "VERSION=$($status.latest.version)" | Out-File -Append $env:GITHUB_ENV
+          "TAG=$tag" | Out-File -Append $env:GITHUB_ENV
+          "VERSION=$version" | Out-File -Append $env:GITHUB_ENV
           "PLAN_ROUND=$planRound" | Out-File -Append $env:GITHUB_ENV
           "HUMAN_INPUT_FILE=$humanFile" | Out-File -Append $env:GITHUB_ENV
           "REVIEW_ONLY=$($reviewOnly.ToString().ToLower())" | Out-File -Append $env:GITHUB_ENV
